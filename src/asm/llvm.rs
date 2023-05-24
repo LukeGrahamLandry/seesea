@@ -1,5 +1,8 @@
-use crate::ir::{Func, Op, Ssa};
-use crate::parse::BinaryOp;
+//! IR -> LLVM IR
+
+use crate::ast::{BinaryOp, FuncSignature, Program, ValueType};
+use crate::ir::{five_plus_ten, Function, Op, Ssa};
+use crate::{ast, ir};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction};
@@ -17,7 +20,7 @@ pub struct LlvmGen<'ctx> {
 }
 
 impl<'ctx> LlvmGen<'ctx> {
-    pub fn compile(&mut self, ir: Func) -> u64 {
+    pub fn compile(&mut self, ir: Function) -> u64 {
         let t = self.context.void_type().fn_type(&[], false);
         let func = self.module.add_function("test", t, None);
         let number = self.context.i64_type();
@@ -27,7 +30,9 @@ impl<'ctx> LlvmGen<'ctx> {
                 .context
                 .append_basic_block(func, &format!("_block_{}", i));
             self.builder.position_at_end(code);
+            let mut has_returned = false;
             for op in block {
+                assert!(!has_returned);
                 match op {
                     Op::ConstInt { dest, value } => {
                         let val = number.const_int(*value, false);
@@ -46,12 +51,12 @@ impl<'ctx> LlvmGen<'ctx> {
                     },
                     Op::Return { value } => {
                         match value {
-                            None => todo!(),
+                            None => self.builder.build_return(None),
                             Some(value) => self.builder.build_return(Some(
                                 &registers.get(value).unwrap().into_int_value(),
                             )),
-                            // TODO: assert block is over now.
                         };
+                        has_returned = true;
                     }
                     _ => todo!(),
                 }
@@ -66,24 +71,24 @@ impl<'ctx> LlvmGen<'ctx> {
     }
 }
 
-// #[test]
-pub fn add_numbers() {
-    let mut ir = Func::default();
-    let block = ir.new_block();
-    let a = ir.constant_int(block, 5);
-    let b = ir.constant_int(block, 10);
-    let dest = ir.next_var();
-    ir.push(
-        block,
-        Op::Binary {
-            dest,
-            a,
-            b,
-            kind: BinaryOp::Add,
-        },
-    );
-    ir.push(block, Op::Return { value: Some(dest) });
+#[test]
+fn just_ir() {
+    eval_expect(five_plus_ten(), 15);
+}
 
+#[test]
+fn ast_to_ir() {
+    let ast = ast::five_plus_ten();
+    let ir = ir::Module::from(Program {
+        functions: vec![ast],
+    });
+    eval_expect(ir.functions[0].clone(), 15);
+}
+
+pub fn add_numbers() {}
+
+pub fn eval_expect(ir: Function, result: u64) {
+    println!("{:?}", ir);
     let context = Context::create();
     let module = context.create_module("sum");
     let execution_engine = module
@@ -96,6 +101,6 @@ pub fn add_numbers() {
         execution_engine,
     };
 
-    assert_eq!(codegen.compile(ir), 15);
+    assert_eq!(codegen.compile(ir), result);
     println!("{}", codegen.module.to_string());
 }

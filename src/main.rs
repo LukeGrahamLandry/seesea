@@ -4,7 +4,7 @@ use logos::Logos;
 
 mod asm;
 mod ir;
-mod parse;
+mod ast;
 mod scanning;
 
 fn main() {

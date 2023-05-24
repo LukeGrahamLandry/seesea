@@ -1,4 +1,4 @@
-use crate::ir::{Func, Op, Ssa};
+use crate::ir::{Function, Op, Ssa};
 use std::fmt::{Debug, Formatter};
 
 impl Debug for Op {
@@ -33,7 +33,7 @@ impl Debug for Op {
     }
 }
 
-impl Debug for Func {
+impl Debug for Function {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         writeln!(f, "=== IR ===")?;
         for (i, block) in self.blocks.iter().enumerate() {

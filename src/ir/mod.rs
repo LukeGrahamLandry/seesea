@@ -1,7 +1,8 @@
-use crate::parse::BinaryOp;
+use crate::ast::{BinaryOp, FuncSignature, ValueType};
 use std::fmt::{write, Display, Formatter};
 use std::ops::Index;
 
+mod parse;
 mod print;
 
 // bytecode type thing with ssa so every variable assignment is unique
@@ -17,6 +18,7 @@ mod print;
 // output this as c
 
 /// Identifier of a static single-assignment register.
+// TODO: should know its type?
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Ssa(usize);
 
@@ -65,13 +67,27 @@ pub enum Op {
     },
 }
 
-#[derive(Default)]
-pub struct Func {
+#[derive(Clone)]
+pub struct Function {
     pub blocks: Vec<Vec<Op>>, // in the final codegen these will flatten out and labels will become offsets
     var_counter: usize,
+    sig: FuncSignature,
 }
 
-impl Func {
+#[derive(Default)]
+pub struct Module {
+    pub functions: Vec<Function>,
+}
+
+impl Function {
+    pub fn new(sig: FuncSignature) -> Self {
+        Function {
+            blocks: vec![],
+            var_counter: 0,
+            sig,
+        }
+    }
+
     pub fn new_block(&mut self) -> Label {
         self.blocks.push(vec![]);
         Label(self.blocks.len() - 1)
@@ -102,4 +118,27 @@ impl Display for Ssa {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "%{}", self.0)
     }
+}
+
+pub fn five_plus_ten() -> Function {
+    let mut ir = Function::new(FuncSignature {
+        args: vec![],
+        returns: ValueType::U64,
+        name: "five_plus_ten".to_string(),
+    });
+    let block = ir.new_block();
+    let a = ir.constant_int(block, 5);
+    let b = ir.constant_int(block, 10);
+    let dest = ir.next_var();
+    ir.push(
+        block,
+        Op::Binary {
+            dest,
+            a,
+            b,
+            kind: BinaryOp::Add,
+        },
+    );
+    ir.push(block, Op::Return { value: Some(dest) });
+    ir
 }

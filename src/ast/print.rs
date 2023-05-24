@@ -1,4 +1,4 @@
-use crate::parse::{Expr, Stmt};
+use crate::ast::{Expr, Stmt};
 use std::fmt::{Debug, Formatter};
 
 impl Debug for Stmt {
@@ -31,8 +31,12 @@ impl Stmt {
                 writeln!(f, "Expr: ")?;
                 expr.print(depth + 1, f)
             }
-            Stmt::DeclareVar { name, value } => {
-                writeln!(f, "{:?} '{}' = ", value.get_type(), name)?;
+            Stmt::DeclareVar { name, value, kind } => {
+                writeln!(f, "{:?} '{}' = ", kind, name)?;
+                value.print(depth + 1, f)
+            }
+            Stmt::Return { value } => {
+                writeln!(f, "Return: ")?;
                 value.print(depth + 1, f)
             }
         }
@@ -75,6 +79,7 @@ impl Expr {
             Expr::Literal { value } => {
                 writeln!(f, "{:?}", value)
             }
+            Expr::Default(kind) => writeln!(f, "{:?}::default()", kind),
         }
     }
 }
