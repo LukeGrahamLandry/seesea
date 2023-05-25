@@ -2,7 +2,7 @@ use inkwell::context::Context;
 use inkwell::OptimizationLevel;
 use logos::Logos;
 
-use crate::asm::llvm::LlvmGen;
+use crate::asm::llvm::LlvmFuncGen;
 use crate::ast::{BinaryOp, Expr, FuncSignature, LiteralValue, Module, Stmt, ValueType};
 use crate::ir::Op;
 use crate::scanning::{Scanner, TokenType};
@@ -91,20 +91,15 @@ pub fn full_pipeline(src: &str, result: u64) {
 pub fn eval_expect(ir: ir::Function, result: u64) {
     println!("{:?}", ir);
     let context = Context::create();
-    let module = context.create_module("sum");
+    let mut module = context.create_module("sum");
     let execution_engine = module
         .create_jit_execution_engine(OptimizationLevel::None)
         .unwrap();
-    let mut codegen = LlvmGen {
-        context: &context,
-        module,
-        builder: context.create_builder(),
-        execution_engine,
-    };
 
-    let answer = codegen.compile(ir);
+    let codegen = LlvmFuncGen::new(&module);
+    let answer = codegen.compile(ir, &execution_engine);
     println!("=== LLVM IR ===");
-    println!("{}", codegen.module.to_string());
+    println!("{}", module.to_string());
     println!("========");
     assert_eq!(answer, result);
 }
