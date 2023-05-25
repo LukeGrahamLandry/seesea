@@ -1,20 +1,20 @@
-use crate::ast::{Expr, Stmt};
+use crate::ast::{Expr, Function, Module, Stmt};
 use std::fmt::{Debug, Formatter};
 
 impl Debug for Stmt {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         self.print(0, f)
     }
 }
 
 impl Debug for Expr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         self.print(0, f)
     }
 }
 
 impl Stmt {
-    fn print(&self, depth: usize, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result {
         for _ in 0..depth {
             f.write_str("    ")?;
         }
@@ -42,12 +42,22 @@ impl Stmt {
                     value.print(depth + 1, f)
                 }
             },
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                writeln!(f, "If: ")?;
+                condition.print(depth + 1, f)?;
+                then_body.print(depth + 1, f)?;
+                else_body.print(depth + 1, f)
+            }
         }
     }
 }
 
 impl Expr {
-    fn print(&self, depth: usize, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result {
         for _ in 0..depth {
             f.write_str("    ")?;
         }
@@ -84,5 +94,22 @@ impl Expr {
             }
             Expr::Default(kind) => writeln!(f, "{:?}::default()", kind),
         }
+    }
+}
+
+impl Debug for Function {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        writeln!(f, "{:?}", self.signature)?;
+        self.body.print(1, f)
+    }
+}
+
+impl Debug for Module {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        writeln!(f, "=== Module AST ===")?;
+        for func in &self.functions {
+            writeln!(f, "{:?}", func)?;
+        }
+        writeln!(f, "=======")
     }
 }

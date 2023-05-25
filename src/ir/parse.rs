@@ -1,7 +1,7 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{Expr, LiteralValue, Program, Stmt};
+use crate::ast::{Expr, LiteralValue, Stmt};
 use crate::ir;
 use crate::ir::{Label, Op, Ssa};
 use std::collections::HashMap;
@@ -10,16 +10,16 @@ use std::collections::HashMap;
 struct AstParser<'ast> {
     ir: ir::Module,
     func: Option<ir::Function>, // needs to become a stack if i allow parsing nested functions i guess?
-    variables: HashMap<&'ast str, Ssa>,
+    variables: HashMap<&'ast str, Ssa>, // need to keep track of multiple blocks. maybe insert phis for anything used in if to start
 }
 
-impl From<ast::Program> for ir::Module {
-    fn from(value: Program) -> Self {
+impl From<ast::Module> for ir::Module {
+    fn from(value: ast::Module) -> Self {
         parse_ast(value)
     }
 }
 
-fn parse_ast(program: ast::Program) -> ir::Module {
+fn parse_ast(program: ast::Module) -> ir::Module {
     let mut parser = AstParser::default();
 
     for func in program.functions.iter() {
@@ -34,12 +34,13 @@ impl<'ast> AstParser<'ast> {
     fn parse_function(&mut self, input: &'ast ast::Function) {
         assert!(self.func.is_none());
         self.func = Some(ir::Function::new(input.signature.clone()));
-        let entry = self.func_mut().new_block();
-        self.emit_statement(&input.body, entry);
+        let mut entry = self.func_mut().new_block();
+        self.emit_statement(&input.body, &mut entry);
+        self.func_mut().assert_valid();
         self.ir.functions.push(self.func.take().unwrap());
     }
 
-    fn emit_statement(&mut self, stmt: &'ast Stmt, block: Label) {
+    fn emit_statement(&mut self, stmt: &'ast Stmt, block: &mut Label) {
         match stmt {
             Stmt::Block { body } => {
                 // let inner_block = self.func_mut().new_block();
@@ -50,22 +51,68 @@ impl<'ast> AstParser<'ast> {
                 }
             }
             Stmt::Expression { expr } => {
-                self.emit_expr(expr, block); // discards return value.
+                self.emit_expr(expr, *block); // discards return value.
             }
             Stmt::DeclareVar { name, value, .. } => {
                 let var = self
-                    .emit_expr(value, block)
+                    .emit_expr(value, *block)
                     .expect("Variable type cannot be void.");
                 self.variables.insert(name, var); // TODO: track types or maybe the ir should handle on the ssa?
             }
             Stmt::Return { value } => match value {
                 None => todo!(),
                 Some(value) => {
-                    let value = self.emit_expr(value.as_ref(), block);
-                    self.func_mut().push(block, Op::Return { value });
+                    let value = self.emit_expr(value.as_ref(), *block);
+                    self.func_mut().push(*block, Op::Return { value });
                 }
             },
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                self.emit_if_stmt(block, condition, then_body, else_body);
+            }
         }
+    }
+
+    // TODO: this whole passing around a mutable block pointer is scary. idk if it works.
+    //         it means you can never rely on being in the same block as you were before parsing a statement.
+    //         but that should be fine because its where you would be after flowing through that statement
+    fn emit_if_stmt(
+        &mut self,
+        block: &mut Label,
+        condition: &'ast Expr,
+        then_body: &'ast Stmt,
+        else_body: &'ast Stmt,
+    ) {
+        // TODO: coerce bool
+        let condition = self
+            .emit_expr(condition, *block)
+            .expect("If condition cannot be void.");
+        let mut if_true = self.func_mut().new_block();
+        self.emit_statement(then_body, &mut if_true);
+        let mut if_false = self.func_mut().new_block();
+        self.emit_statement(else_body, &mut if_false);
+        // TODO: need to jump to a new basic block from the end of both if and else
+        self.func_mut().push(
+            *block,
+            Op::Jump {
+                condition,
+                if_true,
+                if_false,
+            },
+        );
+
+        // A new block to continue from when the paths converge.
+        let next_block = self.func_mut().new_block();
+        if !self.func_mut().ends_with_jump(if_true) {
+            self.func_mut().push(if_true, Op::AlwaysJump(next_block));
+        }
+        if !self.func_mut().ends_with_jump(if_false) {
+            self.func_mut().push(if_false, Op::AlwaysJump(next_block));
+        }
+        *block = next_block;
     }
 
     fn emit_expr(&mut self, expr: &'ast Expr, block: Label) -> Option<Ssa> {

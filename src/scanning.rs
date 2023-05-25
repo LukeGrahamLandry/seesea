@@ -1,5 +1,4 @@
 use logos::{Lexer, Logos};
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 
@@ -38,6 +37,18 @@ pub enum TokenType {
 
     #[token("return")]
     Return,
+
+    #[token("if")]
+    If,
+
+    #[token("else")]
+    Else,
+
+    #[token(">")]
+    Greater,
+
+    #[token("<")]
+    Less,
 
     EOF,
 }

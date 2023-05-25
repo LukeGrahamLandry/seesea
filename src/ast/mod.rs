@@ -1,12 +1,10 @@
 mod parse;
 mod print;
 
-#[derive(Debug)]
-pub struct Program {
+pub struct Module {
     pub functions: Vec<Function>,
 }
 
-#[derive(Debug)]
 pub struct Function {
     pub body: Stmt,
     pub signature: FuncSignature,
@@ -19,6 +17,7 @@ pub struct FuncSignature {
     pub name: String,
 }
 
+// @Speed the expressions here dont need to be boxed
 pub enum Stmt {
     Block {
         body: Vec<Stmt>,
@@ -26,7 +25,11 @@ pub enum Stmt {
     Expression {
         expr: Box<Expr>,
     },
-    // If { condition: Box<Expr>, then_body: Box<Stmt>, else_body: Box<Stmt> },
+    If {
+        condition: Box<Expr>,
+        then_body: Box<Stmt>,
+        else_body: Box<Stmt>,
+    },
     // While { condition: Box<Expr>, body: Box<Stmt> },
     // For { initializer: Box<Stmt>, condition: Box<Expr>, increment: Box<Expr>, body: Box<Stmt> },
     DeclareVar {
@@ -74,6 +77,8 @@ pub enum BinaryOp {
     Divide,
     Modulo,
     Equal,
+    GreaterThan,
+    LessThan,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -127,54 +132,14 @@ impl From<LiteralValue> for Expr {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ValueType {
     U64,
+    // Struct
 }
 
-pub fn five_plus_ten() -> Function {
-    let body = Stmt::Block {
-        body: vec![
-            Stmt::DeclareVar {
-                name: "x".to_string(),
-                value: Box::new(Expr::Literal {
-                    value: LiteralValue::Number { value: 5.0 },
-                }),
-                kind: ValueType::U64,
-            },
-            Stmt::DeclareVar {
-                name: "y".to_string(),
-                value: Box::new(Expr::Literal {
-                    value: LiteralValue::Number { value: 10.0 },
-                }),
-                kind: ValueType::U64,
-            },
-            Stmt::DeclareVar {
-                name: "z".to_string(),
-                value: Box::new(Expr::Binary {
-                    left: Box::new(Expr::GetVar {
-                        name: "x".to_string(),
-                    }),
-                    right: Box::new(Expr::GetVar {
-                        name: "y".to_string(),
-                    }),
-                    op: BinaryOp::Add,
-                }),
-                kind: ValueType::U64,
-            },
-            Stmt::Return {
-                value: Some(Box::new(Expr::GetVar {
-                    name: "z".to_string(),
-                })),
-            },
-        ],
-    };
-    Function {
-        body,
-        signature: FuncSignature {
-            args: vec![],
-            returns: ValueType::U64,
-            name: "five_plus_ten".to_string(),
-        },
-    }
+#[derive(Debug, Copy, Clone)]
+pub struct CType {
+    ty: ValueType,
+    depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
 }

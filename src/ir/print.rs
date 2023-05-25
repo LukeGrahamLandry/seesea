@@ -1,5 +1,5 @@
 use crate::ir::{Function, Op, Ssa};
-use std::fmt::{Debug, Formatter};
+use std::fmt::{write, Debug, Formatter};
 
 impl Debug for Op {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
@@ -23,25 +23,35 @@ impl Debug for Op {
                 condition,
                 if_true,
                 if_false,
-            } => todo!(),
-            Op::Phi { dest, a, b } => todo!(),
+            } => write!(
+                f,
+                "if {} goto {:?}; else goto {:?};",
+                condition, if_true, if_false
+            ),
+            Op::Phi { dest, a, b } => write!(f, "{} = Phi({:?} || {:?});", dest, a, b),
             Op::Return { value } => match value {
                 None => write!(f, "return;"),
                 Some(v) => write!(f, "return {v};"),
             },
+            Op::StackAlloc { dest, ty } => write!(f, "{} = &alloc(sizeof {:?});", dest, ty),
+            Op::AlwaysJump(target) => write!(f, "goto {:?};", target),
         }
     }
 }
 
 impl Debug for Function {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "=== IR ===")?;
+        writeln!(f, "{:?}", self.sig)?;
         for (i, block) in self.blocks.iter().enumerate() {
-            writeln!(f, "[BLOCK {}]", i)?;
-            for (j, op) in block.iter().enumerate() {
-                writeln!(f, "{}. {:?}", j, op)?;
+            if block.is_empty() {
+                writeln!(f, "[Label({})] \nEMPTY", i)?;
+            } else {
+                writeln!(f, "[Label({})]", i)?;
+                for (j, op) in block.iter().enumerate() {
+                    writeln!(f, "{}. {:?}", j, op)?;
+                }
             }
         }
-        writeln!(f, "========")
+        Ok(())
     }
 }

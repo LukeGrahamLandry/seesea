@@ -26,7 +26,7 @@ pub struct Ssa(usize);
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Label(usize);
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum Op {
     ConstInt {
         dest: Ssa,
@@ -46,16 +46,22 @@ pub enum Op {
         dest: Ssa,
         addr: Ssa,
     },
+
+    // dont need? was going to use for expressing phi but no
     Move {
         dest: Ssa,
         source: Ssa,
     },
+
     /// Conditional jump to another block.
     Jump {
         condition: Ssa,
         if_true: Label,
         if_false: Label,
     },
+
+    AlwaysJump(Label),
+
     /// Choose which value to use based on which block we were in last.
     Phi {
         dest: Ssa,
@@ -65,13 +71,19 @@ pub enum Op {
     Return {
         value: Option<Ssa>,
     },
+
+    /// Allocate enough space on the stack to hold a specific type and put a pointer to it in a register.
+    StackAlloc {
+        dest: Ssa,
+        ty: ValueType,
+    },
 }
 
 #[derive(Clone)]
 pub struct Function {
     pub blocks: Vec<Vec<Op>>, // in the final codegen these will flatten out and labels will become offsets
     var_counter: usize,
-    sig: FuncSignature,
+    pub sig: FuncSignature,
 }
 
 #[derive(Default)]
@@ -109,8 +121,19 @@ impl Function {
         var
     }
 
-    fn validate(&self) {
-        todo!("assert each block ends in a jump.")
+    fn ends_with_jump(&self, block: Label) -> bool {
+        let last = self.blocks[block.0].last();
+        last.is_some() && last.unwrap().is_jump()
+    }
+
+    fn assert_valid(&self) {
+        // TODO: assert all paths reach a return statement.
+        //       c lets you just fall through and return a default value but my ir must fill that in at parse time.
+        for block in &self.blocks {
+            // TODO: assert no other jumps or returns in the block;
+            let last = block.last(); // TODO .expect("No empty blocks");
+            assert!(last.is_none() || last.unwrap().is_jump());
+        }
     }
 }
 
@@ -120,25 +143,11 @@ impl Display for Ssa {
     }
 }
 
-pub fn five_plus_ten() -> Function {
-    let mut ir = Function::new(FuncSignature {
-        args: vec![],
-        returns: ValueType::U64,
-        name: "five_plus_ten".to_string(),
-    });
-    let block = ir.new_block();
-    let a = ir.constant_int(block, 5);
-    let b = ir.constant_int(block, 10);
-    let dest = ir.next_var();
-    ir.push(
-        block,
-        Op::Binary {
-            dest,
-            a,
-            b,
-            kind: BinaryOp::Add,
-        },
-    );
-    ir.push(block, Op::Return { value: Some(dest) });
-    ir
+impl Op {
+    pub fn is_jump(&self) -> bool {
+        matches!(
+            self,
+            Op::Return { .. } | Op::Jump { .. } | Op::AlwaysJump(_)
+        )
+    }
 }

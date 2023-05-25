@@ -3,8 +3,10 @@ name = "seesea"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+
+# Lexer generator (source code -> token stream)
 logos = "0.13.0"
+
+# Safe LLVM bindings (typed API for emitting LLVM IR)
 inkwell = { version = "0.2.0", features = ["llvm16-0"] }
