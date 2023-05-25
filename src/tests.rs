@@ -1,36 +1,16 @@
 use inkwell::context::Context;
+use inkwell::execution_engine::UnsafeFunctionPointer;
+use inkwell::module::Module;
 use inkwell::OptimizationLevel;
-use logos::Logos;
+use std::rc::Rc;
 
 use crate::asm::llvm::LlvmFuncGen;
-use crate::ast::{BinaryOp, Expr, FuncSignature, LiteralValue, Module, Stmt, ValueType};
-use crate::ir::Op;
-use crate::scanning::{Scanner, TokenType};
+use crate::scanning::Scanner;
 use crate::{ast, ir};
 
 #[test]
-fn count_scanned_tokens() {
-    assert_eq!(TokenType::lexer("int x = 5;").count(), 5);
-}
-
-#[test]
-fn just_ir() {
-    eval_expect(ir_five_plus_ten(), 15);
-}
-
-#[test]
-fn ast_to_ir() {
-    let ast = ast_five_plus_ten();
-    println!("{:?}", ast);
-    let ir = ir::Module::from(Module {
-        functions: vec![ast],
-    });
-    eval_expect(ir.functions[0].clone(), 15);
-}
-
-#[test]
 fn src_to_ast_to_ir() {
-    full_pipeline(
+    no_args_full_pipeline(
         "
 long main(){
     long x = 5;
@@ -45,7 +25,7 @@ long main(){
 
 #[test]
 fn if_statement() {
-    full_pipeline(
+    no_args_full_pipeline(
         "
 long main(){
     long x = 5;
@@ -64,7 +44,7 @@ long main(){
 
 #[test]
 fn if_statement_with_mutation() {
-    full_pipeline(
+    no_args_full_pipeline(
         "
 long main(){
     long x = 5;
@@ -78,7 +58,7 @@ long main(){
     ",
         5,
     );
-    full_pipeline(
+    no_args_full_pipeline(
         "
 long main(){
     long x = 5;
@@ -107,10 +87,39 @@ long max(long a, long b){
     }
 }
     ";
+
+    type Func = unsafe extern "C" fn(u64, u64) -> u64;
+    compile_then(src, |max: Func| {
+        let answer = unsafe { max(155, 20) };
+        assert_eq!(answer, 155);
+        let answer = unsafe { max(15, 200) };
+        assert_eq!(answer, 200);
+    });
+
+    // Lying about the signature for science purposes.
+    // It just casts the bits and does an unsigned comparison.
+    // So negative numbers are highest because the sign bit is set.
+    type EvilFunc = unsafe extern "C" fn(i64, i64) -> i64;
+    compile_then(src, |max: EvilFunc| {
+        let answer = unsafe { max(-10, 9999) };
+        assert_eq!(answer, -10);
+    });
+}
+
+fn no_args_full_pipeline(src: &str, expected: u64) {
+    type NoArgToU64 = unsafe extern "C" fn() -> u64;
+    compile_then(src, |function: NoArgToU64| {
+        let answer = unsafe { function() };
+        assert_eq!(answer, expected);
+    });
+}
+
+// Wildly unsafe! For fuck sake don't put the fn pointer somewhere.
+fn compile_then<F: UnsafeFunctionPointer>(src: &str, action: impl FnOnce(F)) {
     println!("{}", src);
     let scan = Scanner::new(src);
     println!("{:?}", scan);
-    let ast = Module::from(scan);
+    let ast = ast::Module::from(scan);
     println!("{:?}", ast);
     let ir = ir::Module::from(ast).functions[0].clone();
     println!("{:?}", ir);
@@ -121,16 +130,12 @@ long max(long a, long b){
         .unwrap();
 
     let codegen = LlvmFuncGen::new(&module);
-    let function = unsafe {
-        codegen.compile_function::<unsafe extern "C" fn(u64, u64) -> u64>(ir, &execution_engine)
-    };
+    let function = unsafe { codegen.compile_function::<F>(ir, &execution_engine) };
     println!("=== LLVM IR ===");
     println!("{}", module.to_string());
     println!("========");
-    let answer = unsafe { function(155, 20) };
-    assert_eq!(answer, 155);
-    let answer = unsafe { function(15, 200) };
-    assert_eq!(answer, 200);
+
+    action(function);
 }
 
 // short circuiting
@@ -146,101 +151,3 @@ long max(long a, long b){
 // boolean _0 = true;
 // if (!a) _0 = false;
 // else if (!b) _0 = false;
-
-pub fn full_pipeline(src: &str, result: u64) {
-    println!("{}", src);
-    let scan = Scanner::new(src);
-    println!("{:?}", scan);
-    let ast = Module::from(scan);
-    println!("{:?}", ast);
-    let ir = ir::Module::from(ast);
-    eval_expect(ir.functions[0].clone(), result);
-}
-
-pub fn eval_expect(ir: ir::Function, result: u64) {
-    println!("{:?}", ir);
-    let context = Context::create();
-    let module = context.create_module("sum");
-    let execution_engine = module
-        .create_jit_execution_engine(OptimizationLevel::None)
-        .unwrap();
-
-    let codegen = LlvmFuncGen::new(&module);
-    let answer = codegen.compile(ir, &execution_engine);
-    println!("=== LLVM IR ===");
-    println!("{}", module.to_string());
-    println!("========");
-    assert_eq!(answer, result);
-}
-
-fn ir_five_plus_ten() -> ir::Function {
-    let mut ir = ir::Function::new(FuncSignature {
-        names: vec![],
-        args: vec![],
-        returns: ValueType::U64,
-        name: "five_plus_ten".to_string(),
-    });
-    let block = ir.new_block();
-    let a = ir.constant_int(block, 5);
-    let b = ir.constant_int(block, 10);
-    let dest = ir.next_var();
-    ir.push(
-        block,
-        Op::Binary {
-            dest,
-            a,
-            b,
-            kind: BinaryOp::Add,
-        },
-    );
-    ir.push(block, Op::Return { value: Some(dest) });
-    ir
-}
-
-fn ast_five_plus_ten() -> ast::Function {
-    let body = Stmt::Block {
-        body: vec![
-            Stmt::DeclareVar {
-                name: "x".to_string(),
-                value: Box::new(Expr::Literal {
-                    value: LiteralValue::Number { value: 5.0 },
-                }),
-                kind: ValueType::U64,
-            },
-            Stmt::DeclareVar {
-                name: "y".to_string(),
-                value: Box::new(Expr::Literal {
-                    value: LiteralValue::Number { value: 10.0 },
-                }),
-                kind: ValueType::U64,
-            },
-            Stmt::DeclareVar {
-                name: "z".to_string(),
-                value: Box::new(Expr::Binary {
-                    left: Box::new(Expr::GetVar {
-                        name: "x".to_string(),
-                    }),
-                    right: Box::new(Expr::GetVar {
-                        name: "y".to_string(),
-                    }),
-                    op: BinaryOp::Add,
-                }),
-                kind: ValueType::U64,
-            },
-            Stmt::Return {
-                value: Some(Box::new(Expr::GetVar {
-                    name: "z".to_string(),
-                })),
-            },
-        ],
-    };
-    ast::Function {
-        body,
-        signature: FuncSignature {
-            names: vec![],
-            args: vec![],
-            returns: ValueType::U64,
-            name: "five_plus_ten".to_string(),
-        },
-    }
-}

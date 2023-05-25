@@ -15,6 +15,7 @@ pub struct FuncSignature {
     pub args: Vec<ValueType>,
     pub returns: ValueType,
     pub name: String,
+    // The names are needed for parsing the body code. They don't live on to LLVM IR currently.
     pub names: Vec<String>,
 }
 
