@@ -78,7 +78,74 @@ long main(){
     ",
         5,
     );
+    full_pipeline(
+        "
+long main(){
+    long x = 5;
+    long y = 10;
+    long z = 0; 
+    if (y > x) {
+        x = z + 1;
+        y = 25;
+        z = 20;
+    }
+    return x;
 }
+    ",
+        1,
+    );
+}
+
+#[test]
+fn function_args() {
+    let src = "
+long max(long a, long b){
+    if (a > b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+    ";
+    println!("{}", src);
+    let scan = Scanner::new(src);
+    println!("{:?}", scan);
+    let ast = Module::from(scan);
+    println!("{:?}", ast);
+    let ir = ir::Module::from(ast).functions[0].clone();
+    println!("{:?}", ir);
+    let context = Context::create();
+    let module = context.create_module("max");
+    let execution_engine = module
+        .create_jit_execution_engine(OptimizationLevel::None)
+        .unwrap();
+
+    let codegen = LlvmFuncGen::new(&module);
+    let function = unsafe {
+        codegen.compile_function::<unsafe extern "C" fn(u64, u64) -> u64>(ir, &execution_engine)
+    };
+    println!("=== LLVM IR ===");
+    println!("{}", module.to_string());
+    println!("========");
+    let answer = unsafe { function(155, 20) };
+    assert_eq!(answer, 155);
+    let answer = unsafe { function(15, 200) };
+    assert_eq!(answer, 200);
+}
+
+// short circuiting
+//
+// boolean _0 = a || b
+//
+// boolean _0 = false;
+// if (a) _0 = true;
+// else if (b) _0 = true;
+//
+// boolean _0 = a && b;
+//
+// boolean _0 = true;
+// if (!a) _0 = false;
+// else if (!b) _0 = false;
 
 pub fn full_pipeline(src: &str, result: u64) {
     println!("{}", src);
@@ -93,7 +160,7 @@ pub fn full_pipeline(src: &str, result: u64) {
 pub fn eval_expect(ir: ir::Function, result: u64) {
     println!("{:?}", ir);
     let context = Context::create();
-    let mut module = context.create_module("sum");
+    let module = context.create_module("sum");
     let execution_engine = module
         .create_jit_execution_engine(OptimizationLevel::None)
         .unwrap();
@@ -108,6 +175,7 @@ pub fn eval_expect(ir: ir::Function, result: u64) {
 
 fn ir_five_plus_ten() -> ir::Function {
     let mut ir = ir::Function::new(FuncSignature {
+        names: vec![],
         args: vec![],
         returns: ValueType::U64,
         name: "five_plus_ten".to_string(),
@@ -169,6 +237,7 @@ fn ast_five_plus_ten() -> ast::Function {
     ast::Function {
         body,
         signature: FuncSignature {
+            names: vec![],
             args: vec![],
             returns: ValueType::U64,
             name: "five_plus_ten".to_string(),

@@ -54,14 +54,30 @@ impl<'ast> AstParser<'ast> {
         self.control.push();
         self.func = Some(ir::Function::new(input.signature.clone()));
         let mut entry = self.func_mut().new_block();
-        // TODO: outer scope for arguments?
+
+        self.push_scope();
+        let arguments = input
+            .signature
+            .args
+            .iter()
+            .zip(input.signature.names.iter());
+        for (_ty, name) in arguments {
+            let variable = Var(name.as_str(), self.current_scope());
+            let register = self.func_mut().next_var();
+            self.control.set(variable, register);
+            self.func_mut().arg_registers.push(register);
+        }
+        self.push_scope();
         self.emit_statement(&input.body, &mut entry);
+        self.pop_scope();
+        self.pop_scope();
+
         self.func_mut().assert_valid();
         self.ir.functions.push(self.func.take().unwrap());
-        self.control.pop();
+        let _ = self.control.pop();
         assert!(
             self.control.0.is_empty(),
-            "Should have no hanging control scopes."
+            "Should have no hanging control scopes... until i do globals maybe but those probably need a different representation in ir"
         );
     }
 
@@ -128,7 +144,7 @@ impl<'ast> AstParser<'ast> {
         let mut if_false = self.func_mut().new_block();
         self.control.push();
         self.emit_statement(else_body, &mut if_false);
-        let mut mutated_in_else = self.control.pop();
+        let mutated_in_else = self.control.pop();
 
         self.func_mut().push(
             *block,
@@ -150,12 +166,112 @@ impl<'ast> AstParser<'ast> {
             // there will always be a block here and it doesn't need a special case.
             self.func_mut().push(if_false, Op::AlwaysJump(next_block));
         }
-        // TODO: create phi nodes as needed. start with just doing it for all variables assigned in the if blocks.
         // Reassign the current block pointer to the rest of the function is emitted in the new one.
         *block = next_block;
 
-        // TODO: this wont work at all if you jump elsewhere instead of rejoining? unless the stack is enough.
+        self.emit_phi(
+            (if_true, mutated_in_then),
+            (if_false, mutated_in_else),
+            block,
+        );
+    }
 
+    #[must_use]
+    fn emit_expr(&mut self, expr: &'ast Expr, block: Label) -> Option<Ssa> {
+        match expr {
+            Expr::Binary { left, op, right } => {
+                if *op == BinaryOp::Assign {
+                    self.emit_assignment(left, right, block)
+                } else {
+                    let a = self
+                        .emit_expr(left, block)
+                        .expect("Binary operand cannot be void.");
+                    let b = self
+                        .emit_expr(right, block)
+                        .expect("Binary operand cannot be void.");
+                    let dest = self.func_mut().next_var();
+                    self.func_mut().push(
+                        block,
+                        Op::Binary {
+                            dest,
+                            a,
+                            b,
+                            kind: *op,
+                        },
+                    );
+                    Some(dest)
+                }
+            }
+            Expr::Literal { value } => match value {
+                LiteralValue::Number { value } => {
+                    Some(self.func_mut().constant_int(block, *value as u64))
+                }
+            },
+            Expr::GetVar { name } => {
+                let variable = self.resolve_name(name);
+                let register = self
+                    .control
+                    .get(variable)
+                    .unwrap_or_else(|| panic!("GetVar undeclared {}", name));
+                Some(register)
+            }
+            _ => todo!(),
+        }
+    }
+
+    fn emit_assignment(
+        &mut self,
+        lvalue: &'ast Expr,
+        rvalue: &'ast Expr,
+        block: Label,
+    ) -> Option<Ssa> {
+        // TODO: eval order is probably specified. like can you do a function call to get a pointer on the left?
+        let value = self
+            .emit_expr(rvalue, block)
+            .expect("Can't assign to void.");
+        match lvalue {
+            Expr::GetVar { name } => {
+                let this_variable = self.resolve_name(name);
+                self.control.set(this_variable, value);
+                Some(value)
+            }
+            _ => todo!(),
+        }
+    }
+
+    fn func_mut(&mut self) -> &mut ir::Function {
+        self.func.as_mut().unwrap()
+    }
+
+    fn push_scope(&mut self) {
+        self.scopes.push(LexScope(self.total_scope_count));
+        self.total_scope_count += 1;
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop().expect("You should always be in a scope.");
+    }
+
+    fn current_scope(&self) -> LexScope {
+        *self.scopes.last().unwrap()
+    }
+
+    fn resolve_name(&self, name: &'ast str) -> Var<'ast> {
+        for scope in self.scopes.iter().rev() {
+            let var = Var(name, *scope);
+            if self.control.get(var).is_some() {
+                return var;
+            }
+        }
+        panic!("Cannot access undefined variable {}", name);
+    }
+
+    fn emit_phi(
+        &mut self,
+        (if_true, mutated_in_then): (Label, HashMap<Var<'ast>, Ssa>),
+        (if_false, mut mutated_in_else): (Label, HashMap<Var<'ast>, Ssa>),
+        block: &mut Label,
+    ) {
         let mut moved_registers = vec![];
         // We have the set of Vars whose register changed in one of the branches.
         // Now that we've rejoined, future code in this block needs to access different registers depending how it got here.
@@ -203,108 +319,6 @@ impl<'ast> AstParser<'ast> {
         for (variable, register) in moved_registers {
             self.control.set(variable, register);
         }
-    }
-
-    #[must_use]
-    fn emit_expr(&mut self, expr: &'ast Expr, block: Label) -> Option<Ssa> {
-        match expr {
-            Expr::Binary { left, op, right } => {
-                if *op == BinaryOp::Assign {
-                    self.emit_assignment(left, right, block)
-                } else {
-                    let a = self
-                        .emit_expr(left, block)
-                        .expect("Binary operand cannot be void.");
-                    let b = self
-                        .emit_expr(right, block)
-                        .expect("Binary operand cannot be void.");
-                    let dest = self.func_mut().next_var();
-                    self.func_mut().push(
-                        block,
-                        Op::Binary {
-                            dest,
-                            a,
-                            b,
-                            kind: *op,
-                        },
-                    );
-                    Some(dest)
-                }
-            }
-            Expr::Literal { value } => match value {
-                LiteralValue::Number { value } => {
-                    Some(self.func_mut().constant_int(block, *value as u64))
-                }
-                _ => todo!(),
-            },
-            Expr::GetVar { name } => {
-                let variable = self.resolve_name(name);
-                let register = self
-                    .control
-                    .get(variable)
-                    .expect(&format!("GetVar undeclared {}", name));
-                Some(register)
-            }
-            _ => todo!(),
-        }
-    }
-
-    fn emit_assignment(
-        &mut self,
-        lvalue: &'ast Expr,
-        rvalue: &'ast Expr,
-        block: Label,
-    ) -> Option<Ssa> {
-        // TODO: eval order is probably specified. like can you do a function call to get a pointer on the left?
-        let value = self
-            .emit_expr(rvalue, block)
-            .expect("Can't assign to void.");
-        match lvalue {
-            Expr::GetVar { name } => {
-                // let depth = self.scopes.depth(name);
-                // if depth == 0 {
-                //     // The variable is local to the current scope. We don't care about tracking mutation for phi nodes.
-                // } else {
-                //     // When we exit this block, we need to tell people looking for $name,
-                //     // that they need to create a phi node. But then we also need to know the alternative value.
-                //     // Branches are always binary so that's fine and can be done at the upper level that was parsing the if?
-                //     let this_variable = self.scopes.get_id(name);
-                //     self.control.set(this_variable, value);
-                // }
-
-                let this_variable = self.resolve_name(name);
-                self.control.set(this_variable, value);
-                Some(value)
-            }
-            _ => todo!(),
-        }
-    }
-
-    fn func_mut(&mut self) -> &mut ir::Function {
-        self.func.as_mut().unwrap()
-    }
-
-    fn push_scope(&mut self) {
-        self.scopes.push(LexScope(self.total_scope_count));
-        self.total_scope_count += 1;
-    }
-
-    fn pop_scope(&mut self) {
-        self.scopes.pop().expect("You should always be in a scope.");
-    }
-
-    fn current_scope(&self) -> LexScope {
-        *self.scopes.last().unwrap()
-    }
-
-    fn resolve_name(&self, name: &'ast str) -> Var<'ast> {
-        for scope in self.scopes.iter().rev() {
-            let var = Var(name, *scope);
-            if self.control.get(var).is_some() {
-                return var;
-            }
-        }
-        panic!("Cannot access undefined variable {}", name);
     }
 }
 

@@ -84,6 +84,7 @@ pub struct Function {
     pub blocks: Vec<Vec<Op>>, // in the final codegen these will flatten out and labels will become offsets
     var_counter: usize,
     pub sig: FuncSignature,
+    pub arg_registers: Vec<Ssa>,
 }
 
 #[derive(Default)]
@@ -97,6 +98,7 @@ impl Function {
             blocks: vec![],
             var_counter: 0,
             sig,
+            arg_registers: vec![],
         }
     }
 
@@ -128,12 +130,31 @@ impl Function {
     }
 
     fn assert_valid(&self) {
-        // TODO: assert all paths reach a return statement.
-        //       c lets you just fall through and return a default value but my ir must fill that in at parse time.
         for block in &self.blocks {
-            // TODO: assert no other jumps or returns in the block;
-            let last = block.last(); // TODO .expect("No empty blocks");
-            assert!(last.is_none() || last.unwrap().is_jump());
+            if block.is_empty() {
+                // TODO: assert!(false);
+                //      cant have this because it implies you could fall out of the function.
+                //      llvm catches that in its own validation pass but i put in a garbage return because i dont want top deal with it rn
+                return;
+            }
+
+            // Check Phi placement.
+            let mut phi_over = false;
+            for op in block {
+                if phi_over {
+                    if let Op::Phi { .. } = op {
+                        panic!("All phi nodes must be at the beginning of the block.");
+                    }
+                } else if let Op::Phi { .. } = op {
+                } else {
+                    phi_over = true;
+                }
+            }
+
+            // Exactly one jump op as the last instruction.
+            let jumps = block.iter().filter(|op| op.is_jump()).count();
+            assert_eq!(jumps, 1);
+            assert!(block.last().unwrap().is_jump());
         }
     }
 }

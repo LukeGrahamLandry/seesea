@@ -2,16 +2,14 @@
 
 use crate::ast::{BinaryOp, FuncSignature, ValueType};
 use crate::ir::{Function, Label, Op, Ssa};
-use crate::scanning::Scanner;
-use crate::{ast, ir};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
-use inkwell::context::{Context, ContextRef};
-use inkwell::execution_engine::{ExecutionEngine, JitFunction};
+use inkwell::context::ContextRef;
+use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
-use inkwell::types::FunctionType;
+use inkwell::types::{BasicMetadataTypeEnum, FunctionType};
 use inkwell::values::{AnyValue, AnyValueEnum, IntValue};
-use inkwell::{IntPredicate, OptimizationLevel};
+use inkwell::IntPredicate;
 use std::collections::HashMap;
 
 pub struct LlvmFuncGen<'ctx: 'module, 'module> {
@@ -35,23 +33,31 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         }
     }
 
-    // TODO: the whole program shares one module
-    // TODO: module names? dumb to throw away variable names?
-    pub fn compile(mut self, ir: Function, execution_engine: &ExecutionEngine) -> u64 {
+    pub unsafe fn compile_function<F: UnsafeFunctionPointer>(
+        mut self,
+        ir: Function,
+        execution_engine: &ExecutionEngine,
+    ) -> F {
         let name = ir.sig.name.clone();
         self.emit_function(ir);
         self.module.verify().unwrap();
-        type GetInt = unsafe extern "C" fn() -> u64;
-        let function: JitFunction<GetInt> =
-            unsafe { execution_engine.get_function(name.as_str()).unwrap() };
+        let function: JitFunction<F> = execution_engine.get_function(name.as_str()).unwrap();
+        function.as_raw()
+    }
 
-        unsafe { function.call() }
+    // TODO: the whole program shares one module
+    // TODO: module names? dumb to throw away variable names?
+    pub fn compile(mut self, ir: Function, execution_engine: &ExecutionEngine) -> u64 {
+        type GetInt = unsafe extern "C" fn() -> u64;
+        let function = unsafe { self.compile_function::<GetInt>(ir, execution_engine) };
+        unsafe { function() }
     }
 
     fn emit_function(&mut self, ir: Function) {
         let t = self.get_func_type(&ir.sig);
         let func = self.module.add_function(ir.sig.name.as_str(), t, None);
         let number = self.context.i64_type();
+
         assert!(self.local_registers.is_empty() && self.blocks.is_empty());
         // All the blocks need to exist ahead of time so jumps can reference them.
         self.blocks = ir
@@ -59,7 +65,17 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             .iter()
             .enumerate()
             .map(|(i, _)| self.context.append_basic_block(func, &format!(".b{}", i)))
-            .collect::<Vec<_>>();
+            .collect();
+
+        // Map the llvm function arguments to our ssa register system.
+        for (i, register) in ir.arg_registers.iter().enumerate() {
+            let param = func
+                .get_nth_param(i as u32)
+                .expect("LLVM func arg count must match signature.");
+            self.local_registers
+                .insert(*register, param.as_any_value_enum());
+        }
+
         for (i, block) in ir.blocks.iter().enumerate() {
             let code = self.blocks[i];
             self.builder.position_at_end(code);
@@ -88,8 +104,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                     }
                     Op::AlwaysJump(target) => {
                         // TODO: factor out a FunctionBuilder that gives you type safety over these index -> block conversions.
-                        self.builder
-                            .build_unconditional_branch(self.blocks[target.index()]);
+                        self.builder.build_unconditional_branch(self.block(*target));
                     }
                     Op::Jump {
                         condition,
@@ -124,11 +139,13 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn get_func_type(&self, signature: &FuncSignature) -> FunctionType<'ctx> {
-        assert!(
-            signature.returns == ValueType::U64 && signature.args.is_empty(),
-            "sig must match for unsafe call in compile()",
-        );
-        self.context.i64_type().fn_type(&[], false)
+        let args: Vec<_> = signature
+            .args
+            .iter()
+            .map(|ty| self.llvm_type(*ty))
+            .collect();
+        let returns = self.llvm_type(signature.returns);
+        returns.into_int_type().fn_type(&args, false)
     }
 
     fn emit_binary_op(&mut self, dest: Ssa, a: Ssa, b: Ssa, kind: BinaryOp) {
@@ -169,5 +186,10 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 &self.local_registers.get(value).unwrap().into_int_value(),
             )),
         };
+    }
+
+    fn llvm_type(&self, ty: ValueType) -> BasicMetadataTypeEnum<'ctx> {
+        assert_eq!(ty, ValueType::U64);
+        self.context.i64_type().into()
     }
 }

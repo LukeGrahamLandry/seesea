@@ -52,7 +52,10 @@ pub enum TokenType {
     #[token("<")]
     Less,
 
-    EOF,
+    #[token(",")]
+    Comma,
+
+    Eof,
 }
 
 #[derive(Copy, Clone)]
@@ -102,7 +105,7 @@ impl<'src> Scanner<'src> {
                 }
             })
             .unwrap_or_else(|| Token {
-                kind: TokenType::EOF,
+                kind: TokenType::Eof,
                 lexeme: "",
             })
     }
@@ -116,7 +119,7 @@ impl<'src> Scanner<'src> {
     }
 
     pub fn has_next(&mut self) -> bool {
-        !matches!(self.peek(), TokenType::EOF)
+        !matches!(self.peek(), TokenType::Eof)
     }
 
     pub fn peek(&self) -> TokenType {

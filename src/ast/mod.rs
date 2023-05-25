@@ -15,6 +15,7 @@ pub struct FuncSignature {
     pub args: Vec<ValueType>,
     pub returns: ValueType,
     pub name: String,
+    pub names: Vec<String>,
 }
 
 // @Speed the expressions here dont need to be boxed
@@ -92,9 +93,6 @@ pub enum UnaryOp {
 #[derive(Debug)]
 pub enum LiteralValue {
     Number { value: f64 },
-    String { value: String },
-    Bool { value: bool },
-    Null,
 }
 
 impl Expr {

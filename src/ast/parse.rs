@@ -1,7 +1,6 @@
 //! TOKENS -> AST
 
 use crate::ast::{BinaryOp, Expr, FuncSignature, Function, LiteralValue, Module, Stmt, ValueType};
-use crate::ir::Op;
 use crate::scanning::{Scanner, TokenType};
 
 impl<'src> From<Scanner<'src>> for Module {
@@ -33,12 +32,25 @@ impl<'src> Parser<'src> {
         let returns = self.read_type("expected function declaration");
         let name = self.read_ident("expected function name");
         self.scanner.consume(TokenType::LeftParen);
-        self.scanner.consume(TokenType::RightParen);
+        let mut args = vec![];
+        let mut names = vec![];
+        while !self.scanner.matches(TokenType::RightParen) {
+            args.push(self.read_type("Function arg requires type."));
+            names.push(self.read_ident("Function arg requires name.")); // TODO: headers/forward defs dont
+            if !self.scanner.matches(TokenType::Comma) {
+                assert_eq!(
+                    self.scanner.peek(),
+                    TokenType::RightParen,
+                    "Expected ')' or ',' after function arg."
+                );
+            }
+        }
         let body = self.parse_stmt();
         self.program.functions.push(Function {
             body,
             signature: FuncSignature {
-                args: vec![],
+                args,
+                names,
                 returns,
                 name,
             },
@@ -79,11 +91,10 @@ impl<'src> Parser<'src> {
         }
 
         // Better error messages for tokens we know can't start expressions.
-        match self.scanner.peek() {
-            TokenType::Else => self.error(
+        if self.scanner.peek() == TokenType::Else {
+            self.error(
                 "Keyword 'else' must be preceded by 'if STMT' (maybe you forgot a closing '}')",
-            ),
-            _ => {}
+            )
         }
 
         // EXPR;
