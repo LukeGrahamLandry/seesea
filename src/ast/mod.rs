@@ -59,10 +59,6 @@ pub enum Expr {
     GetVar {
         name: String,
     },
-    SetVar {
-        name: String,
-        value: Box<Expr>,
-    },
     Literal {
         value: LiteralValue,
     },
@@ -79,6 +75,10 @@ pub enum BinaryOp {
     Equal,
     GreaterThan,
     LessThan,
+
+    /// This is a fancy special case but since pointer derefs and stuff can be on the left
+    /// this seems like a reasonable way to represent it. Not that much weirder than short circuiting bools.
+    Assign,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

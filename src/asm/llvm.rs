@@ -39,8 +39,6 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     // TODO: module names? dumb to throw away variable names?
     pub fn compile(mut self, ir: Function, execution_engine: &ExecutionEngine) -> u64 {
         let name = ir.sig.name.clone();
-        assert_eq!(ir.sig.returns, ValueType::U64, "unsafe call below");
-        assert!(ir.sig.args.is_empty(), "unsafe call below");
         self.emit_function(ir);
         self.module.verify().unwrap();
         type GetInt = unsafe extern "C" fn() -> u64;
@@ -55,6 +53,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         let func = self.module.add_function(ir.sig.name.as_str(), t, None);
         let number = self.context.i64_type();
         assert!(self.local_registers.is_empty() && self.blocks.is_empty());
+        // All the blocks need to exist ahead of time so jumps can reference them.
         self.blocks = ir
             .blocks
             .iter()
@@ -110,8 +109,10 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn get_func_type(&self, signature: &FuncSignature) -> FunctionType<'ctx> {
-        assert_eq!(signature.returns, ValueType::U64);
-        assert!(signature.args.is_empty());
+        assert!(
+            signature.returns == ValueType::U64 && signature.args.is_empty(),
+            "sig must match for unsafe call in compile()",
+        );
         self.context.i64_type().fn_type(&[], false)
     }
 
@@ -130,6 +131,9 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         match kind {
             BinaryOp::Add => self.builder.build_int_add(a, b, ""),
             BinaryOp::GreaterThan => self.builder.build_int_compare(IntPredicate::UGT, a, b, ""),
+            BinaryOp::Assign => unreachable!(
+                "IR parser should not emit BinaryOp::Assign. It gets converted into SSA from."
+            ),
             _ => todo!(),
         }
     }

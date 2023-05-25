@@ -69,8 +69,9 @@ fn if_statement_with_mutation() {
 long main(){
     long x = 5;
     long y = 10;
+    long z = 0; 
     if (y < x) {
-        x = 0;
+        x = z;
     }
     return x;
 }

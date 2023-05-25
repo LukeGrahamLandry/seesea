@@ -15,10 +15,10 @@ mod print;
 // represent the concept of a basic block (has no branches or loops except for last op).
 // be able to execute the ir?
 // test assertion that each Ssa is used in a `dest` exactly once.
-// output this as c
 
 /// Identifier of a static single-assignment register.
-// TODO: should know its type?
+// TODO: should know its type? easy to change since its opaque to other modules.
+// TODO: could have a lifetime tied to the function? that would be such a pain in the ass to use tho.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Ssa(usize);
 

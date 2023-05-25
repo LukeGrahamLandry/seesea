@@ -85,10 +85,6 @@ impl Expr {
             Expr::GetVar { name } => {
                 writeln!(f, "'{}'", name)
             }
-            Expr::SetVar { name, value } => {
-                writeln!(f, "'{}' = ", name)?;
-                value.print(depth + 1, f)
-            }
             Expr::Literal { value } => {
                 writeln!(f, "{:?}", value)
             }

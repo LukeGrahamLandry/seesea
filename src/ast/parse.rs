@@ -78,12 +78,6 @@ impl<'src> Parser<'src> {
             return self.parse_if();
         }
 
-        let is_assign = self.scanner.peek() == TokenType::Identifier
-            && self.scanner.peek_next() == TokenType::Equal;
-        if is_assign {
-            todo!("variable reassignment")
-        }
-
         // Better error messages for tokens we know can't start expressions.
         match self.scanner.peek() {
             TokenType::Else => self.error(
@@ -147,6 +141,7 @@ impl<'src> Parser<'src> {
             TokenType::Plus => BinaryOp::Add,
             TokenType::Greater => BinaryOp::GreaterThan,
             TokenType::Less => BinaryOp::LessThan,
+            TokenType::Equal => BinaryOp::Assign,
             _ => return left, // todo: only some tokens are valid here
         };
 
