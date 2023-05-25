@@ -2,6 +2,7 @@
 
 use crate::ast::{BinaryOp, FuncSignature, Program, ValueType};
 use crate::ir::{five_plus_ten, Function, Op, Ssa};
+use crate::scanning::Scanner;
 use crate::{ast, ir};
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -79,9 +80,30 @@ fn just_ir() {
 #[test]
 fn ast_to_ir() {
     let ast = ast::five_plus_ten();
+    println!("{:?}", ast);
     let ir = ir::Module::from(Program {
         functions: vec![ast],
     });
+    eval_expect(ir.functions[0].clone(), 15);
+}
+
+#[test]
+fn src_to_ast_to_ir() {
+    let src = "
+long main(){
+    long x = 5;
+    long y = 10;
+    long z = x + y;
+    return z;
+}
+    ";
+    let mut scan = Scanner::new(src);
+    println!("{:?}", scan);
+
+    let scan = Scanner::new(src);
+    let ast = Program::from(scan);
+    println!("{:?}", ast);
+    let ir = ir::Module::from(ast);
     eval_expect(ir.functions[0].clone(), 15);
 }
 
@@ -102,5 +124,7 @@ pub fn eval_expect(ir: Function, result: u64) {
     };
 
     assert_eq!(codegen.compile(ir), result);
+    println!("=== LLVM IR ===");
     println!("{}", codegen.module.to_string());
+    println!("========");
 }

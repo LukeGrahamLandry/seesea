@@ -58,10 +58,13 @@ impl<'ast> AstParser<'ast> {
                     .expect("Variable type cannot be void.");
                 self.variables.insert(name, var); // TODO: track types or maybe the ir should handle on the ssa?
             }
-            Stmt::Return { value } => {
-                let value = self.emit_expr(value, block);
-                self.func_mut().push(block, Op::Return { value });
-            }
+            Stmt::Return { value } => match value {
+                None => todo!(),
+                Some(value) => {
+                    let value = self.emit_expr(value.as_ref(), block);
+                    self.func_mut().push(block, Op::Return { value });
+                }
+            },
         }
     }
 

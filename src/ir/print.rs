@@ -42,6 +42,6 @@ impl Debug for Function {
                 writeln!(f, "{}. {:?}", j, op)?;
             }
         }
-        Ok(())
+        writeln!(f, "========")
     }
 }

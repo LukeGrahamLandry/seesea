@@ -1,16 +1,18 @@
 mod parse;
 mod print;
 
+#[derive(Debug)]
 pub struct Program {
     pub functions: Vec<Function>,
 }
 
+#[derive(Debug)]
 pub struct Function {
     pub body: Stmt,
     pub signature: FuncSignature,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FuncSignature {
     pub args: Vec<ValueType>,
     pub returns: ValueType,
@@ -33,7 +35,7 @@ pub enum Stmt {
         kind: ValueType,
     },
     Return {
-        value: Box<Expr>,
+        value: Option<Box<Expr>>,
     },
 }
 
@@ -161,9 +163,9 @@ pub fn five_plus_ten() -> Function {
                 kind: ValueType::U64,
             },
             Stmt::Return {
-                value: Box::new(Expr::GetVar {
+                value: Some(Box::new(Expr::GetVar {
                     name: "z".to_string(),
-                }),
+                })),
             },
         ],
     };

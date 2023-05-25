@@ -35,10 +35,13 @@ impl Stmt {
                 writeln!(f, "{:?} '{}' = ", kind, name)?;
                 value.print(depth + 1, f)
             }
-            Stmt::Return { value } => {
-                writeln!(f, "Return: ")?;
-                value.print(depth + 1, f)
-            }
+            Stmt::Return { value } => match value {
+                None => writeln!(f, "Return;"),
+                Some(value) => {
+                    writeln!(f, "Return: ")?;
+                    value.print(depth + 1, f)
+                }
+            },
         }
     }
 }
