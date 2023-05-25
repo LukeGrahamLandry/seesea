@@ -10,21 +10,9 @@ use std::collections::HashMap;
 struct AstParser<'ast> {
     ir: ir::Module,
     func: Option<ir::Function>, // needs to become a stack if i allow parsing nested functions i guess?
-    scopes: ScopeStack<'ast>, // need to keep track of multiple blocks. maybe insert phis for anything used in if to start
+    scopes: Vec<LexScope>,
     control: ControlFlowStack<'ast>,
     total_scope_count: usize,
-}
-
-// TODO: get rid of this since we handle name resolution with Var now.
-//       just need a stack of LexScope not another name hashmap
-#[derive(Default)]
-struct ScopeStack<'ast> {
-    data: Vec<ScopeData<'ast>>,
-}
-
-struct ScopeData<'ast> {
-    names: HashMap<&'ast str, Ssa>,
-    id: LexScope,
 }
 
 /// Uniquely identifies a lexical scope. These DO NOT correspond to depth of nesting (they are never reused).
@@ -96,8 +84,7 @@ impl<'ast> AstParser<'ast> {
                     .emit_expr(value, *block)
                     .expect("Variable type cannot be void.");
                 // TODO: track types or maybe the ir should handle on the ssa?
-                self.scopes.define(name, register);
-                let variable = Var(name.as_str(), self.scopes.current());
+                let variable = Var(name.as_str(), self.current_scope());
                 self.control.set(variable, register);
             }
             Stmt::Return { value } => match value {
@@ -172,9 +159,12 @@ impl<'ast> AstParser<'ast> {
         let mut moved_registers = vec![];
         // We have the set of Vars whose register changed in one of the branches.
         // Now that we've rejoined, future code in this block needs to access different registers depending how it got here.
+        println!("Original: {:?}", self.control.0.last());
+        println!("mutated_in_then: {:?}", mutated_in_then);
+        println!("mutated_in_else: {:?}", mutated_in_else);
         for (variable, then_register) in mutated_in_then {
             // TODO: Panics if defined in the if
-            let original_register = self.control.get(variable);
+            let original_register = self.control.get(variable).unwrap();
             let other_register = match mutated_in_else.remove(&variable) {
                 // If the other path did not mutate the value, use the one from before.
                 None => original_register,
@@ -195,7 +185,9 @@ impl<'ast> AstParser<'ast> {
         // Any that were mutated in both branches were removed in the previous loop.
         // So we know any remaining will be using the original register as the true branch.
         for (variable, else_register) in mutated_in_else {
-            let original_register = self.control.get(variable);
+            assert!(moved_registers.iter().any(|check| check.0 == variable));
+
+            let original_register = self.control.get(variable).unwrap();
             let new_register = self.func_mut().next_var();
             self.func_mut().push(
                 *block,
@@ -245,7 +237,14 @@ impl<'ast> AstParser<'ast> {
                 }
                 _ => todo!(),
             },
-            Expr::GetVar { name } => Some(self.scopes.get(name)),
+            Expr::GetVar { name } => {
+                let variable = self.resolve_name(name);
+                let register = self
+                    .control
+                    .get(variable)
+                    .expect(&format!("GetVar undeclared {}", name));
+                Some(register)
+            }
             _ => todo!(),
         }
     }
@@ -272,9 +271,9 @@ impl<'ast> AstParser<'ast> {
                 //     let this_variable = self.scopes.get_id(name);
                 //     self.control.set(this_variable, value);
                 // }
-                let this_variable = self.scopes.get_id(name);
+
+                let this_variable = self.resolve_name(name);
                 self.control.set(this_variable, value);
-                *self.scopes.get_mut(name) = value;
                 Some(value)
             }
             _ => todo!(),
@@ -286,18 +285,26 @@ impl<'ast> AstParser<'ast> {
     }
 
     fn push_scope(&mut self) {
-        self.scopes.data.push(ScopeData {
-            names: Default::default(),
-            id: LexScope(self.total_scope_count),
-        });
+        self.scopes.push(LexScope(self.total_scope_count));
         self.total_scope_count += 1;
     }
 
     fn pop_scope(&mut self) {
-        self.scopes
-            .data
-            .pop()
-            .expect("You should always be in a scope.");
+        self.scopes.pop().expect("You should always be in a scope.");
+    }
+
+    fn current_scope(&self) -> LexScope {
+        *self.scopes.last().unwrap()
+    }
+
+    fn resolve_name(&self, name: &'ast str) -> Var<'ast> {
+        for scope in self.scopes.iter().rev() {
+            let var = Var(name, *scope);
+            if self.control.get(var).is_some() {
+                return var;
+            }
+        }
+        panic!("Cannot access undefined variable {}", name);
     }
 }
 
@@ -323,69 +330,12 @@ impl<'ast> ControlFlowStack<'ast> {
         }
     }
 
-    fn get(&self, variable: Var) -> Ssa {
+    fn get(&self, variable: Var) -> Option<Ssa> {
         for scope in self.0.iter().rev() {
             if let Some(register) = scope.get(&variable) {
-                return *register;
+                return Some(*register);
             }
         }
-        panic!("Variable not found in ControlFlowStack {:?}", variable);
-    }
-}
-
-impl<'ast> ScopeStack<'ast> {
-    fn define(&mut self, name: &'ast str, ssa: Ssa) {
-        let prev = self
-            .data
-            .last_mut()
-            .expect("You should always be in a scope.")
-            .names
-            .insert(name, ssa);
-        assert!(prev.is_none(), "Redeclared variable in same scope.");
-    }
-
-    fn get<T: AsRef<str>>(&self, name: T) -> Ssa {
-        self.find(name).1
-    }
-
-    fn get_id(&self, name: &'ast str) -> Var<'ast> {
-        let scope = self.data[self.depth(name)].id;
-        Var(name, scope)
-    }
-
-    fn get_mut<T: AsRef<str>>(&mut self, name: T) -> &mut Ssa {
-        for scope in self.data.iter_mut().rev() {
-            if let Some(var) = scope.names.get_mut(name.as_ref()) {
-                return var;
-            }
-        }
-        panic!("Attempted to access undeclared variable {}.", name.as_ref());
-    }
-
-    fn depth<T: AsRef<str>>(&self, name: T) -> usize {
-        self.find(name).0
-    }
-
-    fn find<T: AsRef<str>>(&self, name: T) -> (usize, Ssa) {
-        for (i, scope) in self.data.iter().rev().enumerate() {
-            if let Some(var) = scope.names.get(name.as_ref()) {
-                return (i, *var);
-            }
-        }
-        panic!("Attempted to access undeclared variable {}.", name.as_ref());
-    }
-
-    fn current(&self) -> LexScope {
-        self.data.last().expect("Must be in a scope.").id
-    }
-
-    /// Are variables declared in the given scope still accessible?
-    fn still_exists(&self, scope_id: LexScope) -> bool {
-        for scope in self.data.iter().rev() {
-            if scope.id == scope_id {
-                return true;
-            }
-        }
-        false
+        None
     }
 }

@@ -71,7 +71,7 @@ long main(){
     long y = 10;
     long z = 0; 
     if (y < x) {
-        x = z;
+        x = z + 1;
     }
     return x;
 }
@@ -81,6 +81,7 @@ long main(){
 }
 
 pub fn full_pipeline(src: &str, result: u64) {
+    println!("{}", src);
     let scan = Scanner::new(src);
     println!("{:?}", scan);
     let ast = Module::from(scan);

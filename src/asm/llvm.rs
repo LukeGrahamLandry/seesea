@@ -102,6 +102,21 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                             self.block(*if_false),
                         );
                     }
+                    Op::Phi { dest, a, b } => {
+                        let a_reg = self.local_registers.get(&a.1).unwrap();
+                        let b_reg = self.local_registers.get(&b.1).unwrap();
+
+                        let ty = a_reg.get_type().into_int_type();
+                        let phi = self.builder.build_phi(ty, "");
+
+                        phi.add_incoming(&[
+                            (&a_reg.into_int_value(), self.block(a.0)),
+                            (&b_reg.into_int_value(), self.block(b.0)),
+                        ]);
+
+                        self.local_registers
+                            .insert(*dest, AnyValueEnum::from(phi.as_basic_value()));
+                    }
                     _ => todo!(),
                 }
             }
@@ -131,8 +146,9 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         match kind {
             BinaryOp::Add => self.builder.build_int_add(a, b, ""),
             BinaryOp::GreaterThan => self.builder.build_int_compare(IntPredicate::UGT, a, b, ""),
+            BinaryOp::LessThan => self.builder.build_int_compare(IntPredicate::ULT, a, b, ""),
             BinaryOp::Assign => unreachable!(
-                "IR parser should not emit BinaryOp::Assign. It gets converted into SSA from."
+                "IR parser should not emit BinaryOp::Assign. It must be converted into SSA from."
             ),
             _ => todo!(),
         }
