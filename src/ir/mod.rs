@@ -100,6 +100,7 @@ impl Function {
         }
     }
 
+    #[must_use]
     pub fn new_block(&mut self) -> Label {
         self.blocks.push(vec![]);
         Label(self.blocks.len() - 1)
@@ -140,6 +141,12 @@ impl Function {
 impl Display for Ssa {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "%{}", self.0)
+    }
+}
+
+impl Label {
+    pub fn index(self) -> usize {
+        self.0
     }
 }
 

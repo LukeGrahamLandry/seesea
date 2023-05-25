@@ -51,7 +51,7 @@ impl<'ast> AstParser<'ast> {
                 }
             }
             Stmt::Expression { expr } => {
-                self.emit_expr(expr, *block); // discards return value.
+                let _ = self.emit_expr(expr, *block);
             }
             Stmt::DeclareVar { name, value, .. } => {
                 let var = self
@@ -86,15 +86,16 @@ impl<'ast> AstParser<'ast> {
         then_body: &'ast Stmt,
         else_body: &'ast Stmt,
     ) {
-        // TODO: coerce bool
+        // TODO: coerce bool? i guess c doesnt really have that but maybe llvm wants you to?
         let condition = self
             .emit_expr(condition, *block)
             .expect("If condition cannot be void.");
+
+        // Execution branches into two new blocks.
         let mut if_true = self.func_mut().new_block();
         self.emit_statement(then_body, &mut if_true);
         let mut if_false = self.func_mut().new_block();
         self.emit_statement(else_body, &mut if_false);
-        // TODO: need to jump to a new basic block from the end of both if and else
         self.func_mut().push(
             *block,
             Op::Jump {
@@ -105,16 +106,22 @@ impl<'ast> AstParser<'ast> {
         );
 
         // A new block to continue from when the paths converge.
+        // Both paths jump back here if they didn't return.
         let next_block = self.func_mut().new_block();
         if !self.func_mut().ends_with_jump(if_true) {
             self.func_mut().push(if_true, Op::AlwaysJump(next_block));
         }
         if !self.func_mut().ends_with_jump(if_false) {
+            // Since i kept a garbage block in the ast when they had no else clause,
+            // there will always be a block here and it doesn't need a special case.
             self.func_mut().push(if_false, Op::AlwaysJump(next_block));
         }
+        // TODO: create phi nodes as needed. start with just doing it for all variables assigned in the if blocks.
+        // Reassign the current block pointer to the rest of the function is emitted in the new one.
         *block = next_block;
     }
 
+    #[must_use]
     fn emit_expr(&mut self, expr: &'ast Expr, block: Label) -> Option<Ssa> {
         match expr {
             Expr::Binary { left, op, right } => {

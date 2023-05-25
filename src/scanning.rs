@@ -11,6 +11,8 @@ pub enum TokenType {
     #[regex("[_a-zA-Z][_a-zA-Z0-9]*")]
     Identifier,
 
+    // TODO: kinda annoying that this has data so i cant pass it around to match against.
+    //       i should just parse it from the lexeme as needed.
     #[regex("[0-9]+", |lex| lex.slice().parse().ok())]
     DecimalInt(u64),
 
@@ -66,6 +68,10 @@ pub struct Scanner<'src> {
     pub(crate) index: usize,
 }
 
+// TODO: It feels like this should be a real iterator but I worry that the way I want to write the
+//       parser recursively couldn't cope with having an outer loop holding a mutable reference.
+//       Maybe still nice just can't iterate at the top level.
+//       There's peekable but I don't think it will let you look more than one forward.
 impl<'src> Scanner<'src> {
     pub fn new(src: &'src str) -> Scanner {
         let mut s = Scanner {
