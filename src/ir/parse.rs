@@ -87,6 +87,8 @@ impl<'ast> AstParser<'ast> {
             self.control.0.is_empty(),
             "Should have no hanging control scopes... until i do globals maybe but those probably need a different representation in ir"
         );
+
+        println!("------------");
     }
 
     fn emit_statement(&mut self, stmt: &'ast Stmt, block: &mut Label) {
@@ -144,17 +146,18 @@ impl<'ast> AstParser<'ast> {
         let condition = self
             .emit_expr(condition, *block)
             .expect("If condition cannot be void.");
-        println!("Before: {:?}", self.control.0);
 
         // Execution branches into two new blocks.
-        let mut if_true = self.func_mut().new_block();
+        let if_true = self.func_mut().new_block();
+        let mut working_if_true = if_true;
         self.control.push();
-        self.emit_statement(then_body, &mut if_true);
+        self.emit_statement(then_body, &mut working_if_true);
         let mutated_in_then = self.control.pop();
 
-        let mut if_false = self.func_mut().new_block();
+        let if_false = self.func_mut().new_block();
+        let mut working_if_false = if_false;
         self.control.push();
-        self.emit_statement(else_body, &mut if_false);
+        self.emit_statement(else_body, &mut working_if_false);
         let mutated_in_else = self.control.pop();
 
         self.func_mut().push(
@@ -185,6 +188,75 @@ impl<'ast> AstParser<'ast> {
             (if_false, mutated_in_else),
             block,
         );
+    }
+
+    fn emit_phi(
+        &mut self,
+        (if_true, mutated_in_then): (Label, HashMap<Var<'ast>, Ssa>),
+        (if_false, mut mutated_in_else): (Label, HashMap<Var<'ast>, Ssa>),
+        block: &mut Label,
+    ) {
+        let mut moved_registers = vec![];
+        // We have the set of Vars whose register changed in one of the branches.
+        // Now that we've rejoined, future code in this block needs to access different registers depending how it got here.
+        for (variable, then_register) in mutated_in_then {
+            let original_register = match self.control.get(variable) {
+                None => {
+                    // The variable was declared inside the if so it can't be accessed outside and we don't care.
+                    // TODO: check if that's true if you do `if (1) long x = 10;`
+                    continue;
+                }
+                Some(ssa) => ssa,
+            };
+            let other_register = match mutated_in_else.remove(&variable) {
+                // If the other path did not mutate the value, use the one from before.
+                None => original_register,
+                // If the both paths mutated the value, we don't care what it was before we branched.
+                Some(else_register) => else_register,
+            };
+
+            let new_register = self.func_mut().next_var();
+            self.func_mut().push(
+                *block,
+                Op::Phi {
+                    dest: new_register,
+                    a: (if_true, then_register),
+                    b: (if_false, other_register),
+                },
+            );
+            moved_registers.push((variable, new_register));
+
+            let name_a = self.func_mut().name(&then_register);
+            let name_b = self.func_mut().name(&other_register);
+            self.func_mut()
+                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
+        }
+        // Any that were mutated in both branches were removed in the previous loop.
+        // So we know any remaining will be using the original register as the true branch.
+        for (variable, else_register) in mutated_in_else {
+            assert!(moved_registers.iter().any(|check| check.0 == variable));
+
+            let original_register = self.control.get(variable).unwrap();
+            let new_register = self.func_mut().next_var();
+            self.func_mut().push(
+                *block,
+                Op::Phi {
+                    dest: new_register,
+                    a: (if_true, original_register),
+                    b: (if_false, else_register),
+                },
+            );
+            moved_registers.push((variable, new_register));
+
+            let name_a = self.func_mut().name(&original_register);
+            let name_b = self.func_mut().name(&else_register);
+            self.func_mut()
+                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
+        }
+        // Now that we've updated everything, throw away the registers from before the branching.
+        for (variable, register) in moved_registers {
+            self.control.set(variable, register);
+        }
     }
 
     #[must_use]
@@ -277,79 +349,6 @@ impl<'ast> AstParser<'ast> {
             }
         }
         panic!("Cannot access undefined variable {}", name);
-    }
-
-    fn emit_phi(
-        &mut self,
-        (if_true, mutated_in_then): (Label, HashMap<Var<'ast>, Ssa>),
-        (if_false, mut mutated_in_else): (Label, HashMap<Var<'ast>, Ssa>),
-        block: &mut Label,
-    ) {
-        let mut moved_registers = vec![];
-        // We have the set of Vars whose register changed in one of the branches.
-        // Now that we've rejoined, future code in this block needs to access different registers depending how it got here.
-        println!("Original: {:?}", self.control.0.last());
-        println!("mutated_in_then: {:?}", mutated_in_then);
-        println!("mutated_in_else: {:?}", mutated_in_else);
-        for (variable, then_register) in mutated_in_then {
-            let original_register = match self.control.get(variable) {
-                None => {
-                    // The variable was declared inside the if so it can't be accessed outside and we don't care.
-                    // TODO: check if that's true if you do `if (1) long x = 10;`
-                    continue;
-                }
-                Some(ssa) => ssa,
-            };
-            let other_register = match mutated_in_else.remove(&variable) {
-                // If the other path did not mutate the value, use the one from before.
-                None => original_register,
-                // If the both paths mutated the value, we don't care what it was before we branched.
-                Some(else_register) => else_register,
-            };
-
-            let new_register = self.func_mut().next_var();
-            self.func_mut().push(
-                *block,
-                Op::Phi {
-                    dest: new_register,
-                    a: (if_true, then_register),
-                    b: (if_false, other_register),
-                },
-            );
-            moved_registers.push((variable, new_register));
-
-            let name_a = self.func_mut().name(&then_register);
-            let name_b = self.func_mut().name(&other_register);
-            self.func_mut()
-                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
-        }
-        // Any that were mutated in both branches were removed in the previous loop.
-        // So we know any remaining will be using the original register as the true branch.
-        for (variable, else_register) in mutated_in_else {
-            assert!(moved_registers.iter().any(|check| check.0 == variable));
-
-            let original_register = self.control.get(variable).unwrap();
-            let new_register = self.func_mut().next_var();
-            self.func_mut().push(
-                *block,
-                Op::Phi {
-                    dest: new_register,
-                    a: (if_true, original_register),
-                    b: (if_false, else_register),
-                },
-            );
-            moved_registers.push((variable, new_register));
-
-            let name_a = self.func_mut().name(&original_register);
-            let name_b = self.func_mut().name(&else_register);
-            self.func_mut()
-                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
-        }
-        // Now that we've updated everything, throw away the registers from before the branching.
-        for (variable, register) in moved_registers {
-            self.control.set(variable, register);
-        }
-        println!("After: {:?}", self.control.0);
     }
 }
 

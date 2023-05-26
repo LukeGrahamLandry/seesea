@@ -2,6 +2,8 @@ use inkwell::context::Context;
 use inkwell::execution_engine::UnsafeFunctionPointer;
 use inkwell::module::Module;
 use inkwell::OptimizationLevel;
+use std::fmt::Debug;
+use std::fs;
 use std::rc::Rc;
 
 use crate::asm::llvm::LlvmFuncGen;
@@ -145,9 +147,7 @@ long max(long a, long b){
 // TODO
 #[test]
 fn nested_ifs() {
-    type Func = unsafe extern "C" fn(u64) -> u64;
-    compile_then(
-        "
+    let src = "
 long main(long a){
     long x = a + 5;
     if (x > 11){
@@ -163,11 +163,13 @@ long main(long a){
     }
     return x;
 }
-    ",
-        |func: Func| {
-            assert_eq!(unsafe { func(5) }, 17);
-        },
-    );
+    ";
+    let vm_result = Vm::eval(&get_first_function(src), &[5]).unwrap();
+    type Func = unsafe extern "C" fn(u64) -> u64;
+    compile_then(src, |func: Func| {
+        assert_eq!(unsafe { func(5) }, 17);
+    });
+    assert_eq!(vm_result, 17);
 }
 
 // #[test]
@@ -227,6 +229,10 @@ fn compile_then<F: UnsafeFunctionPointer>(src: &str, action: impl FnOnce(F)) {
     println!("========");
 
     action(function);
+}
+
+fn save<T: Debug>(value: T, filename: &str) {
+    fs::write(filename, format!("{:?}", value)).unwrap();
 }
 
 fn get_first_function(src: &str) -> ir::Function {

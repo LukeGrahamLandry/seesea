@@ -42,10 +42,14 @@ impl<'ir> Vm<'ir> {
     }
 
     pub fn tick(&mut self) -> VmResult {
-        println!("Registers: {:?}", self.registers);
+        println!("[{:?}]: {}", self.block, self.ip);
+        let mut dbg_reg = self.registers.iter().collect::<Vec<_>>();
+        dbg_reg.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
+        println!("Registers: {:?}", dbg_reg);
         let ops = &self.function.blocks[self.block.index()];
         let op = ops[self.ip];
         println!("Op: {}", self.function.print(&op));
+        println!("---");
         match op {
             Op::ConstInt { dest, value } => {
                 self.set(dest, value);

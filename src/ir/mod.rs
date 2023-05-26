@@ -22,7 +22,7 @@ mod print;
 // TODO: should know its type? easy to change since its opaque to other modules.
 // TODO: could have a lifetime tied to the function? that would be such a pain in the ass to use tho.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Ssa(usize);
+pub struct Ssa(pub(crate) usize);
 
 /// Identifier of a basic block that you can jump to.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]

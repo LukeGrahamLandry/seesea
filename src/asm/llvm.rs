@@ -91,7 +91,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
 
             for op in block {
-                assert!(!has_returned);
+                // assert!(!has_returned); // TODO know what ifs are. if you return in one if branch, it thinks the function is over
                 match op {
                     Op::ConstInt { dest, value } => {
                         let val = number.const_int(*value, false);
