@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use crate::asm::llvm::LlvmFuncGen;
 use crate::scanning::Scanner;
+use crate::vm::Vm;
 use crate::{ast, ir};
 
 #[test]
@@ -135,6 +136,10 @@ long max(long a, long b){
         let answer = unsafe { max(-10, 9999) };
         assert_eq!(answer, -10);
     });
+
+    let func = get_first_function(src);
+    assert_eq!(Vm::eval(&func, &[155, 20]), Some(155));
+    assert_eq!(Vm::eval(&func, &[15, 200]), Some(200));
 }
 
 // TODO
@@ -167,9 +172,7 @@ long main(long a){
 
 // #[test]
 fn something_with_phi_nodes_not_workng() {
-    type Func = unsafe extern "C" fn(u64) -> u64;
-    compile_then(
-        "
+    let src = "
 long main(long a){
     long x = a + 5;
     if (x > 11){
@@ -186,11 +189,11 @@ long main(long a){
     }
     return x;
 }
-    ",
-        |func: Func| {
-            assert_eq!(unsafe { func(5) }, 17);
-        },
-    );
+    ";
+    type Func = unsafe extern "C" fn(u64) -> u64;
+    compile_then(src, |func: Func| {
+        assert_eq!(unsafe { func(5) }, 17);
+    });
 }
 
 fn no_args_full_pipeline(src: &str, expected: u64) {
@@ -199,6 +202,7 @@ fn no_args_full_pipeline(src: &str, expected: u64) {
         let answer = unsafe { function() };
         assert_eq!(answer, expected);
     });
+    assert_eq!(Vm::eval(&get_first_function(src), &[]), Some(expected));
 }
 
 // Wildly unsafe! For fuck sake don't put the fn pointer somewhere.
@@ -223,6 +227,16 @@ fn compile_then<F: UnsafeFunctionPointer>(src: &str, action: impl FnOnce(F)) {
     println!("========");
 
     action(function);
+}
+
+fn get_first_function(src: &str) -> ir::Function {
+    println!("{}", src);
+    let scan = Scanner::new(src, "test_code".into());
+    println!("{:?}", scan);
+    let ast = ast::Module::from(scan);
+    println!("{:?}", ast);
+    let ir = ir::Module::from(ast).functions[0].clone();
+    ir
 }
 
 // short circuiting

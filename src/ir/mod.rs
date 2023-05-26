@@ -172,6 +172,14 @@ impl Function {
             assert!(block.last().unwrap().is_jump());
         }
     }
+
+    pub fn entry_point(&self) -> Label {
+        Label(0)
+    }
+
+    pub fn param_registers(&self) -> impl Iterator<Item = Ssa> {
+        self.arg_registers.clone().into_iter()
+    }
 }
 
 impl Display for Ssa {
@@ -192,5 +200,11 @@ impl Op {
             self,
             Op::Return { .. } | Op::Jump { .. } | Op::AlwaysJump(_)
         )
+    }
+}
+
+impl Ssa {
+    pub fn index(&self) -> usize {
+        self.0
     }
 }

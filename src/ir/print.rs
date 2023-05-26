@@ -2,7 +2,7 @@ use crate::ir::{Function, Op, Ssa};
 use std::fmt::{write, Debug, Formatter};
 
 impl Function {
-    fn print(&self, op: &Op) -> String {
+    pub fn print(&self, op: &Op) -> String {
         match op {
             Op::Binary {
                 dest: result,
