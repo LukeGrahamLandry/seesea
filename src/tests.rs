@@ -233,9 +233,27 @@ long fib(long n){
     llvm_run::<Func, _>(&ir, "fib", |fib| {
         for (args, answer) in cases {
             let result = unsafe { fib.call(args[0]) };
+            println!("args: {:?}. result: {}", args, result);
             assert_eq!(result, answer);
         }
     });
+}
+
+#[test]
+fn pointers() {
+    let src = "
+long main(long a){
+    long x = a + 5;
+    long ax = &x;
+    *ax = *ax + 10;
+    return x;
+}
+    ";
+
+    let ir = compile_module(src);
+    assert_eq!(Vm::eval(&ir, "main", &[10]), Some(20));
+    type Func = unsafe extern "C" fn(u64) -> u64;
+    llvm_run::<Func, _>(&ir, "fib", |fib| assert_eq!(unsafe { fib.call(10) }, 20));
 }
 
 fn no_args_run_main(src: &str, expected: u64) {
@@ -272,6 +290,9 @@ where
         .unwrap();
     let mut codegen = LlvmFuncGen::new(&module);
     codegen.compile_all(ir);
+    println!("=== LLVM IR ====");
+    println!("{}", module.to_string());
+    println!("=========");
     let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
     action(func);
 }

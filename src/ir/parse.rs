@@ -1,8 +1,9 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{BinaryOp, Expr, LiteralValue, Stmt};
+use crate::ast::{BinaryOp, Expr, LiteralValue, Stmt, UnaryOp};
 use crate::ir;
+use crate::ir::allocs::needs_stack_address;
 use crate::ir::debug::IrDebugInfo;
 use crate::ir::flow_stack::{ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{Label, Op, Ssa};
@@ -13,6 +14,7 @@ struct AstParser<'ast> {
     func: Option<ir::Function>, // needs to become a stack if i allow parsing nested functions i guess?
     control: ControlFlowStack<'ast>,
     debug: IrDebugInfo<'ast>,
+    root_node: Option<&'ast Stmt>,
 }
 
 impl From<ast::Module> for ir::Module {
@@ -54,6 +56,7 @@ impl<'ast> AstParser<'ast> {
             self.func_mut().arg_registers.push(register);
         }
         self.control.push_scope();
+        self.root_node = Some(&input.body);
         self.emit_statement(&input.body, &mut entry);
         self.control.pop_scope();
         self.control.pop_scope();
@@ -82,14 +85,22 @@ impl<'ast> AstParser<'ast> {
                 let _ = self.emit_expr(expr, *block);
             }
             Stmt::DeclareVar { name, value, .. } => {
-                let register = self
-                    .emit_expr(value, *block)
-                    .expect("Variable type cannot be void.");
                 // TODO: track types or maybe the ir should handle on the ssa?
                 let variable = Var(name.as_str(), self.control.current_scope());
-                self.control.set(variable, register);
-                self.func_mut()
-                    .set_debug(register, || format!("{}_{}", name, variable.1 .0));
+
+                if needs_stack_address(self.root_node.unwrap(), variable) {
+                    // Somebody wants to take the address of this variable later,
+                    // so we need to make sure it gets allocated on the stack and not kept in a register.
+                    self.control.set_stack_alloc(variable);
+                } else {
+                    // Nobody cares where this goes so it can be a register if the backend wants.
+                    let register = self
+                        .emit_expr(value, *block)
+                        .expect("Variable type cannot be void.");
+                    self.control.set(variable, register);
+                    self.func_mut()
+                        .set_debug(register, || format!("{}_{}", name, variable.1 .0));
+                }
             }
             Stmt::Return { value } => match value {
                 None => todo!(),
@@ -354,7 +365,10 @@ impl<'ast> AstParser<'ast> {
                 }
             },
             Expr::GetVar { name } => {
-                let variable = self.control.resolve_name(name);
+                let variable = self
+                    .control
+                    .resolve_name(name)
+                    .unwrap_or_else(|| panic!("Cannot access undefined variable {}", name));
                 let register = self
                     .control
                     .get(variable)
@@ -385,6 +399,12 @@ impl<'ast> AstParser<'ast> {
                 // TODO: return none if the func is void
                 Some(return_value_dest)
             }
+            Expr::Unary { value, op } => match op {
+                UnaryOp::AddressOf => {
+                    todo!()
+                }
+                _ => todo!(),
+            },
             _ => todo!(),
         }
     }
@@ -401,7 +421,10 @@ impl<'ast> AstParser<'ast> {
             .expect("Can't assign to void.");
         match lvalue {
             Expr::GetVar { name } => {
-                let this_variable = self.control.resolve_name(name);
+                let this_variable = self
+                    .control
+                    .resolve_name(name)
+                    .expect("todo: support stack alloc");
                 self.func_mut()
                     .set_debug(value, || format!("{}_{}", name, this_variable.1 .0));
                 self.control.set(this_variable, value);

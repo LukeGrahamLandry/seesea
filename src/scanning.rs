@@ -58,6 +58,12 @@ pub enum TokenType {
     #[token("-")]
     Minus,
 
+    #[token("*")]
+    Star,
+
+    #[token("&")]
+    Ampersand,
+
     Eof,
 }
 

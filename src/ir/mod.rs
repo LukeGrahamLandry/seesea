@@ -2,6 +2,7 @@ use crate::ast::{BinaryOp, FuncSignature, ValueType};
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::fmt::{write, Display, Formatter};
 
+mod allocs;
 mod debug;
 mod flow_stack;
 mod parse;

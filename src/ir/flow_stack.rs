@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 /// Needs to be a stack because ifs can be nested, etc.
 /// The spans over which you need to track branches are not always the same as the lexical scopes used for variable declaration.
 /// For example a single statement if would be its own basic block in the IR but would not have a lexical scope.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ControlFlowStack<'ast> {
     /// Tracks which variables mutate in each IR block.
     flow: Vec<FlowStackFrame<'ast>>,
@@ -16,9 +16,11 @@ pub struct ControlFlowStack<'ast> {
 
     /// Lexical scopes that effect name resolution
     scopes: Vec<LexScope>,
+    stack_allocated: Vec<HashSet<Var<'ast>>>,
     total_scope_count: usize,
 }
 
+#[derive(Debug)]
 pub struct FlowStackFrame<'ast> {
     pub block: Label,
     pub mutations: HashMap<Var<'ast>, Ssa>,
@@ -52,9 +54,16 @@ impl<'ast> ControlFlowStack<'ast> {
     }
 
     pub fn set(&mut self, variable: Var<'ast>, new_register: Ssa) {
+        // @Speed
+        assert!(
+            !self.is_stack_alloc(variable),
+            "{:?} is stack allocated. Can't get it's register.",
+            variable
+        );
+
         match self.flow.last_mut() {
             None => {
-                // Nobody pushed a frame so we don't care about tracking yet.
+                panic!("There must always be a FlowStackFrame for tracking registers.")
             }
             Some(frame) => {
                 frame.mutations.insert(variable, new_register);
@@ -62,13 +71,34 @@ impl<'ast> ControlFlowStack<'ast> {
         }
     }
 
-    pub fn get(&self, variable: Var) -> Option<Ssa> {
+    pub fn get(&self, variable: Var<'ast>) -> Option<Ssa> {
         for frame in self.flow.iter().rev() {
             if let Some(register) = frame.mutations.get(&variable) {
                 return Some(*register);
             }
         }
+
+        // @Speed
+        assert!(
+            !self.is_stack_alloc(variable),
+            "{:?} is stack allocated. Can't get it's register.",
+            variable
+        );
         None
+    }
+
+    pub fn set_stack_alloc(&mut self, variable: Var<'ast>) {
+        assert_eq!(variable.1, self.current_scope());
+        assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
+    }
+
+    pub fn is_stack_alloc(&self, variable: Var<'ast>) -> bool {
+        for scope in self.stack_allocated.iter().rev() {
+            if scope.contains(&variable) {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn is_empty(&self) -> bool {
@@ -76,7 +106,8 @@ impl<'ast> ControlFlowStack<'ast> {
     }
 
     pub fn clear(&mut self) {
-        let no_scopes = self.flow.is_empty() && self.scopes.is_empty();
+        let no_scopes =
+            self.flow.is_empty() && self.scopes.is_empty() && self.stack_allocated.is_empty();
         assert!(no_scopes);
         self.total_scope_count = 0;
         self.prev_blocks.clear();
@@ -84,24 +115,33 @@ impl<'ast> ControlFlowStack<'ast> {
 
     pub fn push_scope(&mut self) {
         self.scopes.push(LexScope(self.total_scope_count));
+        self.stack_allocated.push(HashSet::new());
         self.total_scope_count += 1;
     }
 
     pub fn pop_scope(&mut self) {
-        self.scopes.pop().expect("You should always be in a scope.");
+        let old_scope = self.scopes.pop().expect("You should always be in a scope.");
+        let stack_alloc = self
+            .stack_allocated
+            .pop()
+            .expect("You should always be in a scope.");
+        debug_assert!(!stack_alloc.iter().any(|var| var.1 != old_scope));
     }
 
     pub fn current_scope(&self) -> LexScope {
         *self.scopes.last().unwrap()
     }
 
-    pub fn resolve_name(&self, name: &'ast str) -> Var<'ast> {
-        for scope in self.scopes.iter().rev() {
+    pub fn resolve_name(&self, name: &'ast str) -> Option<Var<'ast>> {
+        for (i, scope) in self.scopes.iter().enumerate().rev() {
             let var = Var(name, *scope);
             if self.get(var).is_some() {
-                return var;
+                return Some(var);
+            }
+            if self.stack_allocated[i].contains(&var) {
+                return Some(var);
             }
         }
-        panic!("Cannot access undefined variable {}", name);
+        None
     }
 }

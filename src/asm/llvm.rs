@@ -162,7 +162,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                                     .into()
                             })
                             .collect::<Vec<BasicMetadataValueEnum>>();
-                        let return_value = self.builder.build_call(function, &args, "func");
+                        let return_value = self.builder.build_call(function, &args, "");
                         self.local_registers
                             .insert(*return_value_dest, return_value.as_any_value_enum());
                     }

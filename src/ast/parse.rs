@@ -1,6 +1,8 @@
 //! TOKENS -> AST
 
-use crate::ast::{BinaryOp, Expr, FuncSignature, Function, LiteralValue, Module, Stmt, ValueType};
+use crate::ast::{
+    BinaryOp, Expr, FuncSignature, Function, LiteralValue, Module, Stmt, UnaryOp, ValueType,
+};
 use crate::scanning::{Scanner, TokenType};
 
 impl<'src> From<Scanner<'src>> for Module {
@@ -154,13 +156,14 @@ impl<'src> Parser<'src> {
 
     /// EXPR
     fn parse_expr(&mut self) -> Expr {
-        let left = self.parse_primary();
+        let left = self.parse_unary();
         let op = match self.scanner.peek() {
             TokenType::Plus => BinaryOp::Add,
             TokenType::Greater => BinaryOp::GreaterThan,
             TokenType::Less => BinaryOp::LessThan,
             TokenType::Equal => BinaryOp::Assign,
             TokenType::Minus => BinaryOp::Subtract,
+            TokenType::Star => BinaryOp::Multiply,
             _ => return left, // todo: only some tokens are valid here
         };
 
@@ -170,6 +173,26 @@ impl<'src> Parser<'src> {
             left: Box::new(left),
             right: Box::new(right),
             op,
+        }
+    }
+
+    fn parse_unary(&mut self) -> Expr {
+        let op = match self.scanner.peek() {
+            TokenType::Minus => Some(UnaryOp::Negate),
+            TokenType::Star => Some(UnaryOp::Deref),
+            TokenType::Ampersand => Some(UnaryOp::AddressOf),
+            _ => None,
+        };
+
+        match op {
+            None => self.parse_primary(),
+            Some(op) => {
+                self.scanner.advance();
+                Expr::Unary {
+                    value: Box::new(self.parse_unary()),
+                    op,
+                }
+            }
         }
     }
 
