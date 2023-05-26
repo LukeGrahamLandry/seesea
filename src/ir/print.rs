@@ -1,40 +1,65 @@
 use crate::ir::{Function, Op, Ssa};
 use std::fmt::{write, Debug, Formatter};
 
-impl Debug for Op {
-    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        match self {
+impl Function {
+    fn print(&self, op: &Op) -> String {
+        match op {
             Op::Binary {
                 dest: result,
                 a,
                 b,
                 kind,
             } => {
-                write!(f, "{} = {} {:?} {};", result, a, kind, b)
+                format!(
+                    "{} = {} {:?} {};",
+                    self.name(result),
+                    self.name(a),
+                    kind,
+                    self.name(b)
+                )
             }
             Op::ConstInt {
                 dest: result,
                 value,
-            } => write!(f, "{} = {};", result, value),
-            Op::Load { dest, addr } => write!(f, "{} = *{};", dest, addr),
-            Op::Store { dest, addr } => write!(f, "*{} = {};", dest, addr),
-            Op::Move { dest, source } => write!(f, "{} = {};", dest, source),
+            } => format!("{} = {};", self.name(result), value),
+            Op::Load { dest, addr } => format!("{} = *{};", self.name(dest), self.name(addr)),
+            Op::Store { dest, addr } => format!("*{} = {};", self.name(dest), self.name(addr)),
+            Op::Move { dest, source } => format!("{} = {};", self.name(dest), self.name(source)),
             Op::Jump {
                 condition,
                 if_true,
                 if_false,
-            } => write!(
-                f,
+            } => format!(
                 "if {} goto {:?}; else goto {:?};",
                 condition, if_true, if_false
             ),
-            Op::Phi { dest, a, b } => write!(f, "{} = Phi({:?} || {:?});", dest, a, b),
+            Op::Phi {
+                dest,
+                a: (ab, ar),
+                b: (bb, br),
+            } => format!(
+                "{} = Phi({:?} -> {} || {:?} -> {});",
+                self.name(dest),
+                ab,
+                self.name(ar),
+                bb,
+                self.name(br)
+            ),
             Op::Return { value } => match value {
-                None => write!(f, "return;"),
-                Some(v) => write!(f, "return {v};"),
+                None => "return;".to_string(),
+                Some(v) => format!("return {};", self.name(v)),
             },
-            Op::StackAlloc { dest, ty } => write!(f, "{} = &alloc(sizeof {:?});", dest, ty),
-            Op::AlwaysJump(target) => write!(f, "goto {:?};", target),
+            Op::StackAlloc { dest, ty } => {
+                format!("{} = &alloc(sizeof {:?});", self.name(dest), ty)
+            }
+            Op::AlwaysJump(target) => format!("goto {:?};", target),
+        }
+    }
+
+    pub fn name(&self, ssa: &Ssa) -> String {
+        match &self.debug_register_names[ssa.0] {
+            None => format!("%{}", ssa.0),
+            Some(debug) => format!("%{}_{}", ssa.0, debug),
         }
     }
 }
@@ -48,7 +73,7 @@ impl Debug for Function {
             } else {
                 writeln!(f, "[Label({})]", i)?;
                 for (j, op) in block.iter().enumerate() {
-                    writeln!(f, "{}. {:?}", j, op)?;
+                    writeln!(f, "{}. {:?}", j, self.print(op))?;
                 }
             }
         }

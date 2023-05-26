@@ -1,10 +1,12 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{BinaryOp, Expr, LiteralValue, Stmt};
+use crate::ast::{BinaryOp, Expr, FuncSignature, LiteralValue, Stmt};
 use crate::ir;
+use crate::ir::debug::IrDebugInfo;
 use crate::ir::{Label, Op, Ssa};
 use std::collections::HashMap;
+use std::marker::PhantomData;
 
 #[derive(Default)]
 struct AstParser<'ast> {
@@ -13,6 +15,7 @@ struct AstParser<'ast> {
     scopes: Vec<LexScope>,
     control: ControlFlowStack<'ast>,
     total_scope_count: usize,
+    debug: IrDebugInfo<'ast>,
 }
 
 /// Uniquely identifies a lexical scope. These DO NOT correspond to depth of nesting (they are never reused).
@@ -28,24 +31,27 @@ struct Var<'ast>(&'ast str, LexScope);
 /// Needs to be a stack because ifs can be nested, etc.
 /// The spans over which you need to track branches are not always the same as the lexical scopes used for variable declaration.
 /// For example a single statement if would be its own basic block in the IR but would not have a lexical scope.
+// @Memory: it never drops entry (like when we exit a c scope).
+// It just removes the LexScope from the parser's stack so we never check those when resolving names.
+// Leaking memory as god intended!
 #[derive(Default)]
 struct ControlFlowStack<'ast>(Vec<HashMap<Var<'ast>, Ssa>>);
 
 impl From<ast::Module> for ir::Module {
     fn from(value: ast::Module) -> Self {
-        parse_ast(value)
+        parse_ast(&value).0
     }
 }
 
-fn parse_ast(program: ast::Module) -> ir::Module {
-    let mut parser = AstParser::default();
+pub fn parse_ast<'ast>(program: &'ast ast::Module) -> (ir::Module, IrDebugInfo<'ast>) {
+    let mut parser: AstParser<'ast> = AstParser::default();
 
     for func in program.functions.iter() {
         parser.parse_function(func)
     }
 
     assert!(parser.func.is_none());
-    parser.ir
+    (parser.ir, parser.debug)
 }
 
 impl<'ast> AstParser<'ast> {
@@ -58,12 +64,14 @@ impl<'ast> AstParser<'ast> {
         self.push_scope();
         let arguments = input
             .signature
-            .args
+            .param_types
             .iter()
-            .zip(input.signature.names.iter());
+            .zip(input.signature.param_names.iter());
         for (_ty, name) in arguments {
             let variable = Var(name.as_str(), self.current_scope());
             let register = self.func_mut().next_var();
+            self.func_mut()
+                .set_debug(register, || format!("{}_arg", name));
             self.control.set(variable, register);
             self.func_mut().arg_registers.push(register);
         }
@@ -83,7 +91,7 @@ impl<'ast> AstParser<'ast> {
 
     fn emit_statement(&mut self, stmt: &'ast Stmt, block: &mut Label) {
         match stmt {
-            Stmt::Block { body } => {
+            Stmt::Block { body, .. } => {
                 // Lexical blocks in the source don't directly correspond to the IR blocks used for control flow.
                 // Rather, they affect the variable name resolution stack.
                 self.push_scope();
@@ -102,6 +110,8 @@ impl<'ast> AstParser<'ast> {
                 // TODO: track types or maybe the ir should handle on the ssa?
                 let variable = Var(name.as_str(), self.current_scope());
                 self.control.set(variable, register);
+                self.func_mut()
+                    .set_debug(register, || format!("{}_{}", name, variable.1 .0));
             }
             Stmt::Return { value } => match value {
                 None => todo!(),
@@ -134,6 +144,7 @@ impl<'ast> AstParser<'ast> {
         let condition = self
             .emit_expr(condition, *block)
             .expect("If condition cannot be void.");
+        println!("Before: {:?}", self.control.0);
 
         // Execution branches into two new blocks.
         let mut if_true = self.func_mut().new_block();
@@ -232,6 +243,8 @@ impl<'ast> AstParser<'ast> {
         match lvalue {
             Expr::GetVar { name } => {
                 let this_variable = self.resolve_name(name);
+                self.func_mut()
+                    .set_debug(value, || format!("{}_{}", name, this_variable.1 .0));
                 self.control.set(this_variable, value);
                 Some(value)
             }
@@ -279,14 +292,21 @@ impl<'ast> AstParser<'ast> {
         println!("mutated_in_then: {:?}", mutated_in_then);
         println!("mutated_in_else: {:?}", mutated_in_else);
         for (variable, then_register) in mutated_in_then {
-            // TODO: Panics if defined in the if
-            let original_register = self.control.get(variable).unwrap();
+            let original_register = match self.control.get(variable) {
+                None => {
+                    // The variable was declared inside the if so it can't be accessed outside and we don't care.
+                    // TODO: check if that's true if you do `if (1) long x = 10;`
+                    continue;
+                }
+                Some(ssa) => ssa,
+            };
             let other_register = match mutated_in_else.remove(&variable) {
                 // If the other path did not mutate the value, use the one from before.
                 None => original_register,
                 // If the both paths mutated the value, we don't care what it was before we branched.
                 Some(else_register) => else_register,
             };
+
             let new_register = self.func_mut().next_var();
             self.func_mut().push(
                 *block,
@@ -297,6 +317,11 @@ impl<'ast> AstParser<'ast> {
                 },
             );
             moved_registers.push((variable, new_register));
+
+            let name_a = self.func_mut().name(&then_register);
+            let name_b = self.func_mut().name(&other_register);
+            self.func_mut()
+                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
         }
         // Any that were mutated in both branches were removed in the previous loop.
         // So we know any remaining will be using the original register as the true branch.
@@ -314,11 +339,17 @@ impl<'ast> AstParser<'ast> {
                 },
             );
             moved_registers.push((variable, new_register));
+
+            let name_a = self.func_mut().name(&original_register);
+            let name_b = self.func_mut().name(&else_register);
+            self.func_mut()
+                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
         }
         // Now that we've updated everything, throw away the registers from before the branching.
         for (variable, register) in moved_registers {
             self.control.set(variable, register);
         }
+        println!("After: {:?}", self.control.0);
     }
 }
 

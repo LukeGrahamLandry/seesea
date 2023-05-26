@@ -5,9 +5,13 @@ use crate::scanning::{Scanner, TokenType};
 
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {
+        let name = scanner.name.clone();
         let mut parser = Parser {
             scanner,
-            program: Module { functions: vec![] },
+            program: Module {
+                functions: vec![],
+                name,
+            },
         };
         parser.run();
         parser.program
@@ -49,9 +53,9 @@ impl<'src> Parser<'src> {
         self.program.functions.push(Function {
             body,
             signature: FuncSignature {
-                args,
-                names,
-                returns,
+                param_types: args,
+                param_names: names,
+                return_type: returns,
                 name,
             },
         })
@@ -65,7 +69,7 @@ impl<'src> Parser<'src> {
             while !self.scanner.matches(TokenType::RightBrace) {
                 body.push(self.parse_stmt());
             }
-            return Stmt::Block { body };
+            return Stmt::Block { body, lines: None }; // TODO
         }
 
         let is_decl = self.scanner.peek() == TokenType::Identifier
@@ -136,7 +140,10 @@ impl<'src> Parser<'src> {
         let if_false = if self.scanner.matches(TokenType::Else) {
             self.parse_stmt()
         } else {
-            Stmt::Block { body: vec![] }
+            Stmt::Block {
+                body: vec![],
+                lines: None,
+            }
         };
         Stmt::If {
             condition: Box::new(condition),
@@ -204,6 +211,11 @@ impl<'src> Parser<'src> {
 
     fn error(&mut self, msg: &str) -> ! {
         let i = self.scanner.index;
-        panic!("Parse error: {} at {}. {:?}", msg, i, self.scanner.next())
+        let token = self.scanner.next();
+        let line = self.scanner.line_number(token);
+        panic!(
+            "Parse error on line {}: {} at {}. {:?}",
+            line, msg, i, token
+        );
     }
 }

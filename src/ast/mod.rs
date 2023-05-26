@@ -3,6 +3,7 @@ mod print;
 
 pub struct Module {
     pub functions: Vec<Function>,
+    pub name: String,
 }
 
 pub struct Function {
@@ -10,19 +11,20 @@ pub struct Function {
     pub signature: FuncSignature,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct FuncSignature {
-    pub args: Vec<ValueType>,
-    pub returns: ValueType,
+    pub param_types: Vec<ValueType>,
+    pub return_type: ValueType,
     pub name: String,
     // The names are needed for parsing the body code. They don't live on to LLVM IR currently.
-    pub names: Vec<String>,
+    pub param_names: Vec<String>,
 }
 
 // @Speed the expressions here dont need to be boxed
 pub enum Stmt {
     Block {
         body: Vec<Stmt>,
+        lines: Option<Vec<usize>>,
     },
     Expression {
         expr: Box<Expr>,
@@ -131,7 +133,7 @@ impl From<LiteralValue> for Expr {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 pub enum ValueType {
     U64,
     // Struct

@@ -62,6 +62,7 @@ pub enum TokenType {
 pub struct Token<'src> {
     pub kind: TokenType,
     pub lexeme: &'src str,
+    pub index: usize,
 }
 
 pub struct Scanner<'src> {
@@ -69,6 +70,7 @@ pub struct Scanner<'src> {
     lex: Lexer<'src, TokenType>,
     cache: VecDeque<Token<'src>>, // @Speed: this should be a small static array
     pub(crate) index: usize,
+    pub(crate) name: String,
 }
 
 // TODO: It feels like this should be a real iterator but I worry that the way I want to write the
@@ -76,12 +78,13 @@ pub struct Scanner<'src> {
 //       Maybe still nice just can't iterate at the top level.
 //       There's peekable but I don't think it will let you look more than one forward.
 impl<'src> Scanner<'src> {
-    pub fn new(src: &'src str) -> Scanner {
+    pub fn new(src: &'src str, name: String) -> Scanner {
         let mut s = Scanner {
             src,
             lex: TokenType::lexer(src),
             cache: VecDeque::new(),
             index: 0,
+            name,
         };
         s.refresh();
         s
@@ -98,21 +101,23 @@ impl<'src> Scanner<'src> {
         self.lex
             .next()
             .map(|token| {
+                self.index += 1;
                 let lexeme = self.lex.slice();
                 Token {
                     lexeme,
                     kind: token.unwrap(),
+                    index: self.index,
                 }
             })
             .unwrap_or_else(|| Token {
                 kind: TokenType::Eof,
                 lexeme: "",
+                index: self.index,
             })
     }
 
     #[must_use]
     pub fn next(&mut self) -> Token<'src> {
-        self.index += 1;
         let token = self.cache.pop_front().unwrap();
         self.refresh();
         token
@@ -147,29 +152,45 @@ impl<'src> Scanner<'src> {
         }
     }
 
-    pub fn consume(&mut self, ty: TokenType) {
-        assert!(self.matches(ty));
+    pub fn consume(&mut self, ty: TokenType) -> Token {
+        assert_eq!(self.peek(), ty);
+        self.next()
     }
 
     pub fn advance(&mut self) {
         let _ = self.next();
     }
+
+    // This can be super slow because it's just used for error messages.
+    pub fn line_number(&self, token: Token) -> usize {
+        let mut line = 0;
+        let count = token.lexeme.as_ptr() as usize - self.src.as_ptr() as usize;
+        for (i, c) in self.src.chars().enumerate() {
+            if c == '\n' {
+                line += 1;
+            }
+            if i == count {
+                break;
+            }
+        }
+        line
+    }
 }
 
 impl<'src> Debug for Scanner<'src> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "=== Scanner at {} ===", self.index)?;
-        let mut temp = Scanner::new(self.src);
+        writeln!(f, "=== Scanner at {} ===", self.index - self.cache.len())?;
+        let mut temp = Scanner::new(self.src, self.name.clone());
         while temp.has_next() {
             let i = temp.index;
-            writeln!(f, "{i}. {:?}", temp.next())?;
+            write!(f, "{:?}, ", temp.next())?;
         }
-        writeln!(f, "========")
+        writeln!(f, "\n========")
     }
 }
 
 impl<'src> Debug for Token<'src> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        write!(f, "[{:?} \"{}\"]", self.kind, self.lexeme)
+        write!(f, "[{}. {:?} \"{}\"]", self.index, self.kind, self.lexeme)
     }
 }

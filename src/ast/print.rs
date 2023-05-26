@@ -20,7 +20,7 @@ impl Stmt {
         }
         write!(f, "({}) ", depth)?;
         match self {
-            Stmt::Block { body } => {
+            Stmt::Block { body, .. } => {
                 writeln!(f, "Block: ")?;
                 for stmt in body {
                     stmt.print(depth + 1, f)?;
@@ -102,7 +102,7 @@ impl Debug for Function {
 
 impl Debug for Module {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "=== Module AST ===")?;
+        writeln!(f, "=== AST: {} ===", self.name)?;
         for func in &self.functions {
             writeln!(f, "{:?}", func)?;
         }

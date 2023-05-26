@@ -1,7 +1,9 @@
 use crate::ast::{BinaryOp, FuncSignature, ValueType};
+use crate::KEEP_IR_DEBUG_NAMES;
 use std::fmt::{write, Display, Formatter};
 use std::ops::Index;
 
+mod debug;
 mod parse;
 mod print;
 
@@ -85,11 +87,13 @@ pub struct Function {
     var_counter: usize,
     pub sig: FuncSignature,
     pub arg_registers: Vec<Ssa>,
+    pub debug_register_names: Vec<Option<String>>, // TODO: this is cringe
 }
 
 #[derive(Default)]
 pub struct Module {
     pub functions: Vec<Function>,
+    pub name: String,
 }
 
 impl Function {
@@ -99,6 +103,7 @@ impl Function {
             var_counter: 0,
             sig,
             arg_registers: vec![],
+            debug_register_names: vec![],
         }
     }
 
@@ -113,12 +118,22 @@ impl Function {
     }
 
     pub fn next_var(&mut self) -> Ssa {
+        self.debug_register_names.push(None);
         self.var_counter += 1;
         Ssa(self.var_counter - 1)
     }
 
+    /// This taking a closure makes the api uglier but means it won't do the
+    /// the heap allocations etc if the flag is off (even if i make the flag a runtime thing instead of a const).
+    fn set_debug<S: Into<String>>(&mut self, ssa: Ssa, get_name: impl FnOnce() -> S) {
+        if KEEP_IR_DEBUG_NAMES {
+            self.debug_register_names[ssa.0] = Some(get_name().into());
+        }
+    }
+
     pub fn constant_int(&mut self, block: Label, value: u64) -> Ssa {
         let var = self.next_var();
+        self.set_debug(var, || format!("const_{}", value));
         let op = Op::ConstInt { dest: var, value };
         self.push(block, op);
         var

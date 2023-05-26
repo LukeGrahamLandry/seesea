@@ -140,11 +140,11 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
 
     fn get_func_type(&self, signature: &FuncSignature) -> FunctionType<'ctx> {
         let args: Vec<_> = signature
-            .args
+            .param_types
             .iter()
             .map(|ty| self.llvm_type(*ty))
             .collect();
-        let returns = self.llvm_type(signature.returns);
+        let returns = self.llvm_type(signature.return_type);
         returns.into_int_type().fn_type(&args, false)
     }
 

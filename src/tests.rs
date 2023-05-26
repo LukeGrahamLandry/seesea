@@ -77,6 +77,37 @@ long main(){
 }
 
 #[test]
+fn scopes() {
+    no_args_full_pipeline(
+        "
+long main(){
+    long x = 2;
+    long y = 3;
+    {
+        long y = 5;
+        x = x + y;
+    }
+    {
+        x = x + y;
+    }
+    {
+        long x = 50;
+        x = x + 999;
+        if (x > y){
+            long x = 20;
+            y = x;
+        }
+    }
+    x = x + y;
+    
+    return x;
+}
+    ",
+        30,
+    );
+}
+
+#[test]
 fn function_args() {
     let src = "
 long max(long a, long b){
@@ -106,6 +137,62 @@ long max(long a, long b){
     });
 }
 
+// TODO
+#[test]
+fn nested_ifs() {
+    type Func = unsafe extern "C" fn(u64) -> u64;
+    compile_then(
+        "
+long main(long a){
+    long x = a + 5;
+    if (x > 11){
+        return 99;
+    } else if (x > 5) {
+        long y = 7;
+        if (x > y) {
+            y = y + x;
+        }
+        if (x < y) {
+            return y;
+        }
+    }
+    return x;
+}
+    ",
+        |func: Func| {
+            assert_eq!(unsafe { func(5) }, 17);
+        },
+    );
+}
+
+// #[test]
+fn something_with_phi_nodes_not_workng() {
+    type Func = unsafe extern "C" fn(u64) -> u64;
+    compile_then(
+        "
+long main(long a){
+    long x = a + 5;
+    if (x > 11){
+        return 99;
+    } else if (x > 5) {
+        long y = 7;
+        if (x > y) {
+            y = y + x;
+            return 999;
+        }
+        if (x < y) {
+            return y;
+        }
+    }
+    return x;
+}
+    ",
+        |func: Func| {
+            assert_eq!(unsafe { func(5) }, 17);
+        },
+    );
+}
+
 fn no_args_full_pipeline(src: &str, expected: u64) {
     type NoArgToU64 = unsafe extern "C" fn() -> u64;
     compile_then(src, |function: NoArgToU64| {
@@ -117,14 +204,14 @@ fn no_args_full_pipeline(src: &str, expected: u64) {
 // Wildly unsafe! For fuck sake don't put the fn pointer somewhere.
 fn compile_then<F: UnsafeFunctionPointer>(src: &str, action: impl FnOnce(F)) {
     println!("{}", src);
-    let scan = Scanner::new(src);
+    let scan = Scanner::new(src, "test_code".into());
     println!("{:?}", scan);
     let ast = ast::Module::from(scan);
     println!("{:?}", ast);
+    let context = Context::create();
+    let module = context.create_module(ast.name.as_str());
     let ir = ir::Module::from(ast).functions[0].clone();
     println!("{:?}", ir);
-    let context = Context::create();
-    let module = context.create_module("max");
     let execution_engine = module
         .create_jit_execution_engine(OptimizationLevel::None)
         .unwrap();
