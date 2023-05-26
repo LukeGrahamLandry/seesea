@@ -75,6 +75,13 @@ impl<'ast> ControlFlowStack<'ast> {
         self.flow.is_empty() && self.scopes.is_empty()
     }
 
+    pub fn clear(&mut self) {
+        let no_scopes = self.flow.is_empty() && self.scopes.is_empty();
+        assert!(no_scopes);
+        self.total_scope_count = 0;
+        self.prev_blocks.clear();
+    }
+
     pub fn push_scope(&mut self) {
         self.scopes.push(LexScope(self.total_scope_count));
         self.total_scope_count += 1;

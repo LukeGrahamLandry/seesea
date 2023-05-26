@@ -174,6 +174,34 @@ impl<'src> Parser<'src> {
 
     /// NAME | NUMBER | (EXPR)
     fn parse_primary(&mut self) -> Expr {
+        let mut expr = self.parse_basic();
+        loop {
+            match self.scanner.peek() {
+                TokenType::LeftParen => {
+                    self.scanner.consume(TokenType::LeftParen);
+                    let mut args = vec![];
+                    while !self.scanner.matches(TokenType::RightParen) {
+                        args.push(self.parse_expr());
+                        if !self.scanner.matches(TokenType::Comma) {
+                            assert_eq!(
+                                self.scanner.peek(),
+                                TokenType::RightParen,
+                                "Expected ')' or ',' after function arg."
+                            );
+                        }
+                    }
+
+                    expr = Expr::Call {
+                        func: Box::new(expr),
+                        args,
+                    }
+                }
+                _ => return expr,
+            }
+        }
+    }
+
+    fn parse_basic(&mut self) -> Expr {
         let token = self.scanner.next();
         match token.kind {
             TokenType::DecimalInt(v) => Expr::Literal {

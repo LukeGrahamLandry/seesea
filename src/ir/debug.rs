@@ -3,6 +3,7 @@ use crate::ast::FuncSignature;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
+// TODO
 /// Holds debug info relating opcodes back to AST nodes.
 /// I'm doing a silly trick with using memory addresses as node identifiers,
 /// so it relies on the original ast::Module being "pinned" to read any data out.

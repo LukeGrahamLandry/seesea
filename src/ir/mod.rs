@@ -28,7 +28,7 @@ pub struct Ssa(pub(crate) usize);
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Label(usize);
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Op {
     ConstInt {
         dest: Ssa,
@@ -79,6 +79,12 @@ pub enum Op {
         dest: Ssa,
         ty: ValueType,
     },
+
+    Call {
+        func_name: String, // TODO: allow function pointers.
+        args: Vec<Ssa>,
+        return_value_dest: Ssa,
+    },
 }
 
 #[derive(Clone)]
@@ -94,6 +100,12 @@ pub struct Function {
 pub struct Module {
     pub functions: Vec<Function>,
     pub name: String,
+}
+
+impl Module {
+    pub fn get_func(&self, name: &str) -> Option<&Function> {
+        self.functions.iter().find(|&func| func.sig.name == name)
+    }
 }
 
 impl Function {

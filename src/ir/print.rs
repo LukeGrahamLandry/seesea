@@ -1,5 +1,5 @@
 use crate::ir::{Function, Op, Ssa};
-use std::fmt::{write, Debug, Formatter};
+use std::fmt::{format, write, Debug, Formatter};
 
 impl Function {
     pub fn print(&self, op: &Op) -> String {
@@ -53,6 +53,16 @@ impl Function {
                 format!("{} = &alloc(sizeof {:?});", self.name(dest), ty)
             }
             Op::AlwaysJump(target) => format!("goto {:?};", target),
+            Op::Call {
+                func_name,
+                args,
+                return_value_dest,
+            } => format!(
+                "{} = call {:?} {:?}",
+                self.name(return_value_dest),
+                func_name,
+                args,
+            ),
         }
     }
 

@@ -62,10 +62,7 @@ impl<'ast> AstParser<'ast> {
         self.func_mut().assert_valid();
         self.ir.functions.push(self.func.take().unwrap());
         let _ = self.control.pop_flow_frame();
-        assert!(
-            self.control.is_empty(),
-            "Should have no hanging control scopes... until i do globals maybe but those probably need a different representation in ir"
-        );
+        self.control.clear();
 
         println!("------------");
     }
@@ -363,6 +360,30 @@ impl<'ast> AstParser<'ast> {
                     .get(variable)
                     .unwrap_or_else(|| panic!("GetVar undeclared {}", name));
                 Some(register)
+            }
+            Expr::Call { func, args } => {
+                let name = match func.as_ref() {
+                    Expr::GetVar { name } => name,
+                    _ => todo!(),
+                };
+                let arg_registers = args
+                    .iter()
+                    .map(|e| {
+                        self.emit_expr(e, block)
+                            .expect("Passed function arg cannot be void.")
+                    })
+                    .collect();
+                let return_value_dest = self.func_mut().next_var();
+                self.func_mut().push(
+                    block,
+                    Op::Call {
+                        func_name: name.clone(), // TODO: directly reference the func def node since we know we'll already hve it from headeres
+                        args: arg_registers,
+                        return_value_dest,
+                    },
+                );
+                // TODO: return none if the func is void
+                Some(return_value_dest)
             }
             _ => todo!(),
         }

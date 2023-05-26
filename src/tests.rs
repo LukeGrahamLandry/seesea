@@ -139,9 +139,9 @@ long max(long a, long b){
         assert_eq!(answer, -10);
     });
 
-    let func = get_first_function(src);
-    assert_eq!(Vm::eval(&func, &[155, 20]), Some(155));
-    assert_eq!(Vm::eval(&func, &[15, 200]), Some(200));
+    let func = compile_module(src);
+    assert_eq!(Vm::eval(&func, "max", &[155, 20]), Some(155));
+    assert_eq!(Vm::eval(&func, "max", &[15, 200]), Some(200));
 }
 
 #[test]
@@ -164,7 +164,7 @@ long main(long a){
     return x;
 }
     ";
-    let vm_result = Vm::eval(&get_first_function(src), &[5]).unwrap();
+    let vm_result = Vm::eval(&compile_module(src), "main", &[5]).unwrap();
     type Func = unsafe extern "C" fn(u64) -> u64;
     compile_then(src, |func: Func| {
         assert_eq!(unsafe { func(5) }, 17);
@@ -193,12 +193,44 @@ long main(long a){
     return x;
 }
     ";
-    let vm_result = Vm::eval(&get_first_function(src), &[5]).unwrap();
+    let vm_result = Vm::eval(&compile_module(src), "main", &[5]).unwrap();
     assert_eq!(vm_result, 999);
     type Func = unsafe extern "C" fn(u64) -> u64;
     compile_then(src, |func: Func| {
         assert_eq!(unsafe { func(5) }, 999);
     });
+}
+
+#[test]
+fn function_calls() {
+    let src = "
+long tri_max(long a, long b, long c){
+    return max(max(a, b), c);
+}
+long max(long a, long b){
+    if (a > b) {
+        return a;
+    } else {
+        return b;
+    }
+}
+    ";
+
+    let cases = [([1u64, 2u64, 4u64], 4u64)];
+
+    // TODO: get the right function
+    // type Func = unsafe extern "C" fn(u64, u64, u64) -> u64;
+    // compile_then(src, |tri_max: Func| {
+    //     for (args, answer) in cases {
+    //         let result = unsafe { tri_max(args[0], args[1], args[2]) };
+    //         assert_eq!(result, answer);
+    //     }
+    // });
+
+    let module = compile_module(src);
+    for (args, answer) in cases {
+        assert_eq!(Vm::eval(&module, "tri_max", &args), Some(answer));
+    }
 }
 
 fn no_args_full_pipeline(src: &str, expected: u64) {
@@ -207,7 +239,7 @@ fn no_args_full_pipeline(src: &str, expected: u64) {
         let answer = unsafe { function() };
         assert_eq!(answer, expected);
     });
-    assert_eq!(Vm::eval(&get_first_function(src), &[]), Some(expected));
+    assert_eq!(Vm::eval(&compile_module(src), "main", &[]), Some(expected));
 }
 
 // Wildly unsafe! For fuck sake don't put the fn pointer somewhere.
@@ -239,13 +271,16 @@ fn save<T: Debug>(value: T, filename: &str) {
 }
 
 fn get_first_function(src: &str) -> ir::Function {
+    compile_module(src).functions[0].clone()
+}
+
+fn compile_module(src: &str) -> ir::Module {
     println!("{}", src);
     let scan = Scanner::new(src, "test_code".into());
     println!("{:?}", scan);
     let ast = ast::Module::from(scan);
     println!("{:?}", ast);
-    let ir = ir::Module::from(ast).functions[0].clone();
-    ir
+    ir::Module::from(ast)
 }
 
 // short circuiting
