@@ -33,6 +33,8 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         }
     }
 
+    /// # Safety
+    /// The function pointer returned is only valid if the execution_engine is still valid.
     pub unsafe fn compile_function<F: UnsafeFunctionPointer>(
         mut self,
         ir: Function,
@@ -47,7 +49,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
 
     // TODO: the whole program shares one module
     // TODO: module names? dumb to throw away variable names?
-    pub fn compile(mut self, ir: Function, execution_engine: &ExecutionEngine) -> u64 {
+    pub fn compile(self, ir: Function, execution_engine: &ExecutionEngine) -> u64 {
         type GetInt = unsafe extern "C" fn() -> u64;
         let function = unsafe { self.compile_function::<GetInt>(ir, execution_engine) };
         unsafe { function() }

@@ -144,9 +144,9 @@ long max(long a, long b){
     assert_eq!(Vm::eval(&func, &[15, 200]), Some(200));
 }
 
-// TODO
 #[test]
 fn nested_ifs() {
+    // This failed when I was mutating the block pointer incorrectly.
     let src = "
 long main(long a){
     long x = a + 5;
@@ -172,8 +172,9 @@ long main(long a){
     assert_eq!(vm_result, 17);
 }
 
-// #[test]
-fn something_with_phi_nodes_not_workng() {
+#[test]
+fn dont_emit_phi_nodes_referencing_blocks_that_jump_instead_of_falling_through() {
+    // LLVM validation failed with "PHINode should have one entry for each predecessor of its parent basic block!\n  %6 = phi i64 [ %5, %.b4 ], [ 7, %.b5 ]"
     let src = "
 long main(long a){
     long x = a + 5;
@@ -192,9 +193,11 @@ long main(long a){
     return x;
 }
     ";
+    let vm_result = Vm::eval(&get_first_function(src), &[5]).unwrap();
+    assert_eq!(vm_result, 999);
     type Func = unsafe extern "C" fn(u64) -> u64;
     compile_then(src, |func: Func| {
-        assert_eq!(unsafe { func(5) }, 17);
+        assert_eq!(unsafe { func(5) }, 999);
     });
 }
 
