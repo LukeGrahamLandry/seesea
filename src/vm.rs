@@ -57,10 +57,11 @@ impl<'ir> Vm<'ir> {
 
     pub fn tick(&mut self) -> VmResult {
         println!(
-            "[{:?}] ip = {}; {}",
+            "[{:?}] ip = {}; {} (frame = {})",
             self.get_frame().block,
             self.get_frame().ip,
-            self.get_frame().function.sig.name
+            self.get_frame().function.sig.name,
+            self.call_stack.len()
         );
         // let mut dbg_reg = self.registers.iter().collect::<Vec<_>>();
         // dbg_reg.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
@@ -76,6 +77,7 @@ impl<'ir> Vm<'ir> {
             Op::Binary { dest, a, b, kind } => {
                 let result = match kind {
                     BinaryOp::Add => self.get(a) + self.get(b),
+                    BinaryOp::Subtract => self.get(a) - self.get(b),
                     BinaryOp::GreaterThan => int_cast(self.get(a) > self.get(b)),
                     BinaryOp::LessThan => int_cast(self.get(a) < self.get(b)),
                     BinaryOp::Assign => {

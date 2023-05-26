@@ -1,6 +1,7 @@
 //! IR -> LLVM IR
 
 use crate::ast::{BinaryOp, FuncSignature, ValueType};
+use crate::ir;
 use crate::ir::{Function, Label, Op, Ssa};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
@@ -8,7 +9,7 @@ use inkwell::context::ContextRef;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
 use inkwell::types::{BasicMetadataTypeEnum, FunctionType};
-use inkwell::values::{AnyValue, AnyValueEnum, IntValue};
+use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FunctionValue, IntValue};
 use inkwell::IntPredicate;
 use std::collections::HashMap;
 
@@ -16,6 +17,8 @@ pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     context: ContextRef<'ctx>,
     module: &'module Module<'ctx>,
     builder: Builder<'ctx>,
+
+    functions: HashMap<String, FunctionValue<'ctx>>,
 
     // Reset per function
     local_registers: HashMap<Ssa, AnyValueEnum<'ctx>>,
@@ -28,9 +31,17 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             context: module.get_context(),
             module,
             builder: module.get_context().create_builder(),
+            functions: Default::default(),
             local_registers: Default::default(),
             blocks: vec![],
         }
+    }
+
+    pub fn compile_all(&mut self, ir: &ir::Module) {
+        for function in &ir.functions {
+            self.emit_function(function);
+        }
+        self.module.verify().unwrap();
     }
 
     /// # Safety
@@ -41,7 +52,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         execution_engine: &ExecutionEngine,
     ) -> F {
         let name = ir.sig.name.clone();
-        self.emit_function(ir);
+        self.emit_function(&ir);
         self.module.verify().unwrap();
         let function: JitFunction<F> = execution_engine.get_function(name.as_str()).unwrap();
         function.as_raw()
@@ -55,9 +66,10 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         unsafe { function() }
     }
 
-    fn emit_function(&mut self, ir: Function) {
+    fn emit_function(&mut self, ir: &Function) {
         let t = self.get_func_type(&ir.sig);
         let func = self.module.add_function(ir.sig.name.as_str(), t, None);
+        self.functions.insert(ir.sig.name.clone(), func);
         let number = self.context.i64_type();
 
         assert!(self.local_registers.is_empty() && self.blocks.is_empty());
@@ -134,10 +146,33 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                         self.local_registers
                             .insert(*dest, AnyValueEnum::from(phi.as_basic_value()));
                     }
+                    Op::Call {
+                        func_name,
+                        args,
+                        return_value_dest,
+                    } => {
+                        let function = *self.functions.get(func_name).expect("Function not found.");
+                        let args = args
+                            .iter()
+                            .map(|ssa| {
+                                self.local_registers
+                                    .get(ssa)
+                                    .unwrap()
+                                    .into_int_value()
+                                    .into()
+                            })
+                            .collect::<Vec<BasicMetadataValueEnum>>();
+                        let return_value = self.builder.build_call(function, &args, "func");
+                        self.local_registers
+                            .insert(*return_value_dest, return_value.as_any_value_enum());
+                    }
                     _ => todo!(),
                 }
             }
         }
+
+        self.local_registers.clear();
+        self.blocks.clear();
     }
 
     fn get_func_type(&self, signature: &FuncSignature) -> FunctionType<'ctx> {
@@ -169,6 +204,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             BinaryOp::Assign => unreachable!(
                 "IR parser should not emit BinaryOp::Assign. It must be converted into SSA from."
             ),
+            BinaryOp::Subtract => self.builder.build_int_sub(a, b, ""),
             _ => todo!(),
         }
     }

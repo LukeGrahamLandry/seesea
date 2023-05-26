@@ -160,6 +160,7 @@ impl<'src> Parser<'src> {
             TokenType::Greater => BinaryOp::GreaterThan,
             TokenType::Less => BinaryOp::LessThan,
             TokenType::Equal => BinaryOp::Assign,
+            TokenType::Minus => BinaryOp::Subtract,
             _ => return left, // todo: only some tokens are valid here
         };
 

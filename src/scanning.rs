@@ -55,6 +55,9 @@ pub enum TokenType {
     #[token(",")]
     Comma,
 
+    #[token("-")]
+    Minus,
+
     Eof,
 }
 
