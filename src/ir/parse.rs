@@ -1,41 +1,19 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{BinaryOp, Expr, FuncSignature, LiteralValue, Stmt};
+use crate::ast::{BinaryOp, Expr, LiteralValue, Stmt};
 use crate::ir;
 use crate::ir::debug::IrDebugInfo;
+use crate::ir::flow_stack::{ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{Label, Op, Ssa};
-use std::collections::HashMap;
-use std::marker::PhantomData;
 
 #[derive(Default)]
 struct AstParser<'ast> {
     ir: ir::Module,
     func: Option<ir::Function>, // needs to become a stack if i allow parsing nested functions i guess?
-    scopes: Vec<LexScope>,
     control: ControlFlowStack<'ast>,
-    total_scope_count: usize,
     debug: IrDebugInfo<'ast>,
 }
-
-/// Uniquely identifies a lexical scope. These DO NOT correspond to depth of nesting (they are never reused).
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-struct LexScope(usize);
-
-/// Uniquely identifies a variable declaration in the source code by noting which block it came from.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-struct Var<'ast>(&'ast str, LexScope);
-
-/// Collects the list of Ssa nodes that are written to in the statement.
-/// This is used to generate Phi nodes when control flow diverges.
-/// Needs to be a stack because ifs can be nested, etc.
-/// The spans over which you need to track branches are not always the same as the lexical scopes used for variable declaration.
-/// For example a single statement if would be its own basic block in the IR but would not have a lexical scope.
-// @Memory: it never drops entry (like when we exit a c scope).
-// It just removes the LexScope from the parser's stack so we never check those when resolving names.
-// Leaking memory as god intended!
-#[derive(Default)]
-struct ControlFlowStack<'ast>(Vec<HashMap<Var<'ast>, Ssa>>);
 
 impl From<ast::Module> for ir::Module {
     fn from(value: ast::Module) -> Self {
@@ -57,35 +35,35 @@ pub fn parse_ast<'ast>(program: &'ast ast::Module) -> (ir::Module, IrDebugInfo<'
 impl<'ast> AstParser<'ast> {
     fn parse_function(&mut self, input: &'ast ast::Function) {
         assert!(self.func.is_none());
-        self.control.push();
         self.func = Some(ir::Function::new(input.signature.clone()));
         let mut entry = self.func_mut().new_block();
+        self.control.push_flow_frame(entry);
 
-        self.push_scope();
+        self.control.push_scope();
         let arguments = input
             .signature
             .param_types
             .iter()
             .zip(input.signature.param_names.iter());
         for (_ty, name) in arguments {
-            let variable = Var(name.as_str(), self.current_scope());
+            let variable = Var(name.as_str(), self.control.current_scope());
             let register = self.func_mut().next_var();
             self.func_mut()
                 .set_debug(register, || format!("{}_arg", name));
             self.control.set(variable, register);
             self.func_mut().arg_registers.push(register);
         }
-        self.push_scope();
+        self.control.push_scope();
         self.emit_statement(&input.body, &mut entry);
-        self.pop_scope();
-        self.pop_scope();
+        self.control.pop_scope();
+        self.control.pop_scope();
 
         println!("{:?}", self.func_mut());
         self.func_mut().assert_valid();
         self.ir.functions.push(self.func.take().unwrap());
-        let _ = self.control.pop();
+        let _ = self.control.pop_flow_frame();
         assert!(
-            self.control.0.is_empty(),
+            self.control.is_empty(),
             "Should have no hanging control scopes... until i do globals maybe but those probably need a different representation in ir"
         );
 
@@ -97,11 +75,11 @@ impl<'ast> AstParser<'ast> {
             Stmt::Block { body, .. } => {
                 // Lexical blocks in the source don't directly correspond to the IR blocks used for control flow.
                 // Rather, they affect the variable name resolution stack.
-                self.push_scope();
+                self.control.push_scope();
                 for stmt in body {
                     self.emit_statement(stmt, block);
                 }
-                self.pop_scope();
+                self.control.pop_scope();
             }
             Stmt::Expression { expr } => {
                 let _ = self.emit_expr(expr, *block);
@@ -111,7 +89,7 @@ impl<'ast> AstParser<'ast> {
                     .emit_expr(value, *block)
                     .expect("Variable type cannot be void.");
                 // TODO: track types or maybe the ir should handle on the ssa?
-                let variable = Var(name.as_str(), self.current_scope());
+                let variable = Var(name.as_str(), self.control.current_scope());
                 self.control.set(variable, register);
                 self.func_mut()
                     .set_debug(register, || format!("{}_{}", name, variable.1 .0));
@@ -204,13 +182,15 @@ impl<'ast> AstParser<'ast> {
         *block = next_block;
     }
 
-    fn parse_branch(&mut self, branch_body: &'ast Stmt) -> (Label, HashMap<Var<'ast>, Ssa>, bool) {
+    fn parse_branch(&mut self, branch_body: &'ast Stmt) -> (Label, FlowStackFrame<'ast>, bool) {
         let branch_block = self.func_mut().new_block();
+        self.control.push_flow_frame(branch_block);
+
         let mut working_block_pointer = branch_block;
-        self.control.push();
         self.emit_statement(branch_body, &mut working_block_pointer);
+
         let branch_returned = self.func_mut().ends_with_jump(branch_block);
-        let mutated_in_branch = self.control.pop();
+        let mutated_in_branch = self.control.pop_flow_frame();
         (branch_block, mutated_in_branch, branch_returned)
     }
 
@@ -222,7 +202,7 @@ impl<'ast> AstParser<'ast> {
         other_block: Label,
         next_block: Label,
         branch_returns: bool,
-        mutated_in_other_branch: &HashMap<Var<'ast>, Ssa>,
+        mutated_in_other_branch: &FlowStackFrame<'ast>,
     ) {
         if branch_returns {
             // This block always returns, so we don't need to emit phi nodes that considers it (even if the variable was mutated in both branches).
@@ -247,11 +227,11 @@ impl<'ast> AstParser<'ast> {
         parent_block: Label,
         branch_block: Label,
         new_block: Label,
-        mutated_in_branch: &HashMap<Var<'ast>, Ssa>,
+        mutated_in_branch: &FlowStackFrame<'ast>,
     ) {
         // TODO: assert that self.control is looking at the parent_block
         let mut moved_registers = vec![];
-        for (variable, branch_register) in mutated_in_branch {
+        for (variable, branch_register) in &mutated_in_branch.mutations {
             let parent_register = self.control.get(*variable).unwrap();
             let new_register = self.func_mut().next_var();
             self.func_mut().push(
@@ -278,14 +258,14 @@ impl<'ast> AstParser<'ast> {
     // Assumes you could have come from either if_true or if_false
     fn emit_phi(
         &mut self,
-        (if_true, mutated_in_then): (Label, HashMap<Var<'ast>, Ssa>),
-        (if_false, mut mutated_in_else): (Label, HashMap<Var<'ast>, Ssa>),
+        (if_true, mutated_in_then): (Label, FlowStackFrame<'ast>),
+        (if_false, mut mutated_in_else): (Label, FlowStackFrame<'ast>),
         block: Label,
     ) {
         let mut moved_registers = vec![];
         // We have the set of Vars whose register changed in one of the branches.
         // Now that we've rejoined, future code in this block needs to access different registers depending how it got here.
-        for (variable, then_register) in mutated_in_then {
+        for (variable, then_register) in mutated_in_then.mutations {
             let original_register = match self.control.get(variable) {
                 None => {
                     // The variable was declared inside the if so it can't be accessed outside and we don't care.
@@ -294,7 +274,7 @@ impl<'ast> AstParser<'ast> {
                 }
                 Some(ssa) => ssa,
             };
-            let other_register = match mutated_in_else.remove(&variable) {
+            let other_register = match mutated_in_else.mutations.remove(&variable) {
                 // If the other path did not mutate the value, use the one from before.
                 None => original_register,
                 // If the both paths mutated the value, we don't care what it was before we branched.
@@ -319,7 +299,7 @@ impl<'ast> AstParser<'ast> {
         }
         // Any that were mutated in both branches were removed in the previous loop.
         // So we know any remaining will be using the original register as the true branch.
-        for (variable, else_register) in mutated_in_else {
+        for (variable, else_register) in mutated_in_else.mutations {
             assert!(moved_registers.iter().any(|check| check.0 == variable));
 
             let original_register = self.control.get(variable).unwrap();
@@ -377,7 +357,7 @@ impl<'ast> AstParser<'ast> {
                 }
             },
             Expr::GetVar { name } => {
-                let variable = self.resolve_name(name);
+                let variable = self.control.resolve_name(name);
                 let register = self
                     .control
                     .get(variable)
@@ -400,7 +380,7 @@ impl<'ast> AstParser<'ast> {
             .expect("Can't assign to void.");
         match lvalue {
             Expr::GetVar { name } => {
-                let this_variable = self.resolve_name(name);
+                let this_variable = self.control.resolve_name(name);
                 self.func_mut()
                     .set_debug(value, || format!("{}_{}", name, this_variable.1 .0));
                 self.control.set(this_variable, value);
@@ -412,60 +392,5 @@ impl<'ast> AstParser<'ast> {
 
     fn func_mut(&mut self) -> &mut ir::Function {
         self.func.as_mut().unwrap()
-    }
-
-    fn push_scope(&mut self) {
-        self.scopes.push(LexScope(self.total_scope_count));
-        self.total_scope_count += 1;
-    }
-
-    fn pop_scope(&mut self) {
-        self.scopes.pop().expect("You should always be in a scope.");
-    }
-
-    fn current_scope(&self) -> LexScope {
-        *self.scopes.last().unwrap()
-    }
-
-    fn resolve_name(&self, name: &'ast str) -> Var<'ast> {
-        for scope in self.scopes.iter().rev() {
-            let var = Var(name, *scope);
-            if self.control.get(var).is_some() {
-                return var;
-            }
-        }
-        panic!("Cannot access undefined variable {}", name);
-    }
-}
-
-impl<'ast> ControlFlowStack<'ast> {
-    fn push(&mut self) {
-        self.0.push(HashMap::new());
-    }
-
-    // You need to use this to update other variables and emit phi nodes
-    #[must_use]
-    fn pop(&mut self) -> HashMap<Var<'ast>, Ssa> {
-        self.0.pop().expect("Popped empty MutStack.")
-    }
-
-    fn set(&mut self, variable: Var<'ast>, new_register: Ssa) {
-        match self.0.last_mut() {
-            None => {
-                // Nobody pushed a frame so we don't care about tracking yet.
-            }
-            Some(data) => {
-                data.insert(variable, new_register);
-            }
-        }
-    }
-
-    fn get(&self, variable: Var) -> Option<Ssa> {
-        for scope in self.0.iter().rev() {
-            if let Some(register) = scope.get(&variable) {
-                return Some(*register);
-            }
-        }
-        None
     }
 }

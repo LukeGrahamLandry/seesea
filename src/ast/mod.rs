@@ -1,3 +1,5 @@
+use crate::ir::Label;
+
 mod parse;
 mod print;
 

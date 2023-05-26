@@ -1,9 +1,9 @@
 use crate::ast::{BinaryOp, FuncSignature, ValueType};
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::fmt::{write, Display, Formatter};
-use std::ops::Index;
 
 mod debug;
+mod flow_stack;
 mod parse;
 mod print;
 
@@ -87,7 +87,7 @@ pub struct Function {
     var_counter: usize,
     pub sig: FuncSignature,
     pub arg_registers: Vec<Ssa>,
-    pub debug_register_names: Vec<Option<String>>, // TODO: this is cringe
+    pub debug_register_names: Vec<Option<String>>,
 }
 
 #[derive(Default)]
