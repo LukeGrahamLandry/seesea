@@ -5,7 +5,7 @@ use crate::ast::{BinaryOp, CType, Expr, LiteralValue, Stmt, UnaryOp};
 use crate::ir;
 use crate::ir::allocs::needs_stack_address;
 use crate::ir::debug::IrDebugInfo;
-use crate::ir::flow_stack::{patch, ControlFlowStack, FlowStackFrame, Var};
+use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{Label, Op, Ssa};
 use std::collections::HashMap;
 use std::mem;
@@ -497,14 +497,24 @@ impl<'ast> AstParser<'ast> {
             },
         );
 
-        for op in &mut self.func.as_mut().unwrap().blocks[condition_block.0] {
-            patch(op, &changes);
-        }
-        for op in &mut self.func.as_mut().unwrap().blocks[start_body_block.0] {
-            patch(op, &changes);
-        }
+        self.patch_below(condition_block, &changes);
 
         *block = exit_block;
+    }
+
+    /// For all blocks including and after first_block,
+    /// replace any reads of register <key> with register <value>.
+    /// This is used for making loop bodies and conditions reference phi nodes that didn't exist
+    /// until after the whole loop was parsed.
+    fn patch_below(&mut self, first_block: Label, changes: &HashMap<Ssa, Ssa>) {
+        let start = first_block.index();
+        let count = self.func_mut().blocks.len();
+        for index in start..count {
+            let block = &mut self.func_mut().blocks[index];
+            for op in block {
+                patch_reads(op, changes);
+            }
+        }
     }
 
     #[must_use]

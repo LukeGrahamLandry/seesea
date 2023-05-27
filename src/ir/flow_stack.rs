@@ -165,7 +165,8 @@ impl<'ast> ControlFlowStack<'ast> {
     }
 }
 
-pub fn patch(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
+/// Checks that you don't try to patch a write because that doesn't make sense given the SSA format.
+pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
     match op {
         Op::ConstInt { dest, .. } => {
             assert!(!changes.contains_key(dest));

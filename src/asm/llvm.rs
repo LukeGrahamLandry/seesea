@@ -9,7 +9,7 @@ use inkwell::module::Module;
 use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
-    PointerValue,
+    PhiValue, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
 
@@ -30,6 +30,7 @@ struct FuncContext<'ctx: 'module, 'module> {
     local_registers: HashMap<Ssa, AnyValueEnum<'ctx>>,
     blocks: Vec<BasicBlock<'ctx>>,
     func_ir: &'module Function,
+    phi_nodes: HashMap<PhiValue<'ctx>, Vec<(Label, Ssa)>>,
 }
 
 impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
@@ -95,6 +96,12 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
         }
 
+        for (phi, options) in &self.func_get().phi_nodes {
+            for opt in options {
+                phi.add_incoming(&[(&self.read_basic_value(&opt.1), self.block(opt.0))])
+            }
+        }
+
         self.func = None;
     }
 
@@ -125,10 +132,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
             Op::Phi { dest, a, b } => {
                 let phi = self.builder.build_phi(self.reg_basic_type(&a.1), "");
-                phi.add_incoming(&[
-                    (&self.read_basic_value(&a.1), self.block(a.0)),
-                    (&self.read_basic_value(&b.1), self.block(b.0)),
-                ]);
+                self.func_mut().phi_nodes.insert(phi, vec![*a, *b]);
                 self.set(dest, phi);
             }
             Op::Call {
@@ -297,6 +301,7 @@ impl<'ctx: 'module, 'module> FuncContext<'ctx, 'module> {
             local_registers: Default::default(),
             blocks: vec![],
             func_ir: ir,
+            phi_nodes: HashMap::new(),
         }
     }
 }

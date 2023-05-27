@@ -289,6 +289,26 @@ long main(){
     no_args_run_main(src, 10);
 }
 
+#[test]
+fn nested_while_loop() {
+    let src = "
+long main(){
+  long x = 0;
+    long z = 0;
+    while (z < 3) {
+        z = z + 1;
+        long y = 0;
+        while (y < 3) {
+            x = x + 1;
+            y = y + 1;
+        }
+    }
+    return x;
+}
+    ";
+    no_args_run_main(src, 9);
+}
+
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);
     assert_eq!(Vm::eval(&ir, "main", &[]), Some(expected));
