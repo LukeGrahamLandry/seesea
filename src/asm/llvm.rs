@@ -13,6 +13,7 @@ use inkwell::types::{
 };
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
+    PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
 use std::collections::HashMap;
@@ -27,6 +28,7 @@ pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     // Reset per function
     local_registers: HashMap<Ssa, AnyValueEnum<'ctx>>,
     blocks: Vec<BasicBlock<'ctx>>,
+    func_ir: Option<&'module Function>,
 }
 
 impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
@@ -38,10 +40,11 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             functions: Default::default(),
             local_registers: Default::default(),
             blocks: vec![],
+            func_ir: None,
         }
     }
 
-    pub fn compile_all(&mut self, ir: &ir::Module) {
+    pub fn compile_all(&mut self, ir: &'module ir::Module) {
         for function in &ir.functions {
             self.emit_function(function);
         }
@@ -52,11 +55,11 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     /// The function pointer returned is only valid if the execution_engine is still valid.
     pub unsafe fn compile_function<F: UnsafeFunctionPointer>(
         mut self,
-        ir: Function,
+        ir: &'module Function,
         execution_engine: &ExecutionEngine,
     ) -> F {
         let name = ir.signature.name.clone();
-        self.emit_function(&ir);
+        self.emit_function(ir);
         self.module.verify().unwrap();
         let function: JitFunction<F> = execution_engine.get_function(name.as_str()).unwrap();
         function.as_raw()
@@ -64,13 +67,14 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
 
     // TODO: the whole program shares one module
     // TODO: module names? dumb to throw away variable names?
-    pub fn compile(self, ir: Function, execution_engine: &ExecutionEngine) -> u64 {
+    pub fn compile(self, ir: &'module Function, execution_engine: &ExecutionEngine) -> u64 {
         type GetInt = unsafe extern "C" fn() -> u64;
         let function = unsafe { self.compile_function::<GetInt>(ir, execution_engine) };
         unsafe { function() }
     }
 
-    fn emit_function(&mut self, ir: &Function) {
+    fn emit_function(&mut self, ir: &'module Function) {
+        self.func_ir = Some(ir);
         let t = self.get_func_type(&ir.signature);
         let func = self
             .module
@@ -99,7 +103,6 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         for (i, block) in ir.blocks.iter().enumerate() {
             let code = self.blocks[i];
             self.builder.position_at_end(code);
-            let mut has_returned = false;
 
             if block.is_empty() {
                 // TODO: get rid of garbage blocks before it gets to llvm.
@@ -111,89 +114,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
 
             for op in block {
-                // assert!(!has_returned); // TODO know what ifs are. if you return in one if branch, it thinks the function is over
-                match op {
-                    Op::ConstInt { dest, value } => {
-                        let val = number.const_int(*value, false);
-                        self.local_registers.insert(*dest, val.as_any_value_enum());
-                    }
-                    Op::Binary { dest, a, b, kind } => self.emit_binary_op(*dest, *a, *b, *kind),
-                    Op::Return { value } => {
-                        self.emit_return(value);
-                        has_returned = true;
-                    }
-                    Op::AlwaysJump(target) => {
-                        // TODO: factor out a FunctionBuilder that gives you type safety over these index -> block conversions.
-                        self.builder.build_unconditional_branch(self.block(*target));
-                    }
-                    Op::Jump {
-                        condition,
-                        if_true,
-                        if_false,
-                    } => {
-                        self.builder.build_conditional_branch(
-                            self.read_int(*condition),
-                            self.block(*if_true),
-                            self.block(*if_false),
-                        );
-                    }
-                    Op::Phi { dest, a, b } => {
-                        let a_reg = self.local_registers.get(&a.1).unwrap();
-                        let b_reg = self.local_registers.get(&b.1).unwrap();
-
-                        let a_ty: BasicTypeEnum = a_reg.get_type().try_into().unwrap();
-                        let b_ty: BasicTypeEnum = b_reg.get_type().try_into().unwrap();
-                        assert_eq!(a_ty, b_ty);
-                        let phi = self.builder.build_phi(a_ty, "");
-
-                        let a_val: BasicValueEnum = (*a_reg).try_into().unwrap();
-                        let b_val: BasicValueEnum = (*b_reg).try_into().unwrap();
-                        phi.add_incoming(&[(&a_val, self.block(a.0)), (&b_val, self.block(b.0))]);
-
-                        self.local_registers
-                            .insert(*dest, AnyValueEnum::from(phi.as_basic_value()));
-                    }
-                    Op::Call {
-                        func_name,
-                        args,
-                        return_value_dest,
-                    } => {
-                        let function = *self.functions.get(func_name).expect("Function not found.");
-                        let args = args
-                            .iter()
-                            .map(|ssa| {
-                                (*self.local_registers.get(ssa).unwrap())
-                                    .try_into()
-                                    .unwrap()
-                            })
-                            .collect::<Vec<BasicMetadataValueEnum>>();
-                        let return_value = self.builder.build_call(function, &args, "");
-                        self.local_registers
-                            .insert(*return_value_dest, return_value.as_any_value_enum());
-                    }
-                    Op::LoadFromPtr { value_dest, addr } => {
-                        let addr_value =
-                            self.local_registers.get(addr).unwrap().into_pointer_value();
-                        let ty = ir.type_of(addr).deref_type();
-                        let ty: BasicTypeEnum = self.llvm_type(ty).try_into().unwrap();
-                        let value = self.builder.build_load(ty, addr_value, "");
-                        self.local_registers
-                            .insert(*value_dest, value.as_any_value_enum());
-                    }
-                    Op::StoreToPtr { addr, value_source } => {
-                        let addr_value =
-                            self.local_registers.get(addr).unwrap().into_pointer_value();
-                        let value = *self.local_registers.get(value_source).unwrap();
-                        let value: BasicValueEnum = value.try_into().unwrap();
-                        self.builder.build_store(addr_value, value);
-                    }
-                    Op::StackAlloc { dest, ty } => {
-                        let ty: BasicTypeEnum = self.llvm_type(*ty).try_into().unwrap();
-                        let ptr = self.builder.build_alloca(ty, "");
-                        self.local_registers.insert(*dest, ptr.as_any_value_enum());
-                    }
-                    _ => todo!(),
-                }
+                self.emit_ir_op(op);
             }
         }
 
@@ -201,23 +122,90 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         self.blocks.clear();
     }
 
+    fn emit_ir_op(&mut self, op: &Op) {
+        match op {
+            Op::ConstInt { dest, value } => {
+                let number = self.llvm_type(CType::int()).into_int_type();
+                let val = number.const_int(*value, false);
+                self.set(dest, val);
+            }
+            Op::Binary { dest, a, b, kind } => self.emit_binary_op(dest, a, b, *kind),
+            Op::Return { value } => {
+                self.emit_return(value);
+            }
+            Op::AlwaysJump(target) => {
+                // TODO: factor out a FunctionBuilder that gives you type safety over these index -> block conversions.
+                self.builder.build_unconditional_branch(self.block(*target));
+            }
+            Op::Jump {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                self.builder.build_conditional_branch(
+                    self.read_int(condition),
+                    self.block(*if_true),
+                    self.block(*if_false),
+                );
+            }
+            Op::Phi { dest, a, b } => {
+                let phi = self.builder.build_phi(self.reg_basic_type(&a.1), "");
+                phi.add_incoming(&[
+                    (&self.read_basic_value(&a.1), self.block(a.0)),
+                    (&self.read_basic_value(&b.1), self.block(b.0)),
+                ]);
+                self.set(dest, phi);
+            }
+            Op::Call {
+                func_name,
+                args,
+                return_value_dest,
+            } => {
+                let function = *self.functions.get(func_name).expect("Function not found.");
+                let args = self.collect_arg_values(args);
+                let return_value = self.builder.build_call(function, &args, "");
+                self.set(return_value_dest, return_value);
+            }
+            Op::LoadFromPtr { value_dest, addr } => {
+                let value =
+                    self.build_load(self.reg_basic_type(value_dest), self.read_ptr(addr), "");
+                self.set(value_dest, value);
+            }
+            Op::StoreToPtr { addr, value_source } => {
+                self.builder
+                    .build_store(self.read_ptr(addr), self.read_basic_value(value_source));
+            }
+            Op::StackAlloc { dest, ty } => {
+                let ptr = self.builder.build_alloca(self.llvm_type(*ty), "");
+                self.set(dest, ptr);
+            }
+            _ => todo!(),
+        }
+    }
+
     fn get_func_type(&self, signature: &FuncSignature) -> FunctionType<'ctx> {
         let args: Vec<_> = signature
             .param_types
             .iter()
-            .map(|ty| self.llvm_type(*ty))
+            .map(|ty| self.llvm_type(*ty).into())
             .collect();
         let returns = self.llvm_type(signature.return_type);
-        let returns: BasicTypeEnum = returns.try_into().unwrap();
         returns.fn_type(&args, false)
     }
 
-    fn emit_binary_op(&mut self, dest: Ssa, a: Ssa, b: Ssa, kind: BinaryOp) {
-        // TODO: support pointer math
+    fn collect_arg_values(&self, args: &[Ssa]) -> Vec<BasicMetadataValueEnum<'ctx>> {
+        args.iter()
+            .map(|ssa| self.read_basic_value(ssa))
+            .map(TryInto::try_into)
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn emit_binary_op(&mut self, dest: &Ssa, a: &Ssa, b: &Ssa, kind: BinaryOp) {
+        // TODO: support pointer math (but probably be explicit about the casts in my IR).
         assert!(self.type_in_reg(a).is_int_type() && self.type_in_reg(b).is_int_type());
         let result = self.int_bin_op_factory(self.read_int(a), self.read_int(b), kind);
-        self.local_registers
-            .insert(dest, result.as_any_value_enum());
+        self.set(dest, result);
     }
 
     fn int_bin_op_factory(
@@ -238,16 +226,43 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         }
     }
 
+    fn set<V>(&mut self, register: &Ssa, value: V)
+    where
+        V: AnyValue<'ctx>,
+    {
+        assert!(
+            self.local_registers
+                .insert(*register, value.as_any_value_enum())
+                .is_none(),
+            "IR must be in SSA form (only set registers once)."
+        );
+    }
+
     fn block(&self, label: Label) -> BasicBlock<'ctx> {
         self.blocks[label.index()]
     }
 
-    fn read_int(&self, ssa: Ssa) -> IntValue<'ctx> {
-        self.local_registers.get(&ssa).unwrap().into_int_value()
+    fn read_int(&self, ssa: &Ssa) -> IntValue<'ctx> {
+        self.local_registers.get(ssa).unwrap().into_int_value()
     }
 
-    fn type_in_reg(&self, ssa: Ssa) -> AnyTypeEnum<'ctx> {
-        self.local_registers.get(&ssa).unwrap().get_type()
+    fn read_ptr(&self, ssa: &Ssa) -> PointerValue<'ctx> {
+        self.local_registers.get(ssa).unwrap().into_pointer_value()
+    }
+
+    fn read_basic_value(&self, ssa: &Ssa) -> BasicValueEnum<'ctx> {
+        let value = *self.local_registers.get(ssa).unwrap();
+        let value: BasicValueEnum = value.try_into().unwrap();
+        value
+    }
+
+    fn reg_basic_type(&self, ssa: &Ssa) -> BasicTypeEnum<'ctx> {
+        let ty = self.func_ir.unwrap().type_of(ssa);
+        self.llvm_type(ty)
+    }
+
+    fn type_in_reg(&self, ssa: &Ssa) -> AnyTypeEnum<'ctx> {
+        self.local_registers.get(ssa).unwrap().get_type()
     }
 
     fn emit_return(&self, value: &Option<Ssa>) {
@@ -262,7 +277,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         };
     }
 
-    fn llvm_type(&self, ty: CType) -> BasicMetadataTypeEnum<'ctx> {
+    fn llvm_type(&self, ty: CType) -> BasicTypeEnum<'ctx> {
         assert_eq!(ty.ty, ValueType::U64);
 
         let mut result = self.context.i64_type().as_basic_type_enum();
@@ -274,5 +289,15 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         }
 
         result.into()
+    }
+
+    // TODO: CLion can't cope with features and thinks there's an error here even though it compiles fine.
+    fn build_load(
+        &self,
+        pointee_type: BasicTypeEnum<'ctx>,
+        pointer_value: PointerValue<'ctx>,
+        name: &str,
+    ) -> BasicValueEnum<'ctx> {
+        self.builder.build_load(pointee_type, pointer_value, name)
     }
 }
