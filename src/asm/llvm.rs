@@ -174,8 +174,23 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                     Op::LoadFromPtr { value_dest, addr } => {
                         let addr_value =
                             self.local_registers.get(addr).unwrap().into_pointer_value();
-                        // self.builder.build_load(, addr_value, "");
-                        todo!()
+                        let ty = ir.type_of(addr).deref_type();
+                        let ty: BasicTypeEnum = self.llvm_type(ty).try_into().unwrap();
+                        let value = self.builder.build_load(ty, addr_value, "");
+                        self.local_registers
+                            .insert(*value_dest, value.as_any_value_enum());
+                    }
+                    Op::StoreToPtr { addr, value_source } => {
+                        let addr_value =
+                            self.local_registers.get(addr).unwrap().into_pointer_value();
+                        let value = *self.local_registers.get(value_source).unwrap();
+                        let value: BasicValueEnum = value.try_into().unwrap();
+                        self.builder.build_store(addr_value, value);
+                    }
+                    Op::StackAlloc { dest, ty } => {
+                        let ty: BasicTypeEnum = self.llvm_type(*ty).try_into().unwrap();
+                        let ptr = self.builder.build_alloca(ty, "");
+                        self.local_registers.insert(*dest, ptr.as_any_value_enum());
                     }
                     _ => todo!(),
                 }

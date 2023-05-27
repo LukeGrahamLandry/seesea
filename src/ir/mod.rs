@@ -197,6 +197,13 @@ impl Function {
     pub fn param_registers(&self) -> impl Iterator<Item = Ssa> {
         self.arg_registers.clone().into_iter()
     }
+
+    pub fn type_of(&self, ssa: &Ssa) -> CType {
+        *self
+            .register_types
+            .get(ssa)
+            .expect("Register must have type.")
+    }
 }
 
 impl Display for Ssa {

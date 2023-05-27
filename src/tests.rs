@@ -254,7 +254,7 @@ long main(long a){
     let ir = compile_module(src);
     assert_eq!(Vm::eval(&ir, "main", &[10]), Some(25));
     type Func = unsafe extern "C" fn(u64) -> u64;
-    llvm_run::<Func, _>(&ir, "main", |fib| assert_eq!(unsafe { fib.call(10) }, 25));
+    llvm_run::<Func, _>(&ir, "main", |func| assert_eq!(unsafe { func.call(10) }, 25));
 }
 
 #[test]
