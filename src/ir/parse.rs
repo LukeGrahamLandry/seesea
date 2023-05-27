@@ -7,6 +7,8 @@ use crate::ir::allocs::needs_stack_address;
 use crate::ir::debug::IrDebugInfo;
 use crate::ir::flow_stack::{ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{Label, Op, Ssa};
+use std::collections::HashMap;
+use std::mem;
 
 #[derive(Default)]
 struct AstParser<'ast> {
@@ -47,12 +49,12 @@ impl<'ast> AstParser<'ast> {
             .param_types
             .iter()
             .zip(input.signature.param_names.iter());
-        for (_ty, name) in arguments {
+        for (ty, name) in arguments {
             let variable = Var(name.as_str(), self.control.current_scope());
             let register = self.func_mut().next_var();
             self.func_mut()
                 .set_debug(register, || format!("{}_arg", name));
-            self.control.set(variable, register);
+            self.control.set(variable, register, ty);
             self.func_mut().arg_registers.push(register);
         }
         self.control.push_scope();
@@ -62,6 +64,9 @@ impl<'ast> AstParser<'ast> {
         self.control.pop_scope();
 
         println!("{:?}", self.func_mut());
+        let mut empty = HashMap::new();
+        mem::swap(&mut self.control.register_types, &mut empty);
+        self.func_mut().register_types = empty;
         self.func_mut().assert_valid();
         self.ir.functions.push(self.func.take().unwrap());
         let _ = self.control.pop_flow_frame();
@@ -84,20 +89,20 @@ impl<'ast> AstParser<'ast> {
             Stmt::Expression { expr } => {
                 let _ = self.emit_expr(expr, *block);
             }
-            Stmt::DeclareVar { name, value, .. } => {
+            Stmt::DeclareVar { name, value, kind } => {
                 // TODO: track types or maybe the ir should handle on the ssa?
                 let variable = Var(name.as_str(), self.control.current_scope());
 
                 if needs_stack_address(self.root_node.unwrap(), variable) {
                     // Somebody wants to take the address of this variable later,
                     // so we need to make sure it gets allocated on the stack and not kept in a register.
-                    self.control.set_stack_alloc(variable);
+                    self.control.set_stack_alloc(variable, kind);
                 } else {
                     // Nobody cares where this goes so it can be a register if the backend wants.
                     let register = self
                         .emit_expr(value, *block)
                         .expect("Variable type cannot be void.");
-                    self.control.set(variable, register);
+                    self.control.set(variable, register, kind);
                     self.func_mut()
                         .set_debug(register, || format!("{}_{}", name, variable.1 .0));
                 }
@@ -250,7 +255,8 @@ impl<'ast> AstParser<'ast> {
                     b: (branch_block, *branch_register),
                 },
             );
-            moved_registers.push((variable, new_register));
+            let ty = self.control.ssa_type(parent_register).clone();
+            moved_registers.push((variable, (new_register, ty)));
 
             let name_a = self.func_mut().name(&parent_register);
             let name_b = self.func_mut().name(&branch_register);
@@ -258,8 +264,8 @@ impl<'ast> AstParser<'ast> {
                 .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
         }
         // Now that we've updated everything, throw away the registers from before the branching.
-        for (variable, register) in moved_registers {
-            self.control.set(*variable, register);
+        for (variable, (register, ty)) in moved_registers {
+            self.control.set(*variable, register, &ty);
         }
     }
 
@@ -298,7 +304,8 @@ impl<'ast> AstParser<'ast> {
                     b: (if_false, other_register),
                 },
             );
-            moved_registers.push((variable, new_register));
+            let ty = self.control.ssa_type(then_register).clone();
+            moved_registers.push((variable, (new_register, ty)));
 
             let name_a = self.func_mut().name(&then_register);
             let name_b = self.func_mut().name(&other_register);
@@ -320,7 +327,8 @@ impl<'ast> AstParser<'ast> {
                     b: (if_false, else_register),
                 },
             );
-            moved_registers.push((variable, new_register));
+            let ty = self.control.ssa_type(original_register).clone();
+            moved_registers.push((variable, (new_register, ty)));
 
             let name_a = self.func_mut().name(&original_register);
             let name_b = self.func_mut().name(&else_register);
@@ -328,8 +336,8 @@ impl<'ast> AstParser<'ast> {
                 .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
         }
         // Now that we've updated everything, throw away the registers from before the branching.
-        for (variable, register) in moved_registers {
-            self.control.set(variable, register);
+        for (variable, (register, ty)) in moved_registers {
+            self.control.set(variable, register, &ty);
         }
     }
 
@@ -427,7 +435,8 @@ impl<'ast> AstParser<'ast> {
                     .expect("todo: support stack alloc");
                 self.func_mut()
                     .set_debug(value, || format!("{}_{}", name, this_variable.1 .0));
-                self.control.set(this_variable, value);
+                let ty = &self.control.var_type(this_variable).clone();
+                self.control.set(this_variable, value, ty);
                 Some(value)
             }
             _ => todo!(),

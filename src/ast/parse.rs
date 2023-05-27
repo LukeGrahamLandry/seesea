@@ -1,7 +1,7 @@
 //! TOKENS -> AST
 
 use crate::ast::{
-    BinaryOp, Expr, FuncSignature, Function, LiteralValue, Module, Stmt, UnaryOp, ValueType,
+    BinaryOp, CType, Expr, FuncSignature, Function, LiteralValue, Module, Stmt, UnaryOp, ValueType,
 };
 use crate::scanning::{Scanner, TokenType};
 
@@ -244,12 +244,25 @@ impl<'src> Parser<'src> {
     }
 
     /// TYPE
-    fn read_type(&mut self, msg: &str) -> ValueType {
+    fn read_type(&mut self, msg: &str) -> CType {
         let token = self.scanner.next();
-        if token.kind != TokenType::Identifier || token.lexeme != "long" {
-            self.error(msg);
+        match token.kind {
+            TokenType::Identifier => {
+                if token.lexeme != "long" {
+                    self.error(msg);
+                }
+                CType {
+                    ty: ValueType::U64,
+                    depth: 0,
+                }
+            }
+            TokenType::Star => {
+                let mut ty = self.read_type(msg);
+                ty.depth += 1;
+                ty
+            }
+            _ => self.error(msg),
         }
-        ValueType::U64
     }
 
     /// NAME

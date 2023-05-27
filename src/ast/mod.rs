@@ -15,8 +15,8 @@ pub struct Function {
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
 pub struct FuncSignature {
-    pub param_types: Vec<ValueType>,
-    pub return_type: ValueType,
+    pub param_types: Vec<CType>,
+    pub return_type: CType,
     pub name: String,
     // The names are needed for parsing the body code. They don't live on to LLVM IR currently.
     pub param_names: Vec<String>,
@@ -41,7 +41,7 @@ pub enum Stmt {
     DeclareVar {
         name: String,
         value: Box<Expr>,
-        kind: ValueType,
+        kind: CType,
     },
     Return {
         value: Option<Box<Expr>>,
@@ -68,7 +68,7 @@ pub enum Expr {
     Literal {
         value: LiteralValue,
     },
-    Default(ValueType),
+    Default(CType),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -141,8 +141,8 @@ pub enum ValueType {
     // Struct
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub struct CType {
-    ty: ValueType,
-    depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
+    pub ty: ValueType,
+    pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
 }

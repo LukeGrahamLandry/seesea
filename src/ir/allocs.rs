@@ -1,4 +1,4 @@
-use crate::ast::{Expr, Stmt, UnaryOp};
+use crate::ast::{CType, Expr, Stmt, UnaryOp, ValueType};
 use crate::ir::flow_stack::{ControlFlowStack, Var};
 use crate::ir::{Label, Ssa};
 
@@ -31,7 +31,14 @@ fn walk_stmt<'ast>(
         }
         Stmt::DeclareVar { name, value, .. } => {
             let new_variable = Var(name.as_str(), control.current_scope());
-            control.set(new_variable, Ssa(0)); // don't actually care about the ssas being unique/correct
+            control.set(
+                new_variable,
+                Ssa(0),
+                &CType {
+                    ty: ValueType::U64,
+                    depth: 0,
+                },
+            ); // don't actually care about the ssas being unique/correct
             println!("{:?}", control);
 
             if walk_expr(control, value, variable) {

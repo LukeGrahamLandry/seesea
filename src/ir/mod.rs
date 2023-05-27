@@ -1,5 +1,6 @@
-use crate::ast::{BinaryOp, FuncSignature, ValueType};
+use crate::ast::{BinaryOp, CType, FuncSignature, ValueType};
 use crate::KEEP_IR_DEBUG_NAMES;
+use std::collections::HashMap;
 use std::fmt::{write, Display, Formatter};
 
 mod allocs;
@@ -95,6 +96,7 @@ pub struct Function {
     pub sig: FuncSignature,
     pub arg_registers: Vec<Ssa>,
     pub debug_register_names: Vec<Option<String>>,
+    pub register_types: HashMap<Ssa, CType>,
 }
 
 #[derive(Default)]
@@ -117,6 +119,7 @@ impl Function {
             sig,
             arg_registers: vec![],
             debug_register_names: vec![],
+            register_types: Default::default(),
         }
     }
 

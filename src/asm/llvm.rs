@@ -1,6 +1,6 @@
 //! IR -> LLVM IR
 
-use crate::ast::{BinaryOp, FuncSignature, ValueType};
+use crate::ast::{BinaryOp, CType, FuncSignature, ValueType};
 use crate::ir;
 use crate::ir::{Function, Label, Op, Ssa};
 use inkwell::basic_block::BasicBlock;
@@ -8,9 +8,13 @@ use inkwell::builder::Builder;
 use inkwell::context::ContextRef;
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
-use inkwell::types::{BasicMetadataTypeEnum, FunctionType};
-use inkwell::values::{AnyValue, AnyValueEnum, BasicMetadataValueEnum, FunctionValue, IntValue};
-use inkwell::IntPredicate;
+use inkwell::types::{
+    AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType,
+};
+use inkwell::values::{
+    AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
+};
+use inkwell::{AddressSpace, IntPredicate};
 use std::collections::HashMap;
 
 pub struct LlvmFuncGen<'ctx: 'module, 'module> {
@@ -135,13 +139,14 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                         let a_reg = self.local_registers.get(&a.1).unwrap();
                         let b_reg = self.local_registers.get(&b.1).unwrap();
 
-                        let ty = a_reg.get_type().into_int_type();
-                        let phi = self.builder.build_phi(ty, "");
+                        let a_ty: BasicTypeEnum = a_reg.get_type().try_into().unwrap();
+                        let b_ty: BasicTypeEnum = b_reg.get_type().try_into().unwrap();
+                        assert_eq!(a_ty, b_ty);
+                        let phi = self.builder.build_phi(a_ty, "");
 
-                        phi.add_incoming(&[
-                            (&a_reg.into_int_value(), self.block(a.0)),
-                            (&b_reg.into_int_value(), self.block(b.0)),
-                        ]);
+                        let a_val: BasicValueEnum = (*a_reg).try_into().unwrap();
+                        let b_val: BasicValueEnum = (*b_reg).try_into().unwrap();
+                        phi.add_incoming(&[(&a_val, self.block(a.0)), (&b_val, self.block(b.0))]);
 
                         self.local_registers
                             .insert(*dest, AnyValueEnum::from(phi.as_basic_value()));
@@ -155,16 +160,20 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                         let args = args
                             .iter()
                             .map(|ssa| {
-                                self.local_registers
-                                    .get(ssa)
+                                (*self.local_registers.get(ssa).unwrap())
+                                    .try_into()
                                     .unwrap()
-                                    .into_int_value()
-                                    .into()
                             })
                             .collect::<Vec<BasicMetadataValueEnum>>();
                         let return_value = self.builder.build_call(function, &args, "");
                         self.local_registers
                             .insert(*return_value_dest, return_value.as_any_value_enum());
+                    }
+                    Op::Load { dest, addr } => {
+                        let addr_value =
+                            self.local_registers.get(addr).unwrap().into_pointer_value();
+                        // self.builder.build_load(, addr_value, "");
+                        todo!()
                     }
                     _ => todo!(),
                 }
@@ -182,10 +191,13 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             .map(|ty| self.llvm_type(*ty))
             .collect();
         let returns = self.llvm_type(signature.return_type);
-        returns.into_int_type().fn_type(&args, false)
+        let returns: BasicTypeEnum = returns.try_into().unwrap();
+        returns.fn_type(&args, false)
     }
 
     fn emit_binary_op(&mut self, dest: Ssa, a: Ssa, b: Ssa, kind: BinaryOp) {
+        // TODO: support pointer math
+        assert!(self.type_in_reg(a).is_int_type() && self.type_in_reg(b).is_int_type());
         let result = self.int_bin_op_factory(self.read_int(a), self.read_int(b), kind);
         self.local_registers
             .insert(dest, result.as_any_value_enum());
@@ -217,17 +229,33 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         self.local_registers.get(&ssa).unwrap().into_int_value()
     }
 
+    fn type_in_reg(&self, ssa: Ssa) -> AnyTypeEnum<'ctx> {
+        self.local_registers.get(&ssa).unwrap().get_type()
+    }
+
     fn emit_return(&self, value: &Option<Ssa>) {
         match value {
             None => self.builder.build_return(None),
-            Some(value) => self.builder.build_return(Some(
-                &self.local_registers.get(value).unwrap().into_int_value(),
-            )),
+            Some(value) => {
+                let ret_value: BasicValueEnum = (*self.local_registers.get(value).unwrap())
+                    .try_into()
+                    .unwrap();
+                self.builder.build_return(Some(&ret_value))
+            }
         };
     }
 
-    fn llvm_type(&self, ty: ValueType) -> BasicMetadataTypeEnum<'ctx> {
-        assert_eq!(ty, ValueType::U64);
-        self.context.i64_type().into()
+    fn llvm_type(&self, ty: CType) -> BasicMetadataTypeEnum<'ctx> {
+        assert_eq!(ty.ty, ValueType::U64);
+
+        let mut result = self.context.i64_type().as_basic_type_enum();
+
+        for _ in 0..ty.depth {
+            result = result
+                .ptr_type(AddressSpace::default())
+                .as_basic_type_enum();
+        }
+
+        result.into()
     }
 }

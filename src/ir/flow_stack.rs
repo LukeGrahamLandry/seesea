@@ -1,3 +1,4 @@
+use crate::ast::CType;
 use crate::ir::{Label, Ssa};
 use std::collections::{HashMap, HashSet};
 
@@ -13,6 +14,8 @@ pub struct ControlFlowStack<'ast> {
 
     // Tracked for an assertion that the Labels are only pushed once.
     prev_blocks: HashSet<Label>,
+    pub register_types: HashMap<Ssa, CType>,
+    stack_var_types: HashMap<Var<'ast>, CType>,
 
     /// Lexical scopes that effect name resolution
     scopes: Vec<LexScope>,
@@ -53,7 +56,7 @@ impl<'ast> ControlFlowStack<'ast> {
         self.flow.pop().expect("Can't pop empty ControlFlowStack")
     }
 
-    pub fn set(&mut self, variable: Var<'ast>, new_register: Ssa) {
+    pub fn set(&mut self, variable: Var<'ast>, new_register: Ssa, ty: &CType) {
         // @Speed
         assert!(
             !self.is_stack_alloc(variable),
@@ -67,6 +70,7 @@ impl<'ast> ControlFlowStack<'ast> {
             }
             Some(frame) => {
                 frame.mutations.insert(variable, new_register);
+                self.register_types.insert(new_register, *ty);
             }
         }
     }
@@ -87,9 +91,29 @@ impl<'ast> ControlFlowStack<'ast> {
         None
     }
 
-    pub fn set_stack_alloc(&mut self, variable: Var<'ast>) {
+    pub fn ssa_type(&self, ssa: Ssa) -> &CType {
+        self.register_types
+            .get(&ssa)
+            .expect("Can't type check unused register.")
+    }
+
+    pub fn var_type(&self, var: Var<'ast>) -> &CType {
+        let ssa = self.get(var);
+        match ssa {
+            None => {
+                assert!(self.is_stack_alloc(var)); // @Speed
+                self.stack_var_types
+                    .get(&var)
+                    .expect("Can't type check unused register.")
+            }
+            Some(ssa) => self.ssa_type(ssa),
+        }
+    }
+
+    pub fn set_stack_alloc(&mut self, variable: Var<'ast>, ty: &CType) {
         assert_eq!(variable.1, self.current_scope());
         assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
+        self.stack_var_types.insert(variable, *ty);
     }
 
     pub fn is_stack_alloc(&self, variable: Var<'ast>) -> bool {
