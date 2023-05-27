@@ -307,8 +307,7 @@ where
     let execution_engine = module
         .create_jit_execution_engine(OptimizationLevel::None)
         .unwrap();
-    let mut codegen = LlvmFuncGen::new(&module);
-    codegen.compile_all(ir);
+    LlvmFuncGen::new(&module).compile_all(ir);
     println!("=== LLVM IR ====");
     println!("{}", module.to_string());
     println!("=========");

@@ -5,12 +5,10 @@ use crate::ir;
 use crate::ir::{Function, Label, Op, Ssa};
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
-use inkwell::context::ContextRef;
+use inkwell::context::{Context, ContextRef};
 use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
 use inkwell::module::Module;
-use inkwell::types::{
-    AnyTypeEnum, AsTypeRef, BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType,
-};
+use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
     PointerValue,
@@ -22,13 +20,15 @@ pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     context: ContextRef<'ctx>,
     module: &'module Module<'ctx>,
     builder: Builder<'ctx>,
-
     functions: HashMap<String, FunctionValue<'ctx>>,
+    func: Option<FuncContext<'ctx, 'module>>,
+}
 
-    // Reset per function
+/// Plain old data that holds the state that must be reset for each function.
+struct FuncContext<'ctx: 'module, 'module> {
     local_registers: HashMap<Ssa, AnyValueEnum<'ctx>>,
     blocks: Vec<BasicBlock<'ctx>>,
-    func_ir: Option<&'module Function>,
+    func_ir: &'module Function,
 }
 
 impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
@@ -38,12 +38,11 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             module,
             builder: module.get_context().create_builder(),
             functions: Default::default(),
-            local_registers: Default::default(),
-            blocks: vec![],
-            func_ir: None,
+            func: None,
         }
     }
 
+    /// To access the results, use an execution engine created on the LLVM Module.
     pub fn compile_all(&mut self, ir: &'module ir::Module) {
         for function in &ir.functions {
             self.emit_function(function);
@@ -51,40 +50,16 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         self.module.verify().unwrap();
     }
 
-    /// # Safety
-    /// The function pointer returned is only valid if the execution_engine is still valid.
-    pub unsafe fn compile_function<F: UnsafeFunctionPointer>(
-        mut self,
-        ir: &'module Function,
-        execution_engine: &ExecutionEngine,
-    ) -> F {
-        let name = ir.signature.name.clone();
-        self.emit_function(ir);
-        self.module.verify().unwrap();
-        let function: JitFunction<F> = execution_engine.get_function(name.as_str()).unwrap();
-        function.as_raw()
-    }
-
-    // TODO: the whole program shares one module
-    // TODO: module names? dumb to throw away variable names?
-    pub fn compile(self, ir: &'module Function, execution_engine: &ExecutionEngine) -> u64 {
-        type GetInt = unsafe extern "C" fn() -> u64;
-        let function = unsafe { self.compile_function::<GetInt>(ir, execution_engine) };
-        unsafe { function() }
-    }
-
     fn emit_function(&mut self, ir: &'module Function) {
-        self.func_ir = Some(ir);
+        self.func = Some(FuncContext::new(ir));
         let t = self.get_func_type(&ir.signature);
         let func = self
             .module
             .add_function(ir.signature.name.as_str(), t, None);
         self.functions.insert(ir.signature.name.clone(), func);
-        let number = self.context.i64_type();
 
-        assert!(self.local_registers.is_empty() && self.blocks.is_empty());
         // All the blocks need to exist ahead of time so jumps can reference them.
-        self.blocks = ir
+        self.func_mut().blocks = ir
             .blocks
             .iter()
             .enumerate()
@@ -96,19 +71,20 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             let param = func
                 .get_nth_param(i as u32)
                 .expect("LLVM func arg count must match signature.");
-            self.local_registers
-                .insert(*register, param.as_any_value_enum());
+            self.set(register, param);
         }
 
+        // Compile the body of the function.
         for (i, block) in ir.blocks.iter().enumerate() {
-            let code = self.blocks[i];
+            let code = self.func_get().blocks[i];
             self.builder.position_at_end(code);
 
+            // TODO: get rid of garbage blocks before it gets to llvm.
+            //       but it crashes with invalid blocks that don't jump anywhere so temp fix.
+            //       llvm optimises it out anyway.
             if block.is_empty() {
-                // TODO: get rid of garbage blocks before it gets to llvm.
-                //       but it crashes with invalid blocks that don't jump anywhere so temp fix.
-                //       llvm optimises it out anyway.
-                let garbage = number.const_int(3141592, false);
+                println!("Made empty block in LLVM.");
+                let garbage = self.context.i64_type().const_int(3141592, false);
                 self.builder.build_return(Some(&garbage));
                 continue;
             }
@@ -118,8 +94,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
         }
 
-        self.local_registers.clear();
-        self.blocks.clear();
+        self.func = None;
     }
 
     fn emit_ir_op(&mut self, op: &Op) {
@@ -231,7 +206,8 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         V: AnyValue<'ctx>,
     {
         assert!(
-            self.local_registers
+            self.func_mut()
+                .local_registers
                 .insert(*register, value.as_any_value_enum())
                 .is_none(),
             "IR must be in SSA form (only set registers once)."
@@ -239,41 +215,46 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn block(&self, label: Label) -> BasicBlock<'ctx> {
-        self.blocks[label.index()]
+        self.func_get().blocks[label.index()]
     }
 
     fn read_int(&self, ssa: &Ssa) -> IntValue<'ctx> {
-        self.local_registers.get(ssa).unwrap().into_int_value()
+        self.func_get()
+            .local_registers
+            .get(ssa)
+            .unwrap()
+            .into_int_value()
     }
 
     fn read_ptr(&self, ssa: &Ssa) -> PointerValue<'ctx> {
-        self.local_registers.get(ssa).unwrap().into_pointer_value()
+        self.func_get()
+            .local_registers
+            .get(ssa)
+            .unwrap()
+            .into_pointer_value()
     }
 
     fn read_basic_value(&self, ssa: &Ssa) -> BasicValueEnum<'ctx> {
-        let value = *self.local_registers.get(ssa).unwrap();
+        let value = *self.func_get().local_registers.get(ssa).unwrap();
         let value: BasicValueEnum = value.try_into().unwrap();
         value
     }
 
     fn reg_basic_type(&self, ssa: &Ssa) -> BasicTypeEnum<'ctx> {
-        let ty = self.func_ir.unwrap().type_of(ssa);
+        let ty = self.func_get().func_ir.type_of(ssa);
         self.llvm_type(ty)
     }
 
     fn type_in_reg(&self, ssa: &Ssa) -> AnyTypeEnum<'ctx> {
-        self.local_registers.get(ssa).unwrap().get_type()
+        self.func_get().local_registers.get(ssa).unwrap().get_type()
     }
 
     fn emit_return(&self, value: &Option<Ssa>) {
         match value {
             None => self.builder.build_return(None),
-            Some(value) => {
-                let ret_value: BasicValueEnum = (*self.local_registers.get(value).unwrap())
-                    .try_into()
-                    .unwrap();
-                self.builder.build_return(Some(&ret_value))
-            }
+            Some(value) => self
+                .builder
+                .build_return(Some(&self.read_basic_value(value))),
         };
     }
 
@@ -299,5 +280,23 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         name: &str,
     ) -> BasicValueEnum<'ctx> {
         self.builder.build_load(pointee_type, pointer_value, name)
+    }
+
+    fn func_get(&self) -> &FuncContext<'ctx, 'module> {
+        self.func.as_ref().unwrap()
+    }
+
+    fn func_mut(&mut self) -> &mut FuncContext<'ctx, 'module> {
+        self.func.as_mut().unwrap()
+    }
+}
+
+impl<'ctx: 'module, 'module> FuncContext<'ctx, 'module> {
+    fn new(ir: &'module Function) -> FuncContext<'ctx, 'module> {
+        FuncContext {
+            local_registers: Default::default(),
+            blocks: vec![],
+            func_ir: ir,
+        }
     }
 }
