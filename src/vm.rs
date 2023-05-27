@@ -71,7 +71,7 @@ impl<'ir> Vm<'ir> {
             "[{:?}] ip = {}; {} (frame = {})",
             self.get_frame().block,
             self.get_frame().ip,
-            self.get_frame().function.sig.name,
+            self.get_frame().function.signature.name,
             self.call_stack.len()
         );
         let ops = &self.get_frame().function.blocks[self.get_frame().block.index()];

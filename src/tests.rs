@@ -254,7 +254,25 @@ long main(long a){
     let ir = compile_module(src);
     assert_eq!(Vm::eval(&ir, "main", &[10]), Some(25));
     type Func = unsafe extern "C" fn(u64) -> u64;
-    llvm_run::<Func, _>(&ir, "fib", |fib| assert_eq!(unsafe { fib.call(10) }, 25));
+    llvm_run::<Func, _>(&ir, "main", |fib| assert_eq!(unsafe { fib.call(10) }, 25));
+}
+
+#[test]
+fn if_statement_with_mutation_in_else() {
+    let src = "
+long main(){
+    long x = 5;
+    long y = 10;
+    long z = 0; 
+    if (x > y) {
+        y = 0;
+    } else {
+        x = 0;
+    }
+    return x;
+}
+    ";
+    no_args_run_main(src, 0);
 }
 
 fn no_args_run_main(src: &str, expected: u64) {

@@ -1,5 +1,3 @@
-use crate::ir::Label;
-
 mod parse;
 mod print;
 
@@ -13,7 +11,7 @@ pub struct Function {
     pub signature: FuncSignature,
 }
 
-#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 pub struct FuncSignature {
     pub param_types: Vec<CType>,
     pub return_type: CType,
@@ -100,14 +98,38 @@ pub enum LiteralValue {
     Number { value: f64 },
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
+pub enum ValueType {
+    U64,
+    // Struct
+}
+
+// I'd really like these to stay Copy. Maybe give them an 'ast lifetime so they can reference struct prototypes.
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+pub struct CType {
+    pub ty: ValueType,
+    pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
+}
+
+impl Module {
+    // TODO: hash map?
+    pub fn get_func(&self, name: &str) -> Option<&Function> {
+        self.functions
+            .iter()
+            .find(|&func| func.signature.name == name)
+    }
+}
+
 impl Expr {
     pub fn logical_not(self) -> Expr {
         UnaryOp::Not.apply(self)
     }
 
-    pub fn get_type(&self) -> ValueType {
-        todo!()
-    }
+    // TODO: I'm tempted to put type resolution logic here, separate from the IR generation.
+    //       It would mean I could type check the program before starting IR stuff.
+    //       But it's annoying to do an extra traversal here where the ir gen will do it again anyway.
+    //       Convoluted visitor abstraction that let's you write the passes separately but run them in one traversal?
+    //       But I think it would just be annoying to write code that way.
 }
 
 impl BinaryOp {
@@ -135,19 +157,14 @@ impl From<LiteralValue> for Expr {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
-pub enum ValueType {
-    U64,
-    // Struct
-}
-
-#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-pub struct CType {
-    pub ty: ValueType,
-    pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
-}
-
 impl CType {
+    pub fn int() -> CType {
+        CType {
+            ty: ValueType::U64,
+            depth: 0,
+        }
+    }
+
     #[must_use]
     pub fn deref_type(&self) -> CType {
         assert!(self.depth > 0, "Tried to dereference non-pointer type.");

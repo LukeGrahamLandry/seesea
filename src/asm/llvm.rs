@@ -55,7 +55,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         ir: Function,
         execution_engine: &ExecutionEngine,
     ) -> F {
-        let name = ir.sig.name.clone();
+        let name = ir.signature.name.clone();
         self.emit_function(&ir);
         self.module.verify().unwrap();
         let function: JitFunction<F> = execution_engine.get_function(name.as_str()).unwrap();
@@ -71,9 +71,11 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn emit_function(&mut self, ir: &Function) {
-        let t = self.get_func_type(&ir.sig);
-        let func = self.module.add_function(ir.sig.name.as_str(), t, None);
-        self.functions.insert(ir.sig.name.clone(), func);
+        let t = self.get_func_type(&ir.signature);
+        let func = self
+            .module
+            .add_function(ir.signature.name.as_str(), t, None);
+        self.functions.insert(ir.signature.name.clone(), func);
         let number = self.context.i64_type();
 
         assert!(self.local_registers.is_empty() && self.blocks.is_empty());
@@ -169,10 +171,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                         self.local_registers
                             .insert(*return_value_dest, return_value.as_any_value_enum());
                     }
-                    Op::LoadFromPtr {
-                        value_dest: dest,
-                        addr,
-                    } => {
+                    Op::LoadFromPtr { value_dest, addr } => {
                         let addr_value =
                             self.local_registers.get(addr).unwrap().into_pointer_value();
                         // self.builder.build_load(, addr_value, "");

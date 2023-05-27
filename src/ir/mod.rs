@@ -93,7 +93,7 @@ pub enum Op {
 pub struct Function {
     pub blocks: Vec<Vec<Op>>, // in the final codegen these will flatten out and labels will become offsets
     var_counter: usize,
-    pub sig: FuncSignature,
+    pub signature: FuncSignature,
     pub arg_registers: Vec<Ssa>,
     pub debug_register_names: Vec<Option<String>>,
     pub register_types: HashMap<Ssa, CType>,
@@ -107,7 +107,9 @@ pub struct Module {
 
 impl Module {
     pub fn get_func(&self, name: &str) -> Option<&Function> {
-        self.functions.iter().find(|&func| func.sig.name == name)
+        self.functions
+            .iter()
+            .find(|&func| func.signature.name == name)
     }
 }
 
@@ -116,7 +118,7 @@ impl Function {
         Function {
             blocks: vec![],
             var_counter: 0,
-            sig,
+            signature: sig,
             arg_registers: vec![],
             debug_register_names: vec![],
             register_types: Default::default(),
@@ -133,6 +135,7 @@ impl Function {
         self.blocks[block.0].push(op);
     }
 
+    #[must_use]
     pub fn next_var(&mut self) -> Ssa {
         self.debug_register_names.push(None);
         self.var_counter += 1;
@@ -145,14 +148,6 @@ impl Function {
         if KEEP_IR_DEBUG_NAMES {
             self.debug_register_names[ssa.0] = Some(get_name().into());
         }
-    }
-
-    pub fn constant_int(&mut self, block: Label, value: u64) -> Ssa {
-        let var = self.next_var();
-        self.set_debug(var, || format!("const_{}", value));
-        let op = Op::ConstInt { dest: var, value };
-        self.push(block, op);
-        var
     }
 
     fn ends_with_jump(&self, block: Label) -> bool {
@@ -187,6 +182,12 @@ impl Function {
             assert_eq!(jumps, 1);
             assert!(block.last().unwrap().is_jump());
         }
+
+        assert_eq!(
+            self.register_types.len(),
+            self.var_counter,
+            "All registers must know their type."
+        );
     }
 
     pub fn entry_point(&self) -> Label {

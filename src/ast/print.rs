@@ -1,4 +1,4 @@
-use crate::ast::{Expr, Function, Module, Stmt};
+use crate::ast::{CType, Expr, FuncSignature, Function, Module, Stmt};
 use std::fmt::{Debug, Formatter};
 
 impl Debug for Stmt {
@@ -107,5 +107,25 @@ impl Debug for Module {
             writeln!(f, "{:?}", func)?;
         }
         writeln!(f, "=======")
+    }
+}
+
+impl Debug for CType {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        match self.depth {
+            0 => write!(f, "{:?}", self.ty),
+            _ => write!(f, "{:?}-ptr{}", self.ty, self.depth),
+        }
+    }
+}
+
+impl Debug for FuncSignature {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "fn {}(", self.name)?;
+        let params = self.param_names.iter().zip(self.param_types.iter());
+        for (name, ty) in params {
+            write!(f, "{}: {:?}, ", name, ty)?;
+        }
+        write!(f, ") -> {:?}", self.return_type)
     }
 }

@@ -1,7 +1,7 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{BinaryOp, Expr, LiteralValue, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, CType, Expr, LiteralValue, Stmt, UnaryOp};
 use crate::ir;
 use crate::ir::allocs::needs_stack_address;
 use crate::ir::debug::IrDebugInfo;
@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::mem;
 use std::ops::Deref;
 
-#[derive(Default)]
 struct AstParser<'ast> {
+    ast: &'ast ast::Module,
     ir: ir::Module,
     func: Option<ir::Function>, // needs to become a stack if i allow parsing nested functions i guess?
     control: ControlFlowStack<'ast>,
@@ -30,7 +30,7 @@ impl From<ast::Module> for ir::Module {
 }
 
 pub fn parse_ast<'ast>(program: &'ast ast::Module) -> (ir::Module, IrDebugInfo<'ast>) {
-    let mut parser: AstParser<'ast> = AstParser::default();
+    let mut parser: AstParser<'ast> = AstParser::new(program);
 
     for func in program.functions.iter() {
         parser.parse_function(func)
@@ -40,7 +40,20 @@ pub fn parse_ast<'ast>(program: &'ast ast::Module) -> (ir::Module, IrDebugInfo<'
     (parser.ir, parser.debug)
 }
 
+// TODO: can i make the special casing around memory addresses less annoying with an lvalue/rvalue abstraction?
 impl<'ast> AstParser<'ast> {
+    fn new(ast: &ast::Module) -> AstParser {
+        AstParser {
+            ast,
+            ir: Default::default(),
+            func: None,
+            control: Default::default(),
+            debug: Default::default(),
+            root_node: None,
+            stack_addresses: Default::default(),
+        }
+    }
+
     fn parse_function(&mut self, input: &'ast ast::Function) {
         assert!(self.func.is_none());
         self.func = Some(ir::Function::new(input.signature.clone()));
@@ -55,10 +68,10 @@ impl<'ast> AstParser<'ast> {
             .zip(input.signature.param_names.iter());
         for (ty, name) in arguments {
             let variable = Var(name.as_str(), self.control.current_scope());
-            let register = self.func_mut().next_var();
+            let register = self.make_ssa(*ty);
             self.func_mut()
                 .set_debug(register, || format!("{}_arg", name));
-            self.control.set(variable, register, ty);
+            self.control.set(variable, register);
             self.func_mut().arg_registers.push(register);
         }
         self.control.push_scope();
@@ -67,10 +80,10 @@ impl<'ast> AstParser<'ast> {
         self.control.pop_scope();
         self.control.pop_scope();
 
-        println!("{:?}", self.func_mut());
         let mut empty = HashMap::new();
         mem::swap(&mut self.control.register_types, &mut empty);
         self.func_mut().register_types = empty;
+        println!("{:?}", self.func_mut());
         self.func_mut().assert_valid();
         self.ir.functions.push(self.func.take().unwrap());
         let _ = self.control.pop_flow_frame();
@@ -99,8 +112,14 @@ impl<'ast> AstParser<'ast> {
                 let value_register = self
                     .emit_expr(value, *block)
                     .expect("Variable type cannot be void.");
+                let value_type = self.type_of(value_register);
+                assert_eq!(
+                    value_type, *kind,
+                    "{:?} expected {:?} but found {:?}",
+                    variable, kind, value_type
+                );
 
-                // TODO: type check instead of blindly setting based on kind in code.
+                // TODO: run needs_stack_address in one pass for everything at the beginning.
                 if needs_stack_address(self.root_node.unwrap(), variable) {
                     println!("Stack allocation for {:?}", variable);
                     // Somebody wants to take the address of this variable later,
@@ -125,13 +144,15 @@ impl<'ast> AstParser<'ast> {
                 } else {
                     println!("No stack allocation for {:?}", variable);
                     // Nobody cares where this goes so it can stay a register if the backend wants.
-                    self.control.set(variable, value_register, kind);
+                    self.control.set(variable, value_register);
                     self.func_mut()
                         .set_debug(value_register, || format!("{}_{}", name, variable.1 .0));
                 }
             }
             Stmt::Return { value } => match value {
-                None => todo!(),
+                None => {
+                    self.func_mut().push(*block, Op::Return { value: None });
+                }
                 Some(value) => {
                     let value = self.emit_expr(value.as_ref(), *block);
                     self.func_mut().push(*block, Op::Return { value });
@@ -145,6 +166,54 @@ impl<'ast> AstParser<'ast> {
                 self.emit_if_stmt(block, condition, then_body, else_body);
             }
         }
+    }
+
+    fn emit_function_call(
+        &mut self,
+        block: Label,
+        func_expr: &'ast Expr,
+        args: &'ast [Expr],
+    ) -> Option<Ssa> {
+        let name = match func_expr {
+            Expr::GetVar { name } => name,
+            _ => todo!("Support function pointers."),
+        };
+
+        let signature = &self
+            .ast
+            .get_func(name)
+            .unwrap_or_else(|| panic!("Call undeclared function {}", name))
+            .signature;
+
+        let mut arg_registers = vec![];
+        for (i, arg) in args.iter().enumerate() {
+            let arg_ssa = self
+                .emit_expr(arg, block)
+                .expect("Passed function arg cannot be void.");
+
+            let found = self.control.ssa_type(arg_ssa);
+            let expected = &signature.param_types[i];
+            assert_eq!(
+                expected, found,
+                "{} param {} expected {:?} but found {:?}",
+                name, i, expected, found
+            );
+            arg_registers.push(arg_ssa);
+        }
+
+        let return_value_dest = self.make_ssa(signature.return_type);
+        self.func_mut().push(
+            block,
+            Op::Call {
+                // TODO: directly reference the func def node since we know we'll already have it from headers
+                //       but then does the IR need the lifetime of the ast?
+                func_name: name.clone(),
+                args: arg_registers,
+                return_value_dest,
+            },
+        );
+        // TODO: return none if the func is void
+        Some(return_value_dest)
     }
 
     // TODO: this whole passing around a mutable block pointer is scary.
@@ -278,17 +347,17 @@ impl<'ast> AstParser<'ast> {
                     b: (branch_block, *branch_register),
                 },
             );
-            let ty = self.control.ssa_type(parent_register).clone();
-            moved_registers.push((variable, (new_register, ty)));
+            assert_eq!(self.type_of(parent_register), self.type_of(new_register));
+            moved_registers.push((variable, new_register));
 
             let name_a = self.func_mut().name(&parent_register);
-            let name_b = self.func_mut().name(&branch_register);
+            let name_b = self.func_mut().name(branch_register);
             self.func_mut()
                 .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
         }
         // Now that we've updated everything, throw away the registers from before the branching.
-        for (variable, (register, ty)) in moved_registers {
-            self.control.set(*variable, register, &ty);
+        for (variable, register) in moved_registers {
+            self.control.set(*variable, register);
         }
     }
 
@@ -318,7 +387,8 @@ impl<'ast> AstParser<'ast> {
                 Some(else_register) => else_register,
             };
 
-            let new_register = self.func_mut().next_var();
+            assert_eq!(self.type_of(then_register), self.type_of(other_register));
+            let new_register = self.make_ssa(self.type_of(then_register));
             self.func_mut().push(
                 block,
                 Op::Phi {
@@ -327,21 +397,24 @@ impl<'ast> AstParser<'ast> {
                     b: (if_false, other_register),
                 },
             );
-            let ty = self.control.ssa_type(then_register).clone();
-            moved_registers.push((variable, (new_register, ty)));
+
+            moved_registers.push((variable, new_register));
 
             let name_a = self.func_mut().name(&then_register);
             let name_b = self.func_mut().name(&other_register);
             self.func_mut()
                 .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
         }
-        // Any that were mutated in both branches were removed in the previous loop.
-        // So we know any remaining will be using the original register as the true branch.
+
         for (variable, else_register) in mutated_in_else.mutations {
-            assert!(moved_registers.iter().any(|check| check.0 == variable));
+            // Any that were mutated in both branches were removed in the previous loop.
+            // So we know any remaining will be using the original register as the true branch.
+            assert!(!moved_registers.iter().any(|check| check.0 == variable));
 
             let original_register = self.control.get(variable).unwrap();
-            let new_register = self.func_mut().next_var();
+            assert_eq!(self.type_of(else_register), self.type_of(original_register));
+            let new_register = self.make_ssa(self.type_of(original_register));
+
             self.func_mut().push(
                 block,
                 Op::Phi {
@@ -350,8 +423,7 @@ impl<'ast> AstParser<'ast> {
                     b: (if_false, else_register),
                 },
             );
-            let ty = self.control.ssa_type(original_register).clone();
-            moved_registers.push((variable, (new_register, ty)));
+            moved_registers.push((variable, new_register));
 
             let name_a = self.func_mut().name(&original_register);
             let name_b = self.func_mut().name(&else_register);
@@ -359,8 +431,8 @@ impl<'ast> AstParser<'ast> {
                 .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
         }
         // Now that we've updated everything, throw away the registers from before the branching.
-        for (variable, (register, ty)) in moved_registers {
-            self.control.set(variable, register, &ty);
+        for (variable, register) in moved_registers {
+            self.control.set(variable, register);
         }
     }
 
@@ -377,7 +449,9 @@ impl<'ast> AstParser<'ast> {
                     let b = self
                         .emit_expr(right, block)
                         .expect("Binary operand cannot be void.");
-                    let dest = self.func_mut().next_var();
+                    let ty = self.control.ssa_type(a);
+                    assert_eq!(ty, self.control.ssa_type(b));
+                    let dest = self.make_ssa(*ty);
                     self.func_mut().push(
                         block,
                         Op::Binary {
@@ -392,7 +466,17 @@ impl<'ast> AstParser<'ast> {
             }
             Expr::Literal { value } => match value {
                 LiteralValue::Number { value } => {
-                    Some(self.func_mut().constant_int(block, *value as u64))
+                    let dest = self.make_ssa(CType::int());
+                    self.func_mut()
+                        .set_debug(dest, || format!("const_{}", value));
+                    self.func_mut().push(
+                        block,
+                        Op::ConstInt {
+                            dest,
+                            value: *value as u64,
+                        },
+                    );
+                    Some(dest)
                 }
             },
             Expr::GetVar { name } => {
@@ -401,11 +485,13 @@ impl<'ast> AstParser<'ast> {
                     .resolve_name(name)
                     .unwrap_or_else(|| panic!("Cannot access undefined variable {}", name));
                 let register = if self.control.is_stack_alloc(variable) {
-                    let value_dest = self.func_mut().next_var();
+                    let ty = *self.control.var_type(variable);
+                    let value_dest = self.make_ssa(ty);
                     let addr = *self
                         .stack_addresses
                         .get(&variable)
                         .expect("Cannot get undeclared stack variable.");
+                    assert!(self.control.ssa_type(addr).is_pointer_to(&ty));
                     self.func_mut()
                         .push(block, Op::LoadFromPtr { value_dest, addr });
                     value_dest
@@ -417,30 +503,7 @@ impl<'ast> AstParser<'ast> {
 
                 Some(register)
             }
-            Expr::Call { func, args } => {
-                let name = match func.as_ref() {
-                    Expr::GetVar { name } => name,
-                    _ => todo!(),
-                };
-                let arg_registers = args
-                    .iter()
-                    .map(|e| {
-                        self.emit_expr(e, block)
-                            .expect("Passed function arg cannot be void.")
-                    })
-                    .collect();
-                let return_value_dest = self.func_mut().next_var();
-                self.func_mut().push(
-                    block,
-                    Op::Call {
-                        func_name: name.clone(), // TODO: directly reference the func def node since we know we'll already hve it from headeres
-                        args: arg_registers,
-                        return_value_dest,
-                    },
-                );
-                // TODO: return none if the func is void
-                Some(return_value_dest)
-            }
+            Expr::Call { func, args } => self.emit_function_call(block, func, args),
             Expr::Unary { value, op } => match op {
                 UnaryOp::AddressOf => match value.deref() {
                     Expr::GetVar { name } => {
@@ -460,13 +523,13 @@ impl<'ast> AstParser<'ast> {
                         );
                         Some(ptr_register)
                     }
-                    _ => todo!("take address of complex expressions? "),
+                    _ => todo!("take address of complex expressions?"),
                 },
                 UnaryOp::Deref => {
                     let addr = self
                         .emit_expr(value, block)
                         .expect("Cannot dereference void.");
-                    let register = self.func_mut().next_var();
+                    let register = self.make_ssa(self.type_of(addr).deref_type());
                     self.func_mut().push(
                         block,
                         Op::LoadFromPtr {
@@ -474,10 +537,6 @@ impl<'ast> AstParser<'ast> {
                             addr,
                         },
                     );
-                    let ptr_type = self.control.ssa_type(addr);
-                    self.control
-                        .register_types
-                        .insert(register, ptr_type.deref_type());
                     Some(register)
                 }
                 _ => todo!(),
@@ -502,7 +561,6 @@ impl<'ast> AstParser<'ast> {
 
                 self.func_mut()
                     .set_debug(value_reg, || format!("{}_{}", name, this_variable.1 .0));
-                let ty = &self.control.var_type(this_variable).clone();
                 if self.control.is_stack_alloc(this_variable) {
                     let addr = *self
                         .stack_addresses
@@ -520,7 +578,11 @@ impl<'ast> AstParser<'ast> {
                         },
                     );
                 } else {
-                    self.control.set(this_variable, value_reg, ty);
+                    assert_eq!(
+                        *self.control.var_type(this_variable),
+                        self.type_of(value_reg)
+                    );
+                    self.control.set(this_variable, value_reg);
                 }
                 Some(value_reg)
             }
@@ -543,6 +605,18 @@ impl<'ast> AstParser<'ast> {
             }
             _ => unreachable!(),
         }
+    }
+
+    fn type_of(&self, ssa: Ssa) -> CType {
+        *self.control.ssa_type(ssa)
+    }
+
+    // Try to use this instead of directly calling next_var because it forces you to set the type of the register.
+    // The ir validation will catch it if you forget.
+    fn make_ssa(&mut self, ty: CType) -> Ssa {
+        let ssa = self.func_mut().next_var();
+        self.control.register_types.insert(ssa, ty);
+        ssa
     }
 
     fn func_mut(&mut self) -> &mut ir::Function {

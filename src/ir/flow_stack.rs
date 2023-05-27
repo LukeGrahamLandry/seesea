@@ -56,7 +56,7 @@ impl<'ast> ControlFlowStack<'ast> {
         self.flow.pop().expect("Can't pop empty ControlFlowStack")
     }
 
-    pub fn set(&mut self, variable: Var<'ast>, new_register: Ssa, ty: &CType) {
+    pub fn set(&mut self, variable: Var<'ast>, new_register: Ssa) {
         // @Speed
         assert!(
             !self.is_stack_alloc(variable),
@@ -71,7 +71,6 @@ impl<'ast> ControlFlowStack<'ast> {
             }
             Some(frame) => {
                 frame.mutations.insert(variable, new_register);
-                self.register_types.insert(new_register, *ty);
             }
         }
     }

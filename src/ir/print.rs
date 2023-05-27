@@ -1,3 +1,4 @@
+use crate::ast::CType;
 use crate::ir::{Function, Op, Ssa};
 use std::fmt::{format, write, Debug, Formatter};
 
@@ -12,7 +13,7 @@ impl Function {
             } => {
                 format!(
                     "{} = {} {:?} {};",
-                    self.name(result),
+                    self.name_ty(result),
                     self.name(a),
                     kind,
                     self.name(b)
@@ -21,23 +22,25 @@ impl Function {
             Op::ConstInt {
                 dest: result,
                 value,
-            } => format!("{} = {};", self.name(result), value),
+            } => format!("{} = {};", self.name_ty(result), value),
             Op::LoadFromPtr {
                 value_dest: dest,
                 addr,
-            } => format!("{} = *{};", self.name(dest), self.name(addr)),
+            } => format!("{} = deref {};", self.name_ty(dest), self.name(addr)),
             Op::StoreToPtr {
                 addr: dest,
                 value_source: addr,
-            } => format!("*{} = {};", self.name(dest), self.name(addr)),
-            Op::Move { dest, source } => format!("{} = {};", self.name(dest), self.name(source)),
+            } => format!("deref {} = {};", self.name_ty(dest), self.name(addr)),
+            Op::Move { dest, source } => format!("{} = {};", self.name_ty(dest), self.name(source)),
             Op::Jump {
                 condition,
                 if_true,
                 if_false,
             } => format!(
                 "if {} goto {:?}; else goto {:?};",
-                condition, if_true, if_false
+                self.name_ty(condition),
+                if_true,
+                if_false
             ),
             Op::Phi {
                 dest,
@@ -45,7 +48,7 @@ impl Function {
                 b: (bb, br),
             } => format!(
                 "{} = Phi({:?} -> {} || {:?} -> {});",
-                self.name(dest),
+                self.name_ty(dest),
                 ab,
                 self.name(ar),
                 bb,
@@ -53,7 +56,7 @@ impl Function {
             ),
             Op::Return { value } => match value {
                 None => "return;".to_string(),
-                Some(v) => format!("return {};", self.name(v)),
+                Some(v) => format!("return {};", self.name_ty(v)),
             },
             Op::StackAlloc { dest, ty } => {
                 format!("{} = alloc(sizeof {:?});", self.name(dest), ty)
@@ -65,24 +68,32 @@ impl Function {
                 return_value_dest,
             } => format!(
                 "{} = call {:?} {:?}",
-                self.name(return_value_dest),
+                self.name_ty(return_value_dest),
                 func_name,
                 args,
             ),
         }
     }
 
+    // Names for phi nodes use this so the type suffix doesnt get duplicated.
     pub fn name(&self, ssa: &Ssa) -> String {
         match &self.debug_register_names[ssa.0] {
             None => format!("%{}", ssa.0),
             Some(debug) => format!("%{}_{}", ssa.0, debug),
         }
     }
+
+    pub fn name_ty(&self, ssa: &Ssa) -> String {
+        match self.register_types.get(ssa) {
+            None => format!("{}[??]", self.name(ssa)),
+            Some(ty) => format!("{}[{:?}]", self.name(ssa), ty),
+        }
+    }
 }
 
 impl Debug for Function {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "{:?}", self.sig)?;
+        writeln!(f, "{:?}", self.signature)?;
         for (i, block) in self.blocks.iter().enumerate() {
             if block.is_empty() {
                 writeln!(f, "[Label({})] \nEMPTY", i)?;
