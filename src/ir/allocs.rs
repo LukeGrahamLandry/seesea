@@ -59,6 +59,11 @@ fn walk_stmt<'ast>(
                 }
             }
         }
+        Stmt::While { condition, body } => {
+            if walk_expr(control, condition, variable) || walk_stmt(control, body, variable) {
+                return true;
+            }
+        }
     }
 
     false
@@ -82,7 +87,6 @@ fn walk_expr<'ast>(
                         let resoloved = control.resolve_name(name).unwrap_or_else(|| {
                             panic!("Cannot access undeclared variable {}", name)
                         });
-                        // println!("Get address of {} (resolved {:?})", name, resoloved);
                         if resoloved == variable {
                             return true;
                         }

@@ -9,17 +9,6 @@ mod flow_stack;
 mod parse;
 mod print;
 
-// bytecode type thing with ssa so every variable assignment is unique
-// then i can keep track of what variable each register holds throughout the program.
-// this separates the register colouring problem from the simplifying ast nodes.
-// other than that, try to have the same semantics as assembly.
-// need a way to know the last time a ssa thing is used.
-// ref counting and a drop impl feels really clever but would just be an upper bound.
-// if i make this close enough to the llvm ir then i can always bail out and use that for other backends.
-// represent the concept of a basic block (has no branches or loops except for last op).
-// be able to execute the ir?
-// test assertion that each Ssa is used in a `dest` exactly once.
-
 /// Identifier of a static single-assignment register.
 // TODO: should know its type? easy to change since its opaque to other modules.
 // TODO: could have a lifetime tied to the function? that would be such a pain in the ass to use tho.

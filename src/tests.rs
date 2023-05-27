@@ -275,6 +275,20 @@ long main(){
     no_args_run_main(src, 0);
 }
 
+#[test]
+fn while_loop() {
+    let src = "
+long main(){
+    long x = 0;
+    while (x < 10) {
+        x = x + 1;
+    }
+    return x;
+}
+    ";
+    no_args_run_main(src, 10);
+}
+
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);
     assert_eq!(Vm::eval(&ir, "main", &[]), Some(expected));

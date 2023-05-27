@@ -10,6 +10,8 @@ pub struct Vm<'ir> {
     module: &'ir Module,
     call_stack: Vec<StackFrame<'ir>>,
     stack_address_counter: usize,
+    tick: usize,
+    tick_limit: Option<usize>,
 }
 
 struct StackFrame<'ir> {
@@ -40,12 +42,15 @@ impl<'ir> Vm<'ir> {
             module,
             call_stack: vec![],
             stack_address_counter: 0,
+            tick: 0,
+            tick_limit: None,
         }
     }
 
     pub fn eval(module: &Module, function_name: &str, args: &[u64]) -> Option<u64> {
         println!("Start VM Eval.");
         let mut vm = Vm::new(module);
+        vm.tick_limit = Some(250);
         let func = module.get_func(function_name).expect("Function not found");
         let frame = StackFrame {
             registers: HashMap::new(),
@@ -67,6 +72,14 @@ impl<'ir> Vm<'ir> {
     }
 
     pub fn tick(&mut self) -> VmResult {
+        // CLion doesn't want to show me the output while it hangs on a mistake in my tests that causes an infinite loop.
+        if let Some(tick_limit) = self.tick_limit {
+            if self.tick > tick_limit {
+                panic!("Damn bro the VM's been running for {} ticks... maybe check for infinite loops or remove the tick_limit", self.tick);
+            }
+        }
+        self.tick += 1;
+
         println!(
             "[{:?}] ip = {}; {} (frame = {})",
             self.get_frame().block,

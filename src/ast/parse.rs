@@ -96,6 +96,10 @@ impl<'src> Parser<'src> {
             return self.parse_if();
         }
 
+        if self.scanner.peek() == TokenType::While {
+            return self.parse_while_loop();
+        }
+
         // Better error messages for tokens we know can't start expressions.
         if self.scanner.peek() == TokenType::Else {
             self.error(
@@ -150,6 +154,19 @@ impl<'src> Parser<'src> {
             condition: Box::new(condition),
             then_body: Box::new(if_true),
             else_body: Box::new(if_false),
+        }
+    }
+
+    /// while (EXPR) STMT
+    fn parse_while_loop(&mut self) -> Stmt {
+        self.scanner.consume(TokenType::While);
+        self.scanner.consume(TokenType::LeftParen);
+        let condition = self.parse_expr();
+        self.scanner.consume(TokenType::RightParen);
+        let body = self.parse_stmt();
+        Stmt::While {
+            condition: Box::new(condition),
+            body: Box::new(body),
         }
     }
 

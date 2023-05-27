@@ -60,10 +60,10 @@ impl<'ast> ControlFlowStack<'ast> {
         // @Speed
         assert!(
             !self.is_stack_alloc(variable),
-            "{:?} is stack allocated. Can't get it's register.",
+            "{:?} is stack allocated. Can't set it's register.",
             variable
         );
-        // TODO: assert Ssa is unique? but that would mess with allocs.rs making up fake ones that it never read. that should be a special method self.fake_declare(Var)
+        // TODO: assert Ssa is unique? but that would mess with allocs.rs making up fake ones that it never read. that should be a special method self.fake_declare(Var). llvm emit checks anyway
 
         match self.flow.last_mut() {
             None => {
@@ -97,7 +97,7 @@ impl<'ast> ControlFlowStack<'ast> {
                 assert!(self.is_stack_alloc(var)); // @Speed
                 self.stack_var_types
                     .get(&var)
-                    .expect("Can't type check unused register.")
+                    .expect("Can't type check unused variable.")
             }
             Some(ssa) => self.ssa_type(ssa),
         }

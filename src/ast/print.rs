@@ -52,6 +52,11 @@ impl Stmt {
                 then_body.print(depth + 1, f)?;
                 else_body.print(depth + 1, f)
             }
+            Stmt::While { condition, body } => {
+                writeln!(f, "While: ")?;
+                condition.print(depth + 1, f)?;
+                body.print(depth + 1, f)
+            }
         }
     }
 }

@@ -1,12 +1,10 @@
 //! IR -> LLVM IR
 
-use crate::ast::{BinaryOp, CType, FuncSignature, ValueType};
-use crate::ir;
-use crate::ir::{Function, Label, Op, Ssa};
+use std::collections::HashMap;
+
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
-use inkwell::context::{Context, ContextRef};
-use inkwell::execution_engine::{ExecutionEngine, JitFunction, UnsafeFunctionPointer};
+use inkwell::context::ContextRef;
 use inkwell::module::Module;
 use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType};
 use inkwell::values::{
@@ -14,7 +12,10 @@ use inkwell::values::{
     PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
-use std::collections::HashMap;
+
+use crate::ast::{BinaryOp, CType, FuncSignature, ValueType};
+use crate::ir;
+use crate::ir::{Function, Label, Op, Ssa};
 
 pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     context: ContextRef<'ctx>,
@@ -109,7 +110,6 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 self.emit_return(value);
             }
             Op::AlwaysJump(target) => {
-                // TODO: factor out a FunctionBuilder that gives you type safety over these index -> block conversions.
                 self.builder.build_unconditional_branch(self.block(*target));
             }
             Op::Jump {
@@ -269,7 +269,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 .as_basic_type_enum();
         }
 
-        result.into()
+        result
     }
 
     // TODO: CLion can't cope with features and thinks there's an error here even though it compiles fine.

@@ -2,6 +2,8 @@ use logos::{Lexer, Logos};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 
+// I probably want to manually write the lexer at some point because its cool if I wrote the whole thing.
+// But also I really just don't care right now cause its boring.
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
 #[logos(skip r"[ \t\n\f]+")]
 pub enum TokenType {
@@ -21,6 +23,12 @@ pub enum TokenType {
 
     #[token("+")]
     Plus,
+
+    #[token("++")]
+    PlusPlus,
+
+    #[token("--")]
+    MinusMinus,
 
     #[token(";")]
     Semicolon,
@@ -45,6 +53,21 @@ pub enum TokenType {
 
     #[token("else")]
     Else,
+
+    #[token("while")]
+    While,
+
+    #[token("for")]
+    For,
+
+    #[token("do")]
+    Do,
+
+    #[token("break")]
+    Break,
+
+    #[token("continue")]
+    Continue,
 
     #[token(">")]
     Greater,

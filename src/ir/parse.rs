@@ -165,6 +165,9 @@ impl<'ast> AstParser<'ast> {
             } => {
                 self.emit_if_stmt(block, condition, then_body, else_body);
             }
+            Stmt::While { condition, body } => {
+                self.emit_while_loop(block, condition, body);
+            }
         }
     }
 
@@ -338,7 +341,11 @@ impl<'ast> AstParser<'ast> {
         let mut moved_registers = vec![];
         for (variable, branch_register) in &mutated_in_branch.mutations {
             let parent_register = self.control.get(*variable).unwrap();
-            let new_register = self.func_mut().next_var();
+            assert_eq!(
+                self.type_of(parent_register),
+                self.type_of(*branch_register)
+            );
+            let new_register = self.make_ssa(self.type_of(parent_register));
             self.func_mut().push(
                 new_block,
                 Op::Phi {
@@ -347,7 +354,6 @@ impl<'ast> AstParser<'ast> {
                     b: (branch_block, *branch_register),
                 },
             );
-            assert_eq!(self.type_of(parent_register), self.type_of(new_register));
             moved_registers.push((variable, new_register));
 
             let name_a = self.func_mut().name(&parent_register);
@@ -434,6 +440,57 @@ impl<'ast> AstParser<'ast> {
         for (variable, register) in moved_registers {
             self.control.set(variable, register);
         }
+    }
+
+    // parent
+    //       setup
+    //            condition
+    //                     body_block
+    //                               end_of_body_block
+    //                                               <setup
+    //                     exit_block
+    fn emit_while_loop(&mut self, block: &mut Label, condition: &'ast Expr, body: &'ast Stmt) {
+        let parent_block = *block;
+        let setup_block = self.func_mut().new_block();
+        let condition_block = self.func_mut().new_block();
+        self.func_mut()
+            .push(parent_block, Op::AlwaysJump(setup_block));
+        
+        // TODO: what if condition mutates? same question for ifs.
+        let condition_register = self
+            .emit_expr(condition, condition_block)
+            .expect("Loop condition can't be void");
+        
+        let start_body_block = self.func_mut().new_block();
+        let mut end_of_body_block = start_body_block;
+
+        self.control.push_flow_frame(end_of_body_block);
+        self.emit_statement(body, &mut end_of_body_block);
+        let mutated_in_body = self.control.pop_flow_frame();
+
+        self.emit_phi_parent_or_single_branch(
+            parent_block,
+            end_of_body_block,
+            setup_block,
+            &mutated_in_body,
+        );
+
+        let exit_block = self.func_mut().new_block();
+
+        self.func_mut()
+            .push(setup_block, Op::AlwaysJump(condition_block));
+        self.func_mut()
+            .push(end_of_body_block, Op::AlwaysJump(setup_block));
+        self.func_mut().push(
+            condition_block,
+            Op::Jump {
+                condition: condition_register,
+                if_true: start_body_block,
+                if_false: exit_block,
+            },
+        );
+
+        *block = exit_block;
     }
 
     #[must_use]
