@@ -252,9 +252,9 @@ long main(long a){
     ";
 
     let ir = compile_module(src);
-    assert_eq!(Vm::eval(&ir, "main", &[10]), Some(20));
+    assert_eq!(Vm::eval(&ir, "main", &[10]), Some(25));
     type Func = unsafe extern "C" fn(u64) -> u64;
-    llvm_run::<Func, _>(&ir, "fib", |fib| assert_eq!(unsafe { fib.call(10) }, 20));
+    llvm_run::<Func, _>(&ir, "fib", |fib| assert_eq!(unsafe { fib.call(10) }, 25));
 }
 
 fn no_args_run_main(src: &str, expected: u64) {

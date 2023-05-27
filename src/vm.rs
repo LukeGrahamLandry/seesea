@@ -9,15 +9,17 @@ use std::collections::HashMap;
 pub struct Vm<'ir> {
     module: &'ir Module,
     call_stack: Vec<StackFrame<'ir>>,
+    stack_address_counter: usize,
 }
 
 struct StackFrame<'ir> {
-    registers: HashMap<Ssa, u64>,
+    registers: HashMap<Ssa, VmValue>,
     function: &'ir Function,
     last_block: Option<Label>,
     block: Label,
     ip: usize,
     return_value_register: Option<Ssa>,
+    memory: HashMap<VmValue, VmValue>,
 }
 
 pub enum VmResult {
@@ -25,11 +27,19 @@ pub enum VmResult {
     Done(Option<u64>),
 }
 
+#[derive(Eq, PartialEq, Hash, Clone, Copy, Debug)]
+pub enum VmValue {
+    U64(u64),
+    StackAddress(usize),
+    Uninit,
+}
+
 impl<'ir> Vm<'ir> {
     pub fn new(module: &Module) -> Vm {
         Vm {
             module,
             call_stack: vec![],
+            stack_address_counter: 0,
         }
     }
 
@@ -44,9 +54,10 @@ impl<'ir> Vm<'ir> {
             block: func.entry_point(),
             ip: 0,
             return_value_register: None,
+            memory: HashMap::new(),
         };
         vm.call_stack.push(frame);
-        vm.init_params(args.iter().copied());
+        vm.init_params(args.iter().copied().map(VmValue::U64));
 
         loop {
             if let VmResult::Done(result) = vm.tick() {
@@ -63,29 +74,26 @@ impl<'ir> Vm<'ir> {
             self.get_frame().function.sig.name,
             self.call_stack.len()
         );
-        // let mut dbg_reg = self.registers.iter().collect::<Vec<_>>();
-        // dbg_reg.sort_by(|a, b| a.0 .0.cmp(&b.0 .0));
-        // println!("Registers: {:?}", dbg_reg);
         let ops = &self.get_frame().function.blocks[self.get_frame().block.index()];
         // TODO: while Op contains a string for function name, this clone means function calls are super slow.
         let op = ops[self.get_frame().ip].clone();
         println!("Op: {}", self.get_frame().function.print(&op));
         match op {
             Op::ConstInt { dest, value } => {
-                self.set(dest, value);
+                self.set(dest, VmValue::U64(value));
             }
             Op::Binary { dest, a, b, kind } => {
                 let result = match kind {
-                    BinaryOp::Add => self.get(a) + self.get(b),
-                    BinaryOp::Subtract => self.get(a) - self.get(b),
-                    BinaryOp::GreaterThan => int_cast(self.get(a) > self.get(b)),
-                    BinaryOp::LessThan => int_cast(self.get(a) < self.get(b)),
+                    BinaryOp::Add => self.get(a).to_int() + self.get(b).to_int(),
+                    BinaryOp::Subtract => self.get(a).to_int() - self.get(b).to_int(),
+                    BinaryOp::GreaterThan => int_cast(self.get(a).to_int() > self.get(b).to_int()),
+                    BinaryOp::LessThan => int_cast(self.get(a).to_int() < self.get(b).to_int()),
                     BinaryOp::Assign => {
                         unreachable!("IR must be in SSA form and have no BinaryOp::Assign")
                     }
                     _ => todo!(),
                 };
-                self.set(dest, result);
+                self.set(dest, VmValue::U64(result));
             }
             Op::Jump {
                 condition,
@@ -93,7 +101,7 @@ impl<'ir> Vm<'ir> {
                 if_false,
             } => {
                 self.mut_frame().last_block = Some(self.get_frame().block);
-                if self.get(condition) != 0 {
+                if self.get(condition).to_bool() {
                     self.jump(if_true);
                 } else {
                     self.jump(if_false);
@@ -118,7 +126,7 @@ impl<'ir> Vm<'ir> {
                 self.call_stack.pop();
                 println!("--- ret {:?}", result);
                 return if self.call_stack.is_empty() {
-                    VmResult::Done(result)
+                    VmResult::Done(Some(result.unwrap().to_int()))
                 } else {
                     let ssa = self.get_frame().return_value_register.unwrap();
                     self.set(ssa, result.unwrap());
@@ -144,21 +152,38 @@ impl<'ir> Vm<'ir> {
                     block: func.entry_point(),
                     ip: 0,
                     return_value_register: None,
+                    memory: HashMap::new(),
                 };
                 self.call_stack.push(frame);
                 self.init_params(arg_values.into_iter());
                 return VmResult::Continue;
             }
-            Op::StackAlloc { .. } | Op::LoadFromPtr { .. } | Op::StoreToPtr { .. } | Op::Move { .. } => {
-                todo!()
+            Op::StackAlloc { dest, ty } => {
+                let addr = self.next_address();
+                self.mut_frame().memory.insert(addr, VmValue::Uninit);
+                self.mut_frame().registers.insert(dest, addr);
+                println!("--- Stack {:?} = {:?}", addr, VmValue::Uninit);
             }
+            Op::LoadFromPtr { value_dest, addr } => {
+                let addr = self.get(addr);
+                let value = *self.get_stack_address(addr);
+                println!("--- {:?} = *{:?}", value_dest, addr);
+                self.set(value_dest, value);
+            }
+            Op::StoreToPtr { addr, value_source } => {
+                let addr = self.get(addr);
+                let value = self.get(value_source);
+                *self.mut_stack_address(addr) = value;
+                println!("--- *{:?} = {:?}", addr, value);
+            }
+            Op::Move { .. } => todo!(),
         }
 
         self.mut_frame().ip += 1;
         VmResult::Continue
     }
 
-    fn init_params(&mut self, args: impl Iterator<Item = u64>) {
+    fn init_params(&mut self, args: impl Iterator<Item = VmValue>) {
         let arg_reg = self.mut_frame().function.param_registers();
         for (ssa, value) in arg_reg.zip(args) {
             self.set(ssa, value);
@@ -176,12 +201,12 @@ impl<'ir> Vm<'ir> {
         );
     }
 
-    fn set(&mut self, register: Ssa, value: u64) {
+    fn set(&mut self, register: Ssa, value: VmValue) {
         self.mut_frame().registers.insert(register, value);
-        println!("--- {:?} = {}", register, value);
+        println!("--- {:?} = {:?}", register, value);
     }
 
-    pub fn get(&self, register: Ssa) -> u64 {
+    pub fn get(&self, register: Ssa) -> VmValue {
         *self.get_frame().registers.get(&register).unwrap()
     }
 
@@ -192,6 +217,31 @@ impl<'ir> Vm<'ir> {
     fn mut_frame(&mut self) -> &mut StackFrame<'ir> {
         self.call_stack.last_mut().unwrap()
     }
+
+    fn next_address(&mut self) -> VmValue {
+        self.stack_address_counter += 1;
+        VmValue::StackAddress(self.stack_address_counter)
+    }
+
+    fn get_stack_address(&self, addr: VmValue) -> &VmValue {
+        assert!(addr.is_stack_ptr());
+        for frame in self.call_stack.iter().rev() {
+            if let Some(value) = frame.memory.get(&addr) {
+                return value;
+            }
+        }
+        panic!("Tried to access dropped stack variable");
+    }
+
+    fn mut_stack_address(&mut self, addr: VmValue) -> &mut VmValue {
+        assert!(addr.is_stack_ptr());
+        for frame in self.call_stack.iter_mut().rev() {
+            if let Some(value) = frame.memory.get_mut(&addr) {
+                return value;
+            }
+        }
+        panic!("Tried to access dropped stack variable");
+    }
 }
 
 fn int_cast(b: bool) -> u64 {
@@ -199,5 +249,22 @@ fn int_cast(b: bool) -> u64 {
         1
     } else {
         0
+    }
+}
+
+impl VmValue {
+    fn to_int(&self) -> u64 {
+        if let &VmValue::U64(value) = self {
+            return value;
+        }
+        panic!("Not an int");
+    }
+
+    fn to_bool(&self) -> bool {
+        self.to_int() != 0
+    }
+
+    fn is_stack_ptr(&self) -> bool {
+        matches!(self, VmValue::StackAddress(_))
     }
 }
