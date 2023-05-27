@@ -149,7 +149,7 @@ impl<'ir> Vm<'ir> {
                 self.init_params(arg_values.into_iter());
                 return VmResult::Continue;
             }
-            Op::StackAlloc { .. } | Op::Load { .. } | Op::Store { .. } | Op::Move { .. } => {
+            Op::StackAlloc { .. } | Op::LoadFromPtr { .. } | Op::StoreToPtr { .. } | Op::Move { .. } => {
                 todo!()
             }
         }

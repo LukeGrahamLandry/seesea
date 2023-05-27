@@ -9,6 +9,7 @@ use crate::ir::flow_stack::{ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{Label, Op, Ssa};
 use std::collections::HashMap;
 use std::mem;
+use std::ops::Deref;
 
 #[derive(Default)]
 struct AstParser<'ast> {
@@ -17,6 +18,9 @@ struct AstParser<'ast> {
     control: ControlFlowStack<'ast>,
     debug: IrDebugInfo<'ast>,
     root_node: Option<&'ast Stmt>,
+
+    /// variable -> register holding a pointer to that variable's value.
+    stack_addresses: HashMap<Var<'ast>, Ssa>,
 }
 
 impl From<ast::Module> for ir::Module {
@@ -71,6 +75,7 @@ impl<'ast> AstParser<'ast> {
         self.ir.functions.push(self.func.take().unwrap());
         let _ = self.control.pop_flow_frame();
         self.control.clear();
+        self.stack_addresses.clear();
 
         println!("------------");
     }
@@ -90,21 +95,39 @@ impl<'ast> AstParser<'ast> {
                 let _ = self.emit_expr(expr, *block);
             }
             Stmt::DeclareVar { name, value, kind } => {
-                // TODO: track types or maybe the ir should handle on the ssa?
                 let variable = Var(name.as_str(), self.control.current_scope());
+                let value_register = self
+                    .emit_expr(value, *block)
+                    .expect("Variable type cannot be void.");
 
+                // TODO: type check instead of blindly setting based on kind in code.
                 if needs_stack_address(self.root_node.unwrap(), variable) {
+                    println!("Stack allocation for {:?}", variable);
                     // Somebody wants to take the address of this variable later,
                     // so we need to make sure it gets allocated on the stack and not kept in a register.
-                    self.control.set_stack_alloc(variable, kind);
+                    let ptr_register = self.func_mut().next_var();
+                    self.control.set_stack_alloc(variable, kind, ptr_register);
+                    self.func_mut().push(
+                        *block,
+                        Op::StackAlloc {
+                            dest: ptr_register,
+                            ty: *kind,
+                        },
+                    );
+                    self.func_mut().push(
+                        *block,
+                        Op::StoreToPtr {
+                            addr: ptr_register,
+                            value_source: value_register,
+                        },
+                    );
+                    self.stack_addresses.insert(variable, ptr_register);
                 } else {
-                    // Nobody cares where this goes so it can be a register if the backend wants.
-                    let register = self
-                        .emit_expr(value, *block)
-                        .expect("Variable type cannot be void.");
-                    self.control.set(variable, register, kind);
+                    println!("No stack allocation for {:?}", variable);
+                    // Nobody cares where this goes so it can stay a register if the backend wants.
+                    self.control.set(variable, value_register, kind);
                     self.func_mut()
-                        .set_debug(register, || format!("{}_{}", name, variable.1 .0));
+                        .set_debug(value_register, || format!("{}_{}", name, variable.1 .0));
                 }
             }
             Stmt::Return { value } => match value {
@@ -377,10 +400,21 @@ impl<'ast> AstParser<'ast> {
                     .control
                     .resolve_name(name)
                     .unwrap_or_else(|| panic!("Cannot access undefined variable {}", name));
-                let register = self
-                    .control
-                    .get(variable)
-                    .unwrap_or_else(|| panic!("GetVar undeclared {}", name));
+                let register = if self.control.is_stack_alloc(variable) {
+                    let value_dest = self.func_mut().next_var();
+                    let addr = *self
+                        .stack_addresses
+                        .get(&variable)
+                        .expect("Cannot get undeclared stack variable.");
+                    self.func_mut()
+                        .push(block, Op::LoadFromPtr { value_dest, addr });
+                    value_dest
+                } else {
+                    self.control
+                        .get(variable)
+                        .unwrap_or_else(|| panic!("GetVar undeclared {}", name))
+                };
+
                 Some(register)
             }
             Expr::Call { func, args } => {
@@ -408,8 +442,43 @@ impl<'ast> AstParser<'ast> {
                 Some(return_value_dest)
             }
             Expr::Unary { value, op } => match op {
-                UnaryOp::AddressOf => {
-                    todo!()
+                UnaryOp::AddressOf => match value.deref() {
+                    Expr::GetVar { name } => {
+                        let variable = self.control.resolve_name(name).unwrap();
+                        assert!(
+                            self.control.is_stack_alloc(variable),
+                            "Cannot take address of register {:?}",
+                            variable
+                        );
+                        let ptr_register = self.stack_addresses.get(&variable).cloned().unwrap();
+                        println!(
+                            "Take address of {:?} {:?} addr={:?} {:?}",
+                            variable,
+                            self.control.var_type(variable),
+                            ptr_register,
+                            self.control.ssa_type(ptr_register),
+                        );
+                        Some(ptr_register)
+                    }
+                    _ => todo!("take address of complex expressions? "),
+                },
+                UnaryOp::Deref => {
+                    let addr = self
+                        .emit_expr(value, block)
+                        .expect("Cannot dereference void.");
+                    let register = self.func_mut().next_var();
+                    self.func_mut().push(
+                        block,
+                        Op::LoadFromPtr {
+                            value_dest: register,
+                            addr,
+                        },
+                    );
+                    let ptr_type = self.control.ssa_type(addr);
+                    self.control
+                        .register_types
+                        .insert(register, ptr_type.deref_type());
+                    Some(register)
                 }
                 _ => todo!(),
             },
@@ -424,22 +493,55 @@ impl<'ast> AstParser<'ast> {
         block: Label,
     ) -> Option<Ssa> {
         // TODO: eval order is probably specified. like can you do a function call to get a pointer on the left?
-        let value = self
+        let value_reg = self
             .emit_expr(rvalue, block)
             .expect("Can't assign to void.");
         match lvalue {
             Expr::GetVar { name } => {
-                let this_variable = self
-                    .control
-                    .resolve_name(name)
-                    .expect("todo: support stack alloc");
+                let this_variable = self.control.resolve_name(name).unwrap();
+
                 self.func_mut()
-                    .set_debug(value, || format!("{}_{}", name, this_variable.1 .0));
+                    .set_debug(value_reg, || format!("{}_{}", name, this_variable.1 .0));
                 let ty = &self.control.var_type(this_variable).clone();
-                self.control.set(this_variable, value, ty);
-                Some(value)
+                if self.control.is_stack_alloc(this_variable) {
+                    let addr = *self
+                        .stack_addresses
+                        .get(&this_variable)
+                        .expect("Expected stack variable.");
+                    assert!(self
+                        .control
+                        .ssa_type(addr)
+                        .is_pointer_to(self.control.ssa_type(value_reg)));
+                    self.func_mut().push(
+                        block,
+                        Op::StoreToPtr {
+                            addr,
+                            value_source: value_reg,
+                        },
+                    );
+                } else {
+                    self.control.set(this_variable, value_reg, ty);
+                }
+                Some(value_reg)
             }
-            _ => todo!(),
+            Expr::Unary { value, op } => {
+                assert_eq!(*op, UnaryOp::Deref);
+                let target_addr = self.emit_expr(value, block).unwrap();
+                // TODO: emit_expr needs to set the type
+                // assert!(self
+                //     .control
+                //     .ssa_type(target_addr)
+                //     .is_pointer_to(self.control.ssa_type(value_reg)));
+                self.func_mut().push(
+                    block,
+                    Op::StoreToPtr {
+                        addr: target_addr,
+                        value_source: value_reg,
+                    },
+                );
+                Some(value_reg)
+            }
+            _ => unreachable!(),
         }
     }
 

@@ -63,6 +63,7 @@ impl<'ast> ControlFlowStack<'ast> {
             "{:?} is stack allocated. Can't get it's register.",
             variable
         );
+        // TODO: assert Ssa is unique? but that would mess with allocs.rs making up fake ones that it never read. that should be a special method self.fake_declare(Var)
 
         match self.flow.last_mut() {
             None => {
@@ -81,13 +82,6 @@ impl<'ast> ControlFlowStack<'ast> {
                 return Some(*register);
             }
         }
-
-        // @Speed
-        assert!(
-            !self.is_stack_alloc(variable),
-            "{:?} is stack allocated. Can't get it's register.",
-            variable
-        );
         None
     }
 
@@ -110,10 +104,12 @@ impl<'ast> ControlFlowStack<'ast> {
         }
     }
 
-    pub fn set_stack_alloc(&mut self, variable: Var<'ast>, ty: &CType) {
+    pub fn set_stack_alloc(&mut self, variable: Var<'ast>, value_ty: &CType, addr_register: Ssa) {
         assert_eq!(variable.1, self.current_scope());
         assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
-        self.stack_var_types.insert(variable, *ty);
+        self.stack_var_types.insert(variable, *value_ty);
+        self.register_types
+            .insert(addr_register, value_ty.ref_type());
     }
 
     pub fn is_stack_alloc(&self, variable: Var<'ast>) -> bool {

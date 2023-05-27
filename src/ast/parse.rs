@@ -35,13 +35,13 @@ impl<'src> Parser<'src> {
     // TODO: separate the signature cause i need to support forward declarations
     /// TYPE NAME() STMT
     fn parse_function(&mut self) {
-        let returns = self.read_type("expected function declaration");
+        let returns = self.read_type().expect("expected function declaration");
         let name = self.read_ident("expected function name");
         self.scanner.consume(TokenType::LeftParen);
         let mut args = vec![];
         let mut names = vec![];
         while !self.scanner.matches(TokenType::RightParen) {
-            args.push(self.read_type("Function arg requires type."));
+            args.push(self.read_type().expect("Function arg requires type."));
             names.push(self.read_ident("Function arg requires name.")); // TODO: headers/forward defs dont
             if !self.scanner.matches(TokenType::Comma) {
                 assert_eq!(
@@ -74,10 +74,10 @@ impl<'src> Parser<'src> {
             return Stmt::Block { body, lines: None }; // TODO
         }
 
-        let is_decl = self.scanner.peek() == TokenType::Identifier
-            && self.scanner.peek_next() == TokenType::Identifier;
-        if is_decl {
-            return self.parse_declare_variable();
+        // TODO: check if the next tokens are a valid type like long*
+        let ty = self.read_type();
+        if let Some(..) = ty {
+            return self.parse_declare_variable(ty.unwrap());
         }
 
         // return EXPR?;
@@ -114,8 +114,7 @@ impl<'src> Parser<'src> {
     }
 
     /// TYPE NAME = EXPR?;
-    fn parse_declare_variable(&mut self) -> Stmt {
-        let kind = self.read_type("assert var type");
+    fn parse_declare_variable(&mut self, kind: CType) -> Stmt {
         let name = self.read_ident("assert var name");
         self.scanner.consume(TokenType::Equal);
         let value = if self.scanner.matches(TokenType::Semicolon) {
@@ -154,6 +153,7 @@ impl<'src> Parser<'src> {
         }
     }
 
+    // TODO: it parses long* x = &a; as (long * x) = &a; because statement checker doesnt know long* is a type
     /// EXPR
     fn parse_expr(&mut self) -> Expr {
         let left = self.parse_unary();
@@ -196,7 +196,6 @@ impl<'src> Parser<'src> {
         }
     }
 
-    /// NAME | NUMBER | (EXPR)
     fn parse_primary(&mut self) -> Expr {
         let mut expr = self.parse_basic();
         loop {
@@ -225,6 +224,7 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// NAME | NUMBER | (EXPR)
     fn parse_basic(&mut self) -> Expr {
         let token = self.scanner.next();
         match token.kind {
@@ -244,24 +244,31 @@ impl<'src> Parser<'src> {
     }
 
     /// TYPE
-    fn read_type(&mut self, msg: &str) -> CType {
-        let token = self.scanner.next();
+    #[must_use]
+    fn read_type(&mut self) -> Option<CType> {
+        let token = self.scanner.peek_n(0);
+        let mut look_ahead = 1;
         match token.kind {
             TokenType::Identifier => {
                 if token.lexeme != "long" {
-                    self.error(msg);
+                    println!("not part of type {:?}", token);
+                    return None;
                 }
-                CType {
+                let mut ty = CType {
                     ty: ValueType::U64,
                     depth: 0,
+                };
+                while self.scanner.peek_n(look_ahead).kind == TokenType::Star {
+                    ty = ty.ref_type();
+                    look_ahead += 1;
                 }
+                for _ in 0..look_ahead {
+                    self.scanner.advance();
+                }
+                println!("found type {:?}", ty);
+                Some(ty)
             }
-            TokenType::Star => {
-                let mut ty = self.read_type(msg);
-                ty.depth += 1;
-                ty
-            }
-            _ => self.error(msg),
+            _ => None,
         }
     }
 

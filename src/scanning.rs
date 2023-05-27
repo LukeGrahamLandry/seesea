@@ -100,7 +100,7 @@ impl<'src> Scanner<'src> {
     }
 
     fn refresh(&mut self) {
-        while self.cache.len() < 5 {
+        while self.cache.len() < 15 {
             let token = self.lex_another();
             self.cache.push_back(token);
         }
@@ -137,11 +137,15 @@ impl<'src> Scanner<'src> {
     }
 
     pub fn peek(&self) -> TokenType {
-        self.cache[0].kind
+        self.peek_n(0).kind
     }
 
     pub fn peek_next(&self) -> TokenType {
-        self.cache[1].kind
+        self.peek_n(1).kind
+    }
+
+    pub fn peek_n(&self, n: usize) -> Token<'src> {
+        self.cache[n]
     }
 
     /// If the next token matches ty, consume it and return true.

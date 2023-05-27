@@ -42,13 +42,13 @@ pub enum Op {
         b: Ssa,
         kind: BinaryOp, // TODO: should this be a different type than used in the AST?
     },
-    Load {
-        dest: Ssa,
+    LoadFromPtr {
+        value_dest: Ssa,
         addr: Ssa,
     },
-    Store {
-        dest: Ssa,
+    StoreToPtr {
         addr: Ssa,
+        value_source: Ssa,
     },
 
     // dont need? was going to use for expressing phi but no
@@ -79,7 +79,7 @@ pub enum Op {
     /// Allocate enough space on the stack to hold a specific type and put a pointer to it in a register.
     StackAlloc {
         dest: Ssa,
-        ty: ValueType,
+        ty: CType,
     },
 
     Call {

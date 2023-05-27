@@ -6,6 +6,9 @@ use crate::ir::{Label, Ssa};
 pub fn needs_stack_address(root: &Stmt, variable: Var) -> bool {
     let mut stack = ControlFlowStack::default();
     stack.push_flow_frame(Label(0));
+    stack.push_scope();
+    // TODO: function arguments live here.
+    stack.push_scope();
     walk_stmt(&mut stack, root, variable)
 }
 
@@ -39,7 +42,6 @@ fn walk_stmt<'ast>(
                     depth: 0,
                 },
             ); // don't actually care about the ssas being unique/correct
-            println!("{:?}", control);
 
             if walk_expr(control, value, variable) {
                 return true;
@@ -84,12 +86,11 @@ fn walk_expr<'ast>(
             if *op == UnaryOp::AddressOf {
                 match value.as_ref() {
                     Expr::GetVar { name } => {
-                        println!("{:?}", control);
-                        if control
-                            .resolve_name(name)
-                            .unwrap_or_else(|| panic!("Cannot access undeclared variable {}", name))
-                            == variable
-                        {
+                        let resoloved = control.resolve_name(name).unwrap_or_else(|| {
+                            panic!("Cannot access undeclared variable {}", name)
+                        });
+                        // println!("Get address of {} (resolved {:?})", name, resoloved);
+                        if resoloved == variable {
                             return true;
                         }
                     }

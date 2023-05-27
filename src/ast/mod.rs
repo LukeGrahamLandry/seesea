@@ -146,3 +146,24 @@ pub struct CType {
     pub ty: ValueType,
     pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
 }
+
+impl CType {
+    #[must_use]
+    pub fn deref_type(&self) -> CType {
+        assert!(self.depth > 0, "Tried to dereference non-pointer type.");
+        let mut other = *self;
+        other.depth -= 1;
+        other
+    }
+
+    #[must_use]
+    pub fn ref_type(&self) -> CType {
+        let mut other = *self;
+        other.depth += 1;
+        other
+    }
+
+    pub fn is_pointer_to(&self, value_type: &CType) -> bool {
+        &self.deref_type() == value_type
+    }
+}

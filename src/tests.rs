@@ -244,8 +244,9 @@ fn pointers() {
     let src = "
 long main(long a){
     long x = a + 5;
-    long ax = &x;
-    *ax = *ax + 10;
+    long* ax = &x;
+    long temp = *ax;
+    *ax = temp + 10;
     return x;
 }
     ";

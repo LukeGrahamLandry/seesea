@@ -22,8 +22,14 @@ impl Function {
                 dest: result,
                 value,
             } => format!("{} = {};", self.name(result), value),
-            Op::Load { dest, addr } => format!("{} = *{};", self.name(dest), self.name(addr)),
-            Op::Store { dest, addr } => format!("*{} = {};", self.name(dest), self.name(addr)),
+            Op::LoadFromPtr {
+                value_dest: dest,
+                addr,
+            } => format!("{} = *{};", self.name(dest), self.name(addr)),
+            Op::StoreToPtr {
+                addr: dest,
+                value_source: addr,
+            } => format!("*{} = {};", self.name(dest), self.name(addr)),
             Op::Move { dest, source } => format!("{} = {};", self.name(dest), self.name(source)),
             Op::Jump {
                 condition,

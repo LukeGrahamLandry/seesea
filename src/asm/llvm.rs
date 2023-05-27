@@ -169,7 +169,10 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                         self.local_registers
                             .insert(*return_value_dest, return_value.as_any_value_enum());
                     }
-                    Op::Load { dest, addr } => {
+                    Op::LoadFromPtr {
+                        value_dest: dest,
+                        addr,
+                    } => {
                         let addr_value =
                             self.local_registers.get(addr).unwrap().into_pointer_value();
                         // self.builder.build_load(, addr_value, "");
