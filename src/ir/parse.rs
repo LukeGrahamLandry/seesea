@@ -5,7 +5,7 @@ use crate::ast::{BinaryOp, CType, Expr, LiteralValue, Stmt, UnaryOp};
 use crate::ir;
 use crate::ir::allocs::needs_stack_address;
 use crate::ir::debug::IrDebugInfo;
-use crate::ir::flow_stack::{ControlFlowStack, FlowStackFrame, Var};
+use crate::ir::flow_stack::{patch, ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{Label, Op, Ssa};
 use std::collections::HashMap;
 use std::mem;
@@ -336,7 +336,7 @@ impl<'ast> AstParser<'ast> {
         branch_block: Label,
         new_block: Label,
         mutated_in_branch: &FlowStackFrame<'ast>,
-    ) {
+    ) -> HashMap<Ssa, Ssa> {
         // TODO: assert that self.control is looking at the parent_block
         let mut moved_registers = vec![];
         for (variable, branch_register) in &mutated_in_branch.mutations {
@@ -361,10 +361,17 @@ impl<'ast> AstParser<'ast> {
             self.func_mut()
                 .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
         }
+
+        let mut original_to_phi = HashMap::new();
+
         // Now that we've updated everything, throw away the registers from before the branching.
         for (variable, register) in moved_registers {
+            let old_register = self.control.get(*variable).unwrap();
+            original_to_phi.insert(old_register, register);
             self.control.set(*variable, register);
         }
+
+        original_to_phi
     }
 
     // Assumes you could have come from either if_true or if_false
@@ -455,20 +462,20 @@ impl<'ast> AstParser<'ast> {
         let condition_block = self.func_mut().new_block();
         self.func_mut()
             .push(parent_block, Op::AlwaysJump(setup_block));
-        
+
         // TODO: what if condition mutates? same question for ifs.
         let condition_register = self
             .emit_expr(condition, condition_block)
             .expect("Loop condition can't be void");
-        
+
         let start_body_block = self.func_mut().new_block();
         let mut end_of_body_block = start_body_block;
 
         self.control.push_flow_frame(end_of_body_block);
         self.emit_statement(body, &mut end_of_body_block);
-        let mutated_in_body = self.control.pop_flow_frame();
+        let mutated_in_body = dbg!(self.control.pop_flow_frame());
 
-        self.emit_phi_parent_or_single_branch(
+        let changes = self.emit_phi_parent_or_single_branch(
             parent_block,
             end_of_body_block,
             setup_block,
@@ -489,6 +496,13 @@ impl<'ast> AstParser<'ast> {
                 if_false: exit_block,
             },
         );
+
+        for op in &mut self.func.as_mut().unwrap().blocks[condition_block.0] {
+            patch(op, &changes);
+        }
+        for op in &mut self.func.as_mut().unwrap().blocks[start_body_block.0] {
+            patch(op, &changes);
+        }
 
         *block = exit_block;
     }

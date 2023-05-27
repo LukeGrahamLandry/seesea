@@ -1,5 +1,5 @@
 use crate::ast::CType;
-use crate::ir::{Label, Ssa};
+use crate::ir::{Label, Op, Ssa};
 use std::collections::{HashMap, HashSet};
 
 /// Collects the list of Ssa nodes that are written to in the statement.
@@ -162,5 +162,60 @@ impl<'ast> ControlFlowStack<'ast> {
             }
         }
         None
+    }
+}
+
+pub fn patch(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
+    match op {
+        Op::ConstInt { dest, .. } => {
+            assert!(!changes.contains_key(dest));
+        }
+        Op::Binary { dest, a, b, .. } => {
+            assert!(!changes.contains_key(dest));
+            swap(a, changes);
+            swap(b, changes);
+        }
+        Op::LoadFromPtr { value_dest, addr } => {
+            assert!(!changes.contains_key(value_dest));
+            swap(addr, changes);
+        }
+        Op::StoreToPtr { addr, value_source } => {
+            swap(addr, changes);
+            swap(value_source, changes);
+        }
+        Op::Move { .. } => todo!(),
+        Op::Jump { condition, .. } => {
+            swap(condition, changes);
+        }
+        Op::AlwaysJump(_) => {}
+        Op::Phi { dest, a, b } => {
+            assert!(!changes.contains_key(dest));
+            swap(&mut a.1, changes);
+            swap(&mut b.1, changes);
+        }
+        Op::Return { value } => {
+            if let Some(value) = value {
+                swap(value, changes);
+            }
+        }
+        Op::StackAlloc { dest, .. } => {
+            assert!(!changes.contains_key(dest));
+        }
+        Op::Call {
+            func_name,
+            args,
+            return_value_dest,
+        } => {
+            assert!(!changes.contains_key(return_value_dest));
+            for arg in args {
+                swap(arg, changes);
+            }
+        }
+    }
+}
+
+pub fn swap(ssa: &mut Ssa, changes: &HashMap<Ssa, Ssa>) {
+    if changes.contains_key(ssa) {
+        *ssa = *changes.get(ssa).unwrap();
     }
 }
