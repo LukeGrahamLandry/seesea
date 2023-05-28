@@ -132,6 +132,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
             Op::Phi { dest, a, b } => {
                 let phi = self.builder.build_phi(self.reg_basic_type(&a.1), "");
+                // Emitting these is deferred because the values won't be ready yet when you jump backwards.
                 self.func_mut().phi_nodes.insert(phi, vec![*a, *b]);
                 self.set(dest, phi);
             }
@@ -154,7 +155,8 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 self.builder
                     .build_store(self.read_ptr(addr), self.read_basic_value(value_source));
             }
-            Op::StackAlloc { dest, ty } => {
+            Op::StackAlloc { dest, ty, count } => {
+                assert_eq!(*count, 1);
                 let ptr = self.builder.build_alloca(self.llvm_type(*ty), "");
                 self.set(dest, ptr);
             }

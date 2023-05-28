@@ -69,6 +69,7 @@ pub enum Op {
     StackAlloc {
         dest: Ssa,
         ty: CType,
+        count: usize,
     },
 
     Call {
@@ -158,7 +159,7 @@ impl Function {
             for op in block {
                 if phi_over {
                     if let Op::Phi { .. } = op {
-                        panic!("All phi nodes must be at the beginning of the block.");
+                        panic!("All phi nodes must be at the beginning of the block (llvm requires this).");
                     }
                 } else if let Op::Phi { .. } = op {
                 } else {

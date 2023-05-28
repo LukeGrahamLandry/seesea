@@ -3,11 +3,11 @@
 use crate::ast;
 use crate::ast::{BinaryOp, CType, Expr, LiteralValue, Stmt, UnaryOp};
 use crate::ir;
-use crate::ir::allocs::needs_stack_address;
+use crate::ir::allocs::collect_stack_allocs;
 use crate::ir::debug::IrDebugInfo;
 use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{Label, Op, Ssa};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem;
 use std::ops::Deref;
 
@@ -21,6 +21,8 @@ struct AstParser<'ast> {
 
     /// variable -> register holding a pointer to that variable's value.
     stack_addresses: HashMap<Var<'ast>, Ssa>,
+    /// Collections of which variables require a stable stack address.
+    needs_stack_address: HashSet<Var<'ast>>,
 }
 
 impl From<ast::Module> for ir::Module {
@@ -51,11 +53,17 @@ impl<'ast> AstParser<'ast> {
             debug: Default::default(),
             root_node: None,
             stack_addresses: Default::default(),
+            needs_stack_address: Default::default(),
         }
     }
 
     fn parse_function(&mut self, input: &'ast ast::Function) {
-        assert!(self.func.is_none());
+        // TODO: separate these out into an Option
+        assert!(
+            self.func.is_none()
+                && self.needs_stack_address.is_empty()
+                && self.stack_addresses.is_empty()
+        );
         self.func = Some(ir::Function::new(input.signature.clone()));
         let mut entry = self.func_mut().new_block();
         self.control.push_flow_frame(entry);
@@ -76,6 +84,7 @@ impl<'ast> AstParser<'ast> {
         }
         self.control.push_scope();
         self.root_node = Some(&input.body);
+        collect_stack_allocs(&input.body, &mut self.needs_stack_address);
         self.emit_statement(&input.body, &mut entry);
         self.control.pop_scope();
         self.control.pop_scope();
@@ -89,6 +98,8 @@ impl<'ast> AstParser<'ast> {
         let _ = self.control.pop_flow_frame();
         self.control.clear();
         self.stack_addresses.clear();
+        self.needs_stack_address.clear();
+        assert_eq!(self.stack_addresses.len(), self.needs_stack_address.len());
 
         println!("------------");
     }
@@ -119,8 +130,7 @@ impl<'ast> AstParser<'ast> {
                     variable, kind, value_type
                 );
 
-                // TODO: run needs_stack_address in one pass for everything at the beginning.
-                if needs_stack_address(self.root_node.unwrap(), variable) {
+                if self.needs_stack_address.contains(&variable) {
                     println!("Stack allocation for {:?}", variable);
                     // Somebody wants to take the address of this variable later,
                     // so we need to make sure it gets allocated on the stack and not kept in a register.
@@ -131,6 +141,7 @@ impl<'ast> AstParser<'ast> {
                         Op::StackAlloc {
                             dest: ptr_register,
                             ty: *kind,
+                            count: 1,
                         },
                     );
                     self.func_mut().push(

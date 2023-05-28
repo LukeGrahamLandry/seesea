@@ -171,7 +171,8 @@ impl<'ir> Vm<'ir> {
                 self.init_params(arg_values.into_iter());
                 return VmResult::Continue;
             }
-            Op::StackAlloc { dest, ty } => {
+            Op::StackAlloc { dest, ty, count } => {
+                assert_eq!(count, 1);
                 let addr = self.next_address();
                 self.mut_frame().memory.insert(addr, VmValue::Uninit);
                 self.mut_frame().registers.insert(dest, addr);

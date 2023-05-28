@@ -34,7 +34,11 @@ pub enum Stmt {
         then_body: Box<Stmt>,
         else_body: Box<Stmt>,
     },
-    While { condition: Box<Expr>, body: Box<Stmt> },
+    // Does the backend need different handling for while/for/do_while or should I just transform the ast so all become DoWhile
+    While {
+        condition: Box<Expr>,
+        body: Box<Stmt>,
+    },
     // For { initializer: Box<Stmt>, condition: Box<Expr>, increment: Box<Expr>, body: Box<Stmt> },
     DeclareVar {
         name: String,
