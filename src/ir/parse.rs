@@ -341,6 +341,7 @@ impl<'ast> AstParser<'ast> {
         }
     }
 
+    /// Returns a map of original Ssa (from before mutation) to new Ssa (of phi node) for back patching loops.
     fn emit_phi_parent_or_single_branch(
         &mut self,
         parent_block: Label,
@@ -348,10 +349,13 @@ impl<'ast> AstParser<'ast> {
         new_block: Label,
         mutated_in_branch: &FlowStackFrame<'ast>,
     ) -> HashMap<Ssa, Ssa> {
-        // TODO: assert that self.control is looking at the parent_block
+        // TODO: assert that self.control is looking at the parent_block?
         let mut moved_registers = vec![];
         for (variable, branch_register) in &mutated_in_branch.mutations {
-            let parent_register = self.control.get(*variable).unwrap();
+            let parent_register = match self.control.get_if_in_scope(*variable) {
+                None => continue,
+                Some(ssa) => ssa,
+            };
             assert_eq!(
                 self.type_of(parent_register),
                 self.type_of(*branch_register)
@@ -367,10 +371,7 @@ impl<'ast> AstParser<'ast> {
             );
             moved_registers.push((variable, new_register));
 
-            let name_a = self.func_mut().name(&parent_register);
-            let name_b = self.func_mut().name(branch_register);
-            self.func_mut()
-                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
+            self.set_phi_debug(new_register, parent_register, *branch_register);
         }
 
         let mut original_to_phi = HashMap::new();
@@ -396,18 +397,15 @@ impl<'ast> AstParser<'ast> {
         // We have the set of Vars whose register changed in one of the branches.
         // Now that we've rejoined, future code in this block needs to access different registers depending how it got here.
         for (variable, then_register) in mutated_in_then.mutations {
-            let original_register = match self.control.get(variable) {
-                None => {
-                    // The variable was declared inside the if so it can't be accessed outside and we don't care.
-                    // TODO: check if that's true if you do `if (1) long x = 10;`
-                    continue;
-                }
+            let original_register = match self.control.get_if_in_scope(variable) {
+                None => continue,
                 Some(ssa) => ssa,
             };
             let other_register = match mutated_in_else.mutations.remove(&variable) {
                 // If the other path did not mutate the value, use the one from before.
                 None => original_register,
                 // If the both paths mutated the value, we don't care what it was before we branched.
+                // TODO: make sure this is true when back patching with loops (but currently they don't call this method)
                 Some(else_register) => else_register,
             };
 
@@ -424,10 +422,7 @@ impl<'ast> AstParser<'ast> {
 
             moved_registers.push((variable, new_register));
 
-            let name_a = self.func_mut().name(&then_register);
-            let name_b = self.func_mut().name(&other_register);
-            self.func_mut()
-                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
+            self.set_phi_debug(new_register, original_register, other_register);
         }
 
         for (variable, else_register) in mutated_in_else.mutations {
@@ -435,7 +430,10 @@ impl<'ast> AstParser<'ast> {
             // So we know any remaining will be using the original register as the true branch.
             assert!(!moved_registers.iter().any(|check| check.0 == variable));
 
-            let original_register = self.control.get(variable).unwrap();
+            let original_register = match self.control.get_if_in_scope(variable) {
+                None => continue,
+                Some(ssa) => ssa,
+            };
             assert_eq!(self.type_of(else_register), self.type_of(original_register));
             let new_register = self.make_ssa(self.type_of(original_register));
 
@@ -449,15 +447,19 @@ impl<'ast> AstParser<'ast> {
             );
             moved_registers.push((variable, new_register));
 
-            let name_a = self.func_mut().name(&original_register);
-            let name_b = self.func_mut().name(&else_register);
-            self.func_mut()
-                .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
+            self.set_phi_debug(new_register, original_register, else_register);
         }
         // Now that we've updated everything, throw away the registers from before the branching.
         for (variable, register) in moved_registers {
             self.control.set(variable, register);
         }
+    }
+
+    fn set_phi_debug(&mut self, new_register: Ssa, a: Ssa, b: Ssa) {
+        let name_a = self.func_mut().name(&a);
+        let name_b = self.func_mut().name(&b);
+        self.func_mut()
+            .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
     }
 
     // parent
@@ -484,7 +486,7 @@ impl<'ast> AstParser<'ast> {
 
         self.control.push_flow_frame(end_of_body_block);
         self.emit_statement(body, &mut end_of_body_block);
-        let mutated_in_body = dbg!(self.control.pop_flow_frame());
+        let mutated_in_body = self.control.pop_flow_frame();
 
         let changes = self.emit_phi_parent_or_single_branch(
             parent_block,

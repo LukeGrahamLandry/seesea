@@ -176,7 +176,7 @@ impl<'ir> Vm<'ir> {
                 let addr = self.next_address();
                 self.mut_frame().memory.insert(addr, VmValue::Uninit);
                 self.mut_frame().registers.insert(dest, addr);
-                println!("--- Stack {:?} = {:?}", addr, VmValue::Uninit);
+                println!("--- Stack {:?} = {:?} {:?}", addr, VmValue::Uninit, ty);
             }
             Op::LoadFromPtr { value_dest, addr } => {
                 let addr = self.get(addr);
@@ -190,7 +190,6 @@ impl<'ir> Vm<'ir> {
                 *self.mut_stack_address(addr) = value;
                 println!("--- *{:?} = {:?}", addr, value);
             }
-            Op::Move { .. } => todo!(),
         }
 
         self.mut_frame().ip += 1;

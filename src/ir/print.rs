@@ -1,6 +1,5 @@
-use crate::ast::CType;
 use crate::ir::{Function, Op, Ssa};
-use std::fmt::{format, write, Debug, Formatter};
+use std::fmt::{Debug, Formatter};
 
 impl Function {
     pub fn print(&self, op: &Op) -> String {
@@ -31,7 +30,6 @@ impl Function {
                 addr: dest,
                 value_source: addr,
             } => format!("deref {} = {};", self.name_ty(dest), self.name(addr)),
-            Op::Move { dest, source } => format!("{} = {};", self.name_ty(dest), self.name(source)),
             Op::Jump {
                 condition,
                 if_true,

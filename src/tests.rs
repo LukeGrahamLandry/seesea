@@ -276,6 +276,21 @@ long main(){
 }
 
 #[test]
+fn declare_in_else() {
+    let src = "
+long main(){
+    if (1 < 0) {
+        long x = 5;
+    } else {
+        long y = 10;
+    }
+    return 0;
+}
+    ";
+    no_args_run_main(src, 0);
+}
+
+#[test]
 fn while_loop() {
     let src = "
 long main(){
@@ -290,7 +305,8 @@ long main(){
 }
 
 #[test]
-fn nested_while_loop() {
+fn nested_while_loop_var() {
+    // Since a variable is declared inside a loop, this fails if emitting phi nodes doesn't know about scopes closing and tries to bubble up dead variables.
     let src = "
 long main(){
   long x = 0;

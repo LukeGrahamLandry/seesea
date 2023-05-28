@@ -21,6 +21,7 @@ pub struct ControlFlowStack<'ast> {
     scopes: Vec<LexScope>,
     stack_allocated: Vec<HashSet<Var<'ast>>>,
     total_scope_count: usize,
+    dead_scopes: HashSet<LexScope>,
 }
 
 #[derive(Debug)]
@@ -84,6 +85,22 @@ impl<'ast> ControlFlowStack<'ast> {
         None
     }
 
+    pub fn get_if_in_scope(&self, variable: Var<'ast>) -> Option<Ssa> {
+        match self.get(variable) {
+            None => {
+                // the variable was declared in a scope inside the flow frame, it doesn't exist anymore as we try to bubble up.
+                // TODO: make sure `if (1) long x = 10;` is not valid.
+                assert!(
+                    self.is_out_of_scope(variable),
+                    "{:?} register not found in control stack but is still in scope.",
+                    variable
+                );
+                None
+            }
+            Some(ssa) => Some(ssa),
+        }
+    }
+
     pub fn ssa_type(&self, ssa: Ssa) -> &CType {
         self.register_types
             .get(&ssa)
@@ -120,10 +137,6 @@ impl<'ast> ControlFlowStack<'ast> {
         false
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.flow.is_empty() && self.scopes.is_empty()
-    }
-
     pub fn clear(&mut self) {
         let no_scopes =
             self.flow.is_empty() && self.scopes.is_empty() && self.stack_allocated.is_empty();
@@ -144,7 +157,16 @@ impl<'ast> ControlFlowStack<'ast> {
             .stack_allocated
             .pop()
             .expect("You should always be in a scope.");
-        debug_assert!(!stack_alloc.iter().any(|var| var.1 != old_scope));
+        // @Speed
+        assert!(
+            !stack_alloc.iter().any(|var| var.1 != old_scope),
+            "Popped scope contained a stack variable from a different scope."
+        );
+        self.dead_scopes.insert(old_scope);
+    }
+
+    pub fn is_out_of_scope(&self, variable: Var<'ast>) -> bool {
+        self.dead_scopes.contains(&variable.1)
     }
 
     pub fn current_scope(&self) -> LexScope {
@@ -184,7 +206,6 @@ pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
             swap(addr, changes);
             swap(value_source, changes);
         }
-        Op::Move { .. } => todo!(),
         Op::Jump { condition, .. } => {
             swap(condition, changes);
         }
@@ -203,9 +224,9 @@ pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
             assert!(!changes.contains_key(dest));
         }
         Op::Call {
-            func_name,
             args,
             return_value_dest,
+            ..
         } => {
             assert!(!changes.contains_key(return_value_dest));
             for arg in args {

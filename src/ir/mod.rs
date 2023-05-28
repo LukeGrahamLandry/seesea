@@ -1,7 +1,7 @@
-use crate::ast::{BinaryOp, CType, FuncSignature, ValueType};
+use crate::ast::{BinaryOp, CType, FuncSignature};
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::HashMap;
-use std::fmt::{write, Display, Formatter};
+use std::fmt::{Display, Formatter};
 
 mod allocs;
 mod debug;
@@ -38,12 +38,6 @@ pub enum Op {
     StoreToPtr {
         addr: Ssa,
         value_source: Ssa,
-    },
-
-    // dont need? was going to use for expressing phi but no
-    Move {
-        dest: Ssa,
-        source: Ssa,
     },
 
     /// Conditional jump to another block.

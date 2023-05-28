@@ -218,7 +218,6 @@ impl<'src> Debug for Scanner<'src> {
         writeln!(f, "=== Scanner at {} ===", self.index - self.cache.len())?;
         let mut temp = Scanner::new(self.src, self.name.clone());
         while temp.has_next() {
-            let i = temp.index;
             write!(f, "{:?}, ", temp.next())?;
         }
         writeln!(f, "\n========")
