@@ -391,7 +391,25 @@ long main(){
     return x + z.a;
 }
     ";
-    no_args_run_main(src, 15);
+    no_args_vm_only_main(src, 15);
+}
+
+#[test]
+fn struct_field_addr() {
+    let src = "
+struct Thing {
+    long a;
+};
+
+long main(){
+    struct Thing z;
+    z.a = 10;
+    long* za = &z.a;
+    *za = 5;
+    return z.a;
+}
+    ";
+    no_args_vm_only_main(src, 5);
 }
 
 fn no_args_run_main(src: &str, expected: u64) {
@@ -402,6 +420,12 @@ fn no_args_run_main(src: &str, expected: u64) {
         let answer = unsafe { function.call() };
         assert_eq!(answer, expected);
     });
+}
+
+// For testing a feature before I get to the llvm part.
+fn no_args_vm_only_main(src: &str, expected: u64) {
+    let ir = compile_module(src);
+    assert_eq!(Vm::eval(&ir, "main", &[]), Some(expected));
 }
 
 fn vm_run_cases(ir: &ir::Module, func_name: &str, cases: &[(&[u64], u64)]) {

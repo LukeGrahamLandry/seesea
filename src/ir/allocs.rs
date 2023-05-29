@@ -69,15 +69,13 @@ fn walk_expr<'ast>(
         }
         Expr::Unary { value, op } => {
             if *op == UnaryOp::AddressOf {
-                match value.as_ref() {
-                    Expr::GetVar { name } => {
-                        let variable = control.resolve_name(name).unwrap_or_else(|| {
-                            panic!("Cannot access undeclared variable {}", name)
-                        });
-                        results.insert(variable);
-                    }
-                    _ => unreachable!(),
+                if let Expr::GetVar { name } = value.as_ref() {
+                    let variable = control
+                        .resolve_name(name)
+                        .unwrap_or_else(|| panic!("Cannot access undeclared variable {}", name));
+                    results.insert(variable);
                 }
+                // TODO: make sure address of more complex expressions doesn't need more work
             }
             walk_expr(control, value, results);
         }

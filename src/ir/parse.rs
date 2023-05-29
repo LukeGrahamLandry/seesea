@@ -120,67 +120,7 @@ impl<'ast> AstParser<'ast> {
                 let _ = self.emit_expr(expr, *block);
             }
             Stmt::DeclareVar { name, value, kind } => {
-                let variable = Var(name.as_str(), self.control.current_scope());
-
-                if kind.is_struct() {
-                    match value.as_ref() {
-                        Expr::Default(ty) => assert_eq!(ty, kind),
-                        _ => panic!("Struct must init to default."),
-                    }
-                    println!("Struct allocation for {:?}", variable);
-                    let ptr_register = self.func_mut().next_var();
-                    self.control.set_stack_alloc(variable, kind, ptr_register);
-                    self.func_mut().push(
-                        *block,
-                        Op::StackAlloc {
-                            dest: ptr_register,
-                            ty: *kind,
-                            count: 1,
-                        },
-                    );
-                    self.stack_addresses.insert(variable, ptr_register);
-                    return;
-                }
-
-                let value_register = self
-                    .emit_expr(value, *block)
-                    .expect("Variable type cannot be void.");
-                let value_type = self.type_of(value_register);
-                assert_eq!(
-                    value_type, *kind,
-                    "{:?} expected {:?} but found {:?}",
-                    variable, kind, value_type
-                );
-
-                if self.needs_stack_address.contains(&variable) {
-                    println!("Stack allocation for {:?}", variable);
-                    // Somebody wants to take the address of this variable later,
-                    // so we need to make sure it gets allocated on the stack and not kept in a register.
-                    let ptr_register = self.func_mut().next_var();
-                    self.control.set_stack_alloc(variable, kind, ptr_register);
-                    self.func_mut().push(
-                        *block,
-                        Op::StackAlloc {
-                            dest: ptr_register,
-                            ty: *kind,
-                            count: 1,
-                        },
-                    );
-                    self.func_mut().push(
-                        *block,
-                        Op::StoreToPtr {
-                            addr: ptr_register,
-                            value_source: value_register,
-                        },
-                    );
-                    self.stack_addresses.insert(variable, ptr_register);
-                } else {
-                    println!("No stack allocation for {:?}", variable);
-                    // Nobody cares where this goes so it can stay a register if the backend wants.
-                    self.control.set(variable, value_register);
-                    self.func_mut()
-                        .set_debug(value_register, || format!("{}_{}", name, variable.1 .0));
-                }
+                self.declare_variable(name, value, kind, *block)
             }
             Stmt::Return { value } => match value {
                 None => {
@@ -201,6 +141,70 @@ impl<'ast> AstParser<'ast> {
             Stmt::While { condition, body } => {
                 self.emit_while_loop(block, condition, body);
             }
+        }
+    }
+
+    fn declare_variable(&mut self, name: &'ast str, value: &'ast Expr, kind: &CType, block: Label) {
+        let variable = Var(name, self.control.current_scope());
+
+        if kind.is_struct() {
+            match value {
+                Expr::Default(ty) => assert_eq!(ty, kind),
+                _ => todo!("Struct that is not init to default."),
+            }
+            println!("Struct allocation for {:?}", variable);
+            let ptr_register = self.func_mut().next_var();
+            self.control.set_stack_alloc(variable, kind, ptr_register);
+            self.func_mut().push(
+                block,
+                Op::StackAlloc {
+                    dest: ptr_register,
+                    ty: *kind,
+                    count: 1,
+                },
+            );
+            self.stack_addresses.insert(variable, ptr_register);
+            return;
+        }
+
+        let value_register = self
+            .emit_expr(value, block)
+            .expect("Variable type cannot be void.");
+        let value_type = self.type_of(value_register);
+        assert_eq!(
+            value_type, *kind,
+            "{:?} expected {:?} but found {:?}",
+            variable, kind, value_type
+        );
+
+        if self.needs_stack_address.contains(&variable) {
+            println!("Stack allocation for {:?}", variable);
+            // Somebody wants to take the address of this variable later,
+            // so we need to make sure it gets allocated on the stack and not kept in a register.
+            let ptr_register = self.func_mut().next_var();
+            self.control.set_stack_alloc(variable, kind, ptr_register);
+            self.func_mut().push(
+                block,
+                Op::StackAlloc {
+                    dest: ptr_register,
+                    ty: *kind,
+                    count: 1,
+                },
+            );
+            self.func_mut().push(
+                block,
+                Op::StoreToPtr {
+                    addr: ptr_register,
+                    value_source: value_register,
+                },
+            );
+            self.stack_addresses.insert(variable, ptr_register);
+        } else {
+            println!("No stack allocation for {:?}", variable);
+            // Nobody cares where this goes so it can stay a register if the backend wants.
+            self.control.set(variable, value_register);
+            self.func_mut()
+                .set_debug(value_register, || format!("{}_{}", name, variable.1 .0));
         }
     }
 
@@ -594,52 +598,29 @@ impl<'ast> AstParser<'ast> {
                     Some(dest)
                 }
             },
-            Expr::GetVar { name } => {
-                let variable = self
-                    .control
-                    .resolve_name(name)
-                    .unwrap_or_else(|| panic!("Cannot access undefined variable {}", name));
-                let register = if self.control.is_stack_alloc(variable) {
-                    let ty = *self.control.var_type(variable);
-                    let value_dest = self.make_ssa(ty);
-                    let addr = *self
-                        .stack_addresses
-                        .get(&variable)
-                        .expect("Cannot get undeclared stack variable.");
-                    assert!(self.control.ssa_type(addr).is_pointer_to(&ty));
-                    self.func_mut()
-                        .push(block, Op::LoadFromPtr { value_dest, addr });
-                    value_dest
-                } else {
-                    self.control
-                        .get(variable)
-                        .unwrap_or_else(|| panic!("GetVar undeclared {}", name))
+            Expr::GetVar { .. } => {
+                let lvalue = self.parse_lvalue(expr, block);
+
+                let register = match lvalue {
+                    Lvalue::RegisterVar(var) => self.control.get(var).unwrap(),
+                    Lvalue::DerefPtr(addr) => {
+                        let value_type = self.type_of(addr);
+                        assert!(value_type.is_basic()); // TODO
+                        let value_dest = self.make_ssa(value_type.deref_type());
+                        self.func_mut()
+                            .push(block, Op::LoadFromPtr { value_dest, addr });
+                        value_dest
+                    }
                 };
 
                 Some(register)
             }
             Expr::Call { func, args } => self.emit_function_call(block, func, args),
             Expr::Unary { value, op } => match op {
-                UnaryOp::AddressOf => match value.deref() {
-                    Expr::GetVar { name } => {
-                        let variable = self.control.resolve_name(name).unwrap();
-                        assert!(
-                            self.control.is_stack_alloc(variable),
-                            "Cannot take address of register {:?}",
-                            variable
-                        );
-                        let ptr_register = self.stack_addresses.get(&variable).cloned().unwrap();
-                        println!(
-                            "Take address of {:?} {:?} addr={:?} {:?}",
-                            variable,
-                            self.control.var_type(variable),
-                            ptr_register,
-                            self.control.ssa_type(ptr_register),
-                        );
-                        Some(ptr_register)
-                    }
-                    _ => todo!("take address of complex expressions?"),
-                },
+                UnaryOp::AddressOf => {
+                    let lvalue = self.parse_lvalue(value, block);
+                    Some(lvalue.get_addr())
+                }
                 UnaryOp::Deref => {
                     let addr = self
                         .emit_expr(value, block)
@@ -668,7 +649,12 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(register)
             }
-            Expr::Default(_) => todo!(),
+            Expr::Default(kind) => {
+                assert!(!kind.is_struct());
+                let dest = self.make_ssa(*kind);
+                self.func_mut().push(block, Op::ConstInt { dest, value: 0 });
+                Some(dest)
+            }
         }
     }
 
@@ -731,12 +717,18 @@ impl<'ast> AstParser<'ast> {
     fn parse_lvalue(&mut self, expr: &'ast Expr, block: Label) -> Lvalue<'ast> {
         match expr {
             Expr::GetVar { name } => {
-                let this_variable = self.control.resolve_name(name).unwrap();
+                let this_variable = self
+                    .control
+                    .resolve_name(name)
+                    .unwrap_or_else(|| panic!("Undeclared variable {:?}", name));
                 if self.control.is_stack_alloc(this_variable) {
                     let addr = *self
                         .stack_addresses
                         .get(&this_variable)
                         .expect("Expected stack variable.");
+                    let addr_type = self.control.ssa_type(addr);
+                    let var_type = self.control.var_type(this_variable);
+                    assert!(addr_type.is_pointer_to(var_type));
                     Lvalue::DerefPtr(addr)
                 } else {
                     let val = self.control.get(this_variable).unwrap();

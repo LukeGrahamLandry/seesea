@@ -219,6 +219,10 @@ impl CType {
         self.depth == 0 && matches!(self.ty, ValueType::Struct(_))
     }
 
+    pub fn is_basic(&self) -> bool {
+        self.depth > 0 || !matches!(self.ty, ValueType::Struct(_))
+    }
+
     pub fn struct_name(&self) -> &str {
         assert!(self.is_struct());
         match self.ty {
