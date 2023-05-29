@@ -273,15 +273,17 @@ impl<'ast> AstParser<'ast> {
             .expect("If condition cannot be void.");
 
         // Execution branches into two new blocks.
-        let (then_block, mutated_in_then, then_block_returned) = self.parse_branch(then_body);
-        let (else_block, mutated_in_else, else_block_returned) = self.parse_branch(else_body);
+        let (then_block_start, then_block_end, mutated_in_then, then_block_returned) =
+            self.parse_branch(then_body);
+        let (else_block_start, else_block_end, mutated_in_else, else_block_returned) =
+            self.parse_branch(else_body);
 
         self.func_mut().push(
             *block,
             Op::Jump {
                 condition,
-                if_true: then_block,
-                if_false: else_block,
+                if_true: then_block_start,
+                if_false: else_block_start,
             },
         );
 
@@ -299,16 +301,16 @@ impl<'ast> AstParser<'ast> {
 
         self.terminate_branch(
             parent_block,
-            then_block,
-            else_block,
+            then_block_end,
+            else_block_end,
             next_block,
             then_block_returned,
             &mutated_in_else,
         );
         self.terminate_branch(
             parent_block,
-            else_block,
-            then_block,
+            else_block_end,
+            then_block_end,
             next_block,
             else_block_returned,
             &mutated_in_then,
@@ -317,8 +319,8 @@ impl<'ast> AstParser<'ast> {
         let neither_returned = !(then_block_returned || else_block_returned);
         if neither_returned {
             self.emit_phi(
-                (then_block, mutated_in_then),
-                (else_block, mutated_in_else),
+                (then_block_end, mutated_in_then),
+                (else_block_end, mutated_in_else),
                 next_block,
             );
         }
@@ -327,16 +329,25 @@ impl<'ast> AstParser<'ast> {
         *block = next_block;
     }
 
-    fn parse_branch(&mut self, branch_body: &'ast Stmt) -> (Label, FlowStackFrame<'ast>, bool) {
+    // TODO: this should return a struct
+    fn parse_branch(
+        &mut self,
+        branch_body: &'ast Stmt,
+    ) -> (Label, Label, FlowStackFrame<'ast>, bool) {
         let branch_block = self.func_mut().new_block();
         self.control.push_flow_frame(branch_block);
 
         let mut working_block_pointer = branch_block;
         self.emit_statement(branch_body, &mut working_block_pointer);
 
-        let branch_returned = self.func_mut().ends_with_jump(branch_block);
+        let branch_returned = self.func_mut().ends_with_jump(working_block_pointer);
         let mutated_in_branch = self.control.pop_flow_frame();
-        (branch_block, mutated_in_branch, branch_returned)
+        (
+            branch_block,
+            working_block_pointer,
+            mutated_in_branch,
+            branch_returned,
+        )
     }
 
     /// This only emits phi nodes in next_block if the branch returned.
@@ -531,7 +542,6 @@ impl<'ast> AstParser<'ast> {
             setup_block,
             &mutated_in_condition,
         );
-        self.patch_below(condition_block, &condition_changes);
 
         // The condition always runs so mutations there don't need phi nodes in the exit
         // but since we removed them from the flow stack, we need to put them back.
@@ -554,6 +564,7 @@ impl<'ast> AstParser<'ast> {
             },
         );
 
+        self.patch_below(condition_block, &condition_changes);
         self.patch_below(condition_block, &changes);
 
         *block = exit_block;
