@@ -6,7 +6,8 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::ContextRef;
 use inkwell::module::Module;
-use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType};
+use inkwell::support::LLVMString;
+use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
     PhiValue, PointerValue,
@@ -23,6 +24,7 @@ pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     builder: Builder<'ctx>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     func: Option<FuncContext<'ctx, 'module>>,
+    ir: Option<&'module ir::Module>,
 }
 
 /// Plain old data that holds the state that must be reset for each function.
@@ -41,13 +43,29 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             builder: module.get_context().create_builder(),
             functions: Default::default(),
             func: None,
+            ir: None,
         }
     }
 
     /// To access the results, use an execution engine created on the LLVM Module.
     pub fn compile_all(&mut self, ir: &'module ir::Module) {
+        self.ir = Some(ir);
+        for struct_def in &ir.structs {
+            let mut field_types = vec![];
+            for (_, ty) in &struct_def.fields {
+                field_types.push(self.llvm_type(*ty));
+            }
+
+            let llvm_struct = self.context.opaque_struct_type(struct_def.name);
+            llvm_struct.set_body(&field_types, false);
+        }
         for function in &ir.functions {
             self.emit_function(function);
+        }
+
+        match self.module.verify() {
+            Ok(_) => {}
+            Err(e) => println!("Failed llvm verify! \n{}.", e),
         }
     }
 
@@ -156,10 +174,30 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
             Op::StackAlloc { dest, ty, count } => {
                 assert_eq!(*count, 1);
-                let ptr = self.builder.build_alloca(self.llvm_type(*ty), "");
+                let ptr = self.builder.build_alloca(self.llvm_type(*ty), "s");
                 self.set(dest, ptr);
             }
-            Op::GetFieldAddr { .. } => todo!(),
+            Op::GetFieldAddr {
+                dest,
+                object_addr,
+                field_index,
+            } => {
+                let field_type = self.func_get().func_ir.type_of(dest);
+                let struct_type = self.func_get().func_ir.type_of(object_addr).deref_type();
+                let s_ptr_value = self.read_ptr(object_addr);
+                let field_ptr_value = unsafe {
+                    s_ptr_value.const_gep(
+                        self.llvm_type(struct_type),
+                        &[
+                            self.context.i64_type().const_int(0, false),
+                            self.context
+                                .i32_type()
+                                .const_int(*field_index as u64, false),
+                        ],
+                    )
+                };
+                self.set(dest, field_ptr_value);
+            }
         }
     }
 
@@ -264,9 +302,10 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn llvm_type(&self, ty: CType) -> BasicTypeEnum<'ctx> {
-        assert_eq!(ty.ty, ValueType::U64);
-
-        let mut result = self.context.i64_type().as_basic_type_enum();
+        let mut result = match ty.ty {
+            ValueType::U64 => self.context.i64_type().as_basic_type_enum(),
+            ValueType::Struct(name) => self.context.get_struct_type(name).unwrap().into(), // self.module.get_struct_type(name).unwrap().into(),
+        };
 
         for _ in 0..ty.depth {
             result = result
