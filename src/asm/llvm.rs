@@ -49,7 +49,6 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         for function in &ir.functions {
             self.emit_function(function);
         }
-        self.module.verify().unwrap();
     }
 
     fn emit_function(&mut self, ir: &'module Function) {

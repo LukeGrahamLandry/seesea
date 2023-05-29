@@ -374,6 +374,20 @@ long main(){
 }
 
 #[test]
+fn false_loop_condition_mutates() {
+    let src = "
+long main(){
+    long y = 10;
+    while ((y = 1) > 5) {
+        y = 15;
+    }
+    return y;
+}
+    ";
+    no_args_run_main(src, 1);
+}
+
+#[test]
 fn struct_defs() {
     let src = "
 struct Thing {
@@ -454,6 +468,7 @@ where
     println!("=== LLVM IR ====");
     println!("{}", module.to_string());
     println!("=========");
+    module.verify().unwrap();
     let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
     action(func);
 }

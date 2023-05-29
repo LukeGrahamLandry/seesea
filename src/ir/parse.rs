@@ -501,10 +501,11 @@ impl<'ast> AstParser<'ast> {
         self.func_mut()
             .push(parent_block, Op::AlwaysJump(setup_block));
 
-        // TODO: what if condition mutates? same question for ifs.
+        self.control.push_flow_frame(condition_block);
         let condition_register = self
             .emit_expr(condition, condition_block)
             .expect("Loop condition can't be void");
+        let mutated_in_condition = self.control.pop_flow_frame();
 
         let start_body_block = self.func_mut().new_block();
         let mut end_of_body_block = start_body_block;
@@ -513,12 +514,30 @@ impl<'ast> AstParser<'ast> {
         self.emit_statement(body, &mut end_of_body_block);
         let mutated_in_body = self.control.pop_flow_frame();
 
+        // todo assert no overlap mutated_in_condition and mutated_in_body
+
         let changes = self.emit_phi_parent_or_single_branch(
             parent_block,
             end_of_body_block,
             setup_block,
             &mutated_in_body,
         );
+
+        // TODO: what happens if condition mutates but body doesn't run
+        // Insert phi nodes in the setup for any mutations in the condition (to use either initial or mutated).
+        let condition_changes = self.emit_phi_parent_or_single_branch(
+            parent_block,
+            end_of_body_block,
+            setup_block,
+            &mutated_in_condition,
+        );
+        self.patch_below(condition_block, &condition_changes);
+
+        // The condition always runs so mutations there don't need phi nodes in the exit
+        // but since we removed them from the flow stack, we need to put them back.
+        for (var, reg) in mutated_in_condition.mutations {
+            self.control.set(var, reg);
+        }
 
         let exit_block = self.func_mut().new_block();
 
