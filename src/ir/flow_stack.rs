@@ -233,6 +233,12 @@ pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
                 swap(arg, changes);
             }
         }
+        Op::GetFieldAddr {
+            dest, object_addr, ..
+        } => {
+            assert!(!changes.contains_key(dest));
+            swap(object_addr, changes);
+        }
     }
 }
 

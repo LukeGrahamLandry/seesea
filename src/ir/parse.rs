@@ -1,7 +1,7 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{BinaryOp, CType, Expr, LiteralValue, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, CType, Expr, LiteralValue, Stmt, UnaryOp, ValueType};
 use crate::ir;
 use crate::ir::allocs::collect_stack_allocs;
 use crate::ir::debug::IrDebugInfo;
@@ -39,6 +39,7 @@ pub fn parse_ast<'ast>(program: &'ast ast::Module) -> (ir::Module, IrDebugInfo<'
     }
 
     assert!(parser.func.is_none());
+    parser.ir.structs = program.structs.clone();
     (parser.ir, parser.debug)
 }
 
@@ -120,6 +121,27 @@ impl<'ast> AstParser<'ast> {
             }
             Stmt::DeclareVar { name, value, kind } => {
                 let variable = Var(name.as_str(), self.control.current_scope());
+
+                if kind.is_struct() {
+                    match value.as_ref() {
+                        Expr::Default(ty) => assert_eq!(ty, kind),
+                        _ => panic!("Struct must init to default."),
+                    }
+                    println!("Struct allocation for {:?}", variable);
+                    let ptr_register = self.func_mut().next_var();
+                    self.control.set_stack_alloc(variable, kind, ptr_register);
+                    self.func_mut().push(
+                        *block,
+                        Op::StackAlloc {
+                            dest: ptr_register,
+                            ty: *kind,
+                            count: 1,
+                        },
+                    );
+                    self.stack_addresses.insert(variable, ptr_register);
+                    return;
+                }
+
                 let value_register = self
                     .emit_expr(value, *block)
                     .expect("Variable type cannot be void.");
@@ -130,11 +152,10 @@ impl<'ast> AstParser<'ast> {
                     variable, kind, value_type
                 );
 
-                if kind.is_struct() || self.needs_stack_address.contains(&variable) {
+                if self.needs_stack_address.contains(&variable) {
                     println!("Stack allocation for {:?}", variable);
                     // Somebody wants to take the address of this variable later,
                     // so we need to make sure it gets allocated on the stack and not kept in a register.
-                    // Or just any struct because I don't want to deal with that yet.
                     let ptr_register = self.func_mut().next_var();
                     self.control.set_stack_alloc(variable, kind, ptr_register);
                     self.func_mut().push(
@@ -635,8 +656,17 @@ impl<'ast> AstParser<'ast> {
                 }
                 _ => todo!(),
             },
-            Expr::GetField { object, name } => {
-                todo!()
+            Expr::GetField { .. } => {
+                let field_ptr = self.parse_lvalue(expr, block).get_addr();
+                let register = self.make_ssa(self.type_of(field_ptr).deref_type());
+                self.func_mut().push(
+                    block,
+                    Op::LoadFromPtr {
+                        value_dest: register,
+                        addr: field_ptr,
+                    },
+                );
+                Some(register)
             }
             Expr::Default(_) => todo!(),
         }
@@ -648,60 +678,29 @@ impl<'ast> AstParser<'ast> {
         rvalue: &'ast Expr,
         block: Label,
     ) -> Option<Ssa> {
-        // TODO: eval order is probably specified. like can you do a function call to get a pointer on the left?
-        let value_reg = self
+        let target = self.parse_lvalue(lvalue, block);
+        let value_source = self
             .emit_expr(rvalue, block)
             .expect("Can't assign to void.");
-        match lvalue {
-            Expr::GetVar { name } => {
-                let this_variable = self.control.resolve_name(name).unwrap();
 
+        match target {
+            Lvalue::RegisterVar(this_variable) => {
+                self.func_mut().set_debug(value_source, || {
+                    format!("{}_{}", this_variable.0, this_variable.1 .0)
+                });
+                self.control.set(this_variable, value_source);
+            }
+            Lvalue::DerefPtr(addr) => {
+                assert!(self
+                    .control
+                    .ssa_type(addr)
+                    .is_pointer_to(self.control.ssa_type(value_source)));
                 self.func_mut()
-                    .set_debug(value_reg, || format!("{}_{}", name, this_variable.1 .0));
-                if self.control.is_stack_alloc(this_variable) {
-                    let addr = *self
-                        .stack_addresses
-                        .get(&this_variable)
-                        .expect("Expected stack variable.");
-                    assert!(self
-                        .control
-                        .ssa_type(addr)
-                        .is_pointer_to(self.control.ssa_type(value_reg)));
-                    self.func_mut().push(
-                        block,
-                        Op::StoreToPtr {
-                            addr,
-                            value_source: value_reg,
-                        },
-                    );
-                } else {
-                    assert_eq!(
-                        *self.control.var_type(this_variable),
-                        self.type_of(value_reg)
-                    );
-                    self.control.set(this_variable, value_reg);
-                }
-                Some(value_reg)
+                    .push(block, Op::StoreToPtr { addr, value_source });
             }
-            Expr::Unary { value, op } => {
-                assert_eq!(*op, UnaryOp::Deref);
-                let target_addr = self.emit_expr(value, block).unwrap();
-                // TODO: emit_expr needs to set the type
-                // assert!(self
-                //     .control
-                //     .ssa_type(target_addr)
-                //     .is_pointer_to(self.control.ssa_type(value_reg)));
-                self.func_mut().push(
-                    block,
-                    Op::StoreToPtr {
-                        addr: target_addr,
-                        value_source: value_reg,
-                    },
-                );
-                Some(value_reg)
-            }
-            _ => unreachable!(),
         }
+
+        Some(value_source)
     }
 
     fn type_of(&self, ssa: Ssa) -> CType {
@@ -718,5 +717,73 @@ impl<'ast> AstParser<'ast> {
 
     fn func_mut(&mut self) -> &mut ir::Function {
         self.func.as_mut().unwrap()
+    }
+
+    /// The type of thing that is stored in the Lvalue (so really the Lvalue is a pointer to this)
+    fn value_type(&self, value: &Lvalue) -> CType {
+        match value {
+            Lvalue::RegisterVar(var) => self.type_of(self.control.get(*var).unwrap()),
+            Lvalue::DerefPtr(addr) => self.type_of(*addr).deref_type(),
+        }
+    }
+
+    /// Get the location in memory that the expr refers to (don't dereference it to extract the value yet).
+    fn parse_lvalue(&mut self, expr: &'ast Expr, block: Label) -> Lvalue<'ast> {
+        match expr {
+            Expr::GetVar { name } => {
+                let this_variable = self.control.resolve_name(name).unwrap();
+                if self.control.is_stack_alloc(this_variable) {
+                    let addr = *self
+                        .stack_addresses
+                        .get(&this_variable)
+                        .expect("Expected stack variable.");
+                    Lvalue::DerefPtr(addr)
+                } else {
+                    let val = self.control.get(this_variable).unwrap();
+                    Lvalue::RegisterVar(this_variable)
+                }
+            }
+            Expr::Unary { value, op } => {
+                assert_eq!(*op, UnaryOp::Deref);
+                let addr = self.emit_expr(value, block).unwrap();
+                Lvalue::DerefPtr(addr)
+            }
+            Expr::GetField { object, name } => {
+                let the_struct = self.parse_lvalue(object, block).get_addr();
+                let ty = self.type_of(the_struct);
+                assert_eq!(ty.depth, 1);
+                if let ValueType::Struct(struct_name) = ty.ty {
+                    let struct_def = self.ast.get_struct(struct_name).unwrap();
+                    let field_addr_dest = self.make_ssa(struct_def.field_type(name).ref_type());
+                    self.func_mut().push(
+                        block,
+                        Op::GetFieldAddr {
+                            dest: field_addr_dest,
+                            object_addr: the_struct,
+                            field_index: struct_def.field_index(name),
+                        },
+                    );
+                    Lvalue::DerefPtr(field_addr_dest)
+                } else {
+                    panic!("Tried to access field {} on non-struct {:?}", name, object)
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// A location in memory.
+enum Lvalue<'ast> {
+    RegisterVar(Var<'ast>), // value
+    DerefPtr(Ssa),          // addr
+}
+
+impl<'ast> Lvalue<'ast> {
+    fn get_addr(&self) -> Ssa {
+        match self {
+            Lvalue::RegisterVar(_) => unreachable!("Cannot get address of temporary value"),
+            Lvalue::DerefPtr(addr) => *addr,
+        }
     }
 }

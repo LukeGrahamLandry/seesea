@@ -160,6 +160,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 let ptr = self.builder.build_alloca(self.llvm_type(*ty), "");
                 self.set(dest, ptr);
             }
+            Op::GetFieldAddr { .. } => todo!(),
         }
     }
 

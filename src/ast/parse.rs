@@ -42,16 +42,14 @@ impl<'src> Parser<'src> {
         self.expect(TokenType::Struct);
         let name = self.read_ident("Expected name in struct definition.");
         self.expect(TokenType::LeftBrace);
-        let mut fields = HashMap::new();
+        let mut fields: Vec<(String, CType)> = vec![];
 
         while self.scanner.peek() != TokenType::RightBrace {
             let ty = self.read_type().expect("Expected type for struct field.");
             let name = self.read_ident("Expected name for struct field.");
             self.expect(TokenType::Semicolon);
-            assert!(
-                fields.insert(name, ty).is_none(),
-                "Struct field name must be unique."
-            );
+            assert!(fields.iter().find(|f| f.0 == name).is_none());
+            fields.push((name, ty));
         }
         let name = Box::leak(name.into_boxed_str());
         self.program.structs.push(StructSignature { name, fields });

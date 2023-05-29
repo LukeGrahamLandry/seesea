@@ -29,7 +29,7 @@ pub enum VmResult {
     Done(Option<u64>),
 }
 
-#[derive(Eq, PartialEq, Hash, Clone, Copy, Debug)]
+#[derive(Eq, PartialEq, Hash, Copy, Clone, Debug)]
 pub enum VmValue {
     U64(u64),
     StackAddress(usize),
@@ -174,7 +174,19 @@ impl<'ir> Vm<'ir> {
             Op::StackAlloc { dest, ty, count } => {
                 assert_eq!(count, 1);
                 let addr = self.next_address();
-                self.mut_frame().memory.insert(addr, VmValue::Uninit);
+                if ty.is_struct() {
+                    let struct_def = self.module.get_struct(ty.struct_name()).unwrap();
+                    for (i, (_, ty)) in struct_def.fields.iter().enumerate() {
+                        if ty.is_struct() {
+                            todo!()
+                        }
+                        self.mut_frame()
+                            .memory
+                            .insert(addr.offset(i), VmValue::Uninit);
+                    }
+                } else {
+                    self.mut_frame().memory.insert(addr, VmValue::Uninit);
+                }
                 self.mut_frame().registers.insert(dest, addr);
                 println!("--- Stack {:?} = {:?} {:?}", addr, VmValue::Uninit, ty);
             }
@@ -189,6 +201,15 @@ impl<'ir> Vm<'ir> {
                 let value = self.get(value_source);
                 *self.mut_stack_address(addr) = value;
                 println!("--- *{:?} = {:?}", addr, value);
+            }
+            Op::GetFieldAddr {
+                dest,
+                object_addr,
+                field_index,
+            } => {
+                let result = self.get(object_addr).offset(field_index);
+                println!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
+                self.set(dest, result);
             }
         }
 
@@ -279,5 +300,12 @@ impl VmValue {
 
     fn is_stack_ptr(&self) -> bool {
         matches!(self, VmValue::StackAddress(_))
+    }
+
+    fn offset(&self, offset: usize) -> VmValue {
+        match self {
+            VmValue::StackAddress(addr) => VmValue::StackAddress(addr + offset),
+            _ => unreachable!(),
+        }
     }
 }

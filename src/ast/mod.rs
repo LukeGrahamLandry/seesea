@@ -26,7 +26,17 @@ pub struct FuncSignature {
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct StructSignature {
     pub name: &'static str,
-    pub fields: HashMap<String, CType>,
+    pub fields: Vec<(String, CType)>,
+}
+
+impl StructSignature {
+    pub fn field_type(&self, name: &str) -> CType {
+        self.fields.iter().find(|f| f.0 == name).unwrap().1
+    }
+
+    pub fn field_index(&self, name: &str) -> usize {
+        self.fields.iter().position(|f| f.0 == name).unwrap()
+    }
 }
 
 // @Speed the expressions here dont need to be boxed
@@ -135,6 +145,10 @@ impl Module {
             .iter()
             .find(|&func| func.signature.name == name)
     }
+
+    pub fn get_struct(&self, name: &str) -> Option<&StructSignature> {
+        self.structs.iter().find(|&func| func.name == name)
+    }
 }
 
 impl Expr {
@@ -203,5 +217,13 @@ impl CType {
 
     pub fn is_struct(&self) -> bool {
         self.depth == 0 && matches!(self.ty, ValueType::Struct(_))
+    }
+
+    pub fn struct_name(&self) -> &str {
+        assert!(self.is_struct());
+        match self.ty {
+            ValueType::Struct(name) => name,
+            _ => unreachable!(),
+        }
     }
 }

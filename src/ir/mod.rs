@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, CType, FuncSignature};
+use crate::ast::{BinaryOp, CType, FuncSignature, StructSignature};
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
@@ -71,6 +71,12 @@ pub enum Op {
         args: Vec<Ssa>,
         return_value_dest: Ssa,
     },
+
+    GetFieldAddr {
+        dest: Ssa,
+        object_addr: Ssa,
+        field_index: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -86,6 +92,7 @@ pub struct Function {
 #[derive(Default)]
 pub struct Module {
     pub functions: Vec<Function>,
+    pub structs: Vec<StructSignature>,
     pub name: String,
 }
 
@@ -94,6 +101,10 @@ impl Module {
         self.functions
             .iter()
             .find(|&func| func.signature.name == name)
+    }
+
+    pub fn get_struct(&self, name: &str) -> Option<&StructSignature> {
+        self.structs.iter().find(|&func| func.name == name)
     }
 }
 

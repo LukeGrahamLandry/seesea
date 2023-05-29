@@ -70,6 +70,16 @@ impl Function {
                 func_name,
                 args,
             ),
+            Op::GetFieldAddr {
+                dest,
+                object_addr,
+                field_index,
+            } => format!(
+                "{} = field {} from {:?}",
+                self.name_ty(dest),
+                field_index,
+                self.name_ty(object_addr),
+            ),
         }
     }
 
