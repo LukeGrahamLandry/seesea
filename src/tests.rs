@@ -325,6 +325,75 @@ long main(){
     no_args_run_main(src, 9);
 }
 
+#[test]
+fn mutate_in_if_condition() {
+    let src = "
+long main(){
+    long x = 0;
+    if ((x = 5) > 0){
+        x = x + 1;
+    }
+    return x;
+}
+    ";
+    no_args_run_main(src, 6);
+}
+
+#[test]
+fn mutate_in_nested_if_condition() {
+    let src = "
+long main(){
+    long x = 0;
+    long y = 0;
+    if ((x = 5) > 0){
+        x = x + 1;
+        if ((y = 4) < 10){
+            y = 1;
+        }
+    }
+    return x + y;
+}
+    ";
+    no_args_run_main(src, 7);
+}
+
+#[test]
+fn mutate_in_while_condition() {
+    // this loop relies on mutation in the condition to terminate
+    let src = "
+long main(){
+    long y = 0;
+    long z = 0;
+    while ((y = y + 1) < 5) {
+        z = z + 1;
+    }
+    return y + z;
+}
+    ";
+    no_args_run_main(src, 9);
+}
+
+#[test]
+fn struct_defs() {
+    let src = "
+struct Thing {
+    long a;
+    long* b;
+};
+
+long main(){
+    long x = 10;
+    long* y = &x;
+    struct Thing z;
+    z.a = x;
+    z.b = y;
+    *z.b = 5;
+    return x + z.a;
+}
+    ";
+    no_args_run_main(src, 15);
+}
+
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);
     assert_eq!(Vm::eval(&ir, "main", &[]), Some(expected));

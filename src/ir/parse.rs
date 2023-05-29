@@ -130,10 +130,11 @@ impl<'ast> AstParser<'ast> {
                     variable, kind, value_type
                 );
 
-                if self.needs_stack_address.contains(&variable) {
+                if kind.is_struct() || self.needs_stack_address.contains(&variable) {
                     println!("Stack allocation for {:?}", variable);
                     // Somebody wants to take the address of this variable later,
                     // so we need to make sure it gets allocated on the stack and not kept in a register.
+                    // Or just any struct because I don't want to deal with that yet.
                     let ptr_register = self.func_mut().next_var();
                     self.control.set_stack_alloc(variable, kind, ptr_register);
                     self.func_mut().push(
@@ -456,19 +457,18 @@ impl<'ast> AstParser<'ast> {
     }
 
     fn set_phi_debug(&mut self, new_register: Ssa, a: Ssa, b: Ssa) {
-        let name_a = self.func_mut().name(&a);
-        let name_b = self.func_mut().name(&b);
-        self.func_mut()
-            .set_debug(new_register, || format!("phi__{}__{}__", name_a, name_b));
+        let name_a = self.func_mut().debug_str(&a);
+        let name_b = self.func_mut().debug_str(&a);
+        assert_eq!(
+            name_a, name_b,
+            "Both phi branches should refer to the same source variable"
+        );
+        self.func_mut().set_debug(new_register, || name_a.unwrap());
     }
 
-    // parent
-    //       setup
-    //            condition
-    //                     body_block
-    //                               end_of_body_block
-    //                                               <setup
-    //                     exit_block
+    // parent > setup > condition
+    //                           body_block > end_of_body_block <setup
+    //                           exit_block
     fn emit_while_loop(&mut self, block: &mut Label, condition: &'ast Expr, body: &'ast Stmt) {
         let parent_block = *block;
         let setup_block = self.func_mut().new_block();
@@ -635,7 +635,10 @@ impl<'ast> AstParser<'ast> {
                 }
                 _ => todo!(),
             },
-            _ => todo!(),
+            Expr::GetField { object, name } => {
+                todo!()
+            }
+            Expr::Default(_) => todo!(),
         }
     }
 

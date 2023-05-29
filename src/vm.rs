@@ -50,7 +50,7 @@ impl<'ir> Vm<'ir> {
     pub fn eval(module: &Module, function_name: &str, args: &[u64]) -> Option<u64> {
         println!("Start VM Eval.");
         let mut vm = Vm::new(module);
-        vm.tick_limit = Some(250);
+        vm.tick_limit = Some(250); // TODO: move limit into tests file
         let func = module.get_func(function_name).expect("Function not found");
         let frame = StackFrame {
             registers: HashMap::new(),

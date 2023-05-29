@@ -3,6 +3,8 @@ use crate::ir::flow_stack::{ControlFlowStack, Var};
 use crate::ir::{Label, Ssa};
 use std::collections::HashSet;
 
+// If I keep this, it would be a good place to put other things I want to do in a pre-pass.
+// Idk if keeping this distinction is silly. Does clang just use alloca everywhere? Looks like it in Compiler Explorer.
 pub fn collect_stack_allocs<'ast>(root: &'ast Stmt, results: &mut HashSet<Var<'ast>>) {
     let mut stack = ControlFlowStack::default();
     stack.push_flow_frame(Label(0));
@@ -86,5 +88,8 @@ fn walk_expr<'ast>(
             }
         }
         Expr::GetVar { .. } | Expr::Literal { .. } | Expr::Default(_) => {}
+        Expr::GetField { object, .. } => {
+            walk_expr(control, object, results);
+        }
     }
 }

@@ -1,9 +1,11 @@
 //! TOKENS -> AST
 
 use crate::ast::{
-    BinaryOp, CType, Expr, FuncSignature, Function, LiteralValue, Module, Stmt, UnaryOp, ValueType,
+    BinaryOp, CType, Expr, FuncSignature, Function, LiteralValue, Module, Stmt, StructSignature,
+    UnaryOp, ValueType,
 };
-use crate::scanning::{Scanner, TokenType};
+use crate::scanning::{Scanner, Token, TokenType};
+use std::collections::HashMap;
 
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {
@@ -12,6 +14,7 @@ impl<'src> From<Scanner<'src>> for Module {
             scanner,
             program: Module {
                 functions: vec![],
+                structs: vec![],
                 name,
             },
         };
@@ -28,8 +31,32 @@ struct Parser<'src> {
 impl<'src> Parser<'src> {
     fn run(&mut self) {
         while self.scanner.has_next() {
-            self.parse_function();
+            match self.scanner.peek() {
+                TokenType::Struct => self.parse_struct_def(),
+                _ => self.parse_function(),
+            }
         }
+    }
+
+    fn parse_struct_def(&mut self) {
+        self.expect(TokenType::Struct);
+        let name = self.read_ident("Expected name in struct definition.");
+        self.expect(TokenType::LeftBrace);
+        let mut fields = HashMap::new();
+
+        while self.scanner.peek() != TokenType::RightBrace {
+            let ty = self.read_type().expect("Expected type for struct field.");
+            let name = self.read_ident("Expected name for struct field.");
+            self.expect(TokenType::Semicolon);
+            assert!(
+                fields.insert(name, ty).is_none(),
+                "Struct field name must be unique."
+            );
+        }
+        let name = Box::leak(name.into_boxed_str());
+        self.program.structs.push(StructSignature { name, fields });
+        self.expect(TokenType::RightBrace);
+        self.expect(TokenType::Semicolon);
     }
 
     // TODO: separate the signature cause i need to support forward declarations
@@ -37,7 +64,7 @@ impl<'src> Parser<'src> {
     fn parse_function(&mut self) {
         let returns = self.read_type().expect("expected function declaration");
         let name = self.read_ident("expected function name");
-        self.scanner.consume(TokenType::LeftParen);
+        self.expect(TokenType::LeftParen);
         let mut args = vec![];
         let mut names = vec![];
         while !self.scanner.matches(TokenType::RightParen) {
@@ -74,7 +101,6 @@ impl<'src> Parser<'src> {
             return Stmt::Block { body, lines: None }; // TODO
         }
 
-        // TODO: check if the next tokens are a valid type like long*
         let ty = self.read_type();
         if let Some(..) = ty {
             return self.parse_declare_variable(ty.unwrap());
@@ -86,7 +112,7 @@ impl<'src> Parser<'src> {
                 None
             } else {
                 let value = self.parse_expr();
-                self.scanner.consume(TokenType::Semicolon);
+                self.expect(TokenType::Semicolon);
                 Some(Box::new(value))
             };
             return Stmt::Return { value };
@@ -120,12 +146,13 @@ impl<'src> Parser<'src> {
     /// TYPE NAME = EXPR?;
     fn parse_declare_variable(&mut self, kind: CType) -> Stmt {
         let name = self.read_ident("assert var name");
-        self.scanner.consume(TokenType::Equal);
+
         let value = if self.scanner.matches(TokenType::Semicolon) {
             Expr::Default(kind)
         } else {
+            self.expect(TokenType::Equal);
             let value = self.parse_expr();
-            self.scanner.consume(TokenType::Semicolon);
+            self.expect(TokenType::Semicolon);
             value
         };
         Stmt::DeclareVar {
@@ -137,10 +164,10 @@ impl<'src> Parser<'src> {
 
     /// if (EXPR) STMT else? STMT?
     fn parse_if(&mut self) -> Stmt {
-        self.scanner.consume(TokenType::If);
-        self.scanner.consume(TokenType::LeftParen);
+        self.expect(TokenType::If);
+        self.expect(TokenType::LeftParen);
         let condition = self.parse_expr();
-        self.scanner.consume(TokenType::RightParen);
+        self.expect(TokenType::RightParen);
         let if_true = self.parse_stmt();
         let if_false = if self.scanner.matches(TokenType::Else) {
             self.parse_stmt()
@@ -159,10 +186,10 @@ impl<'src> Parser<'src> {
 
     /// while (EXPR) STMT
     fn parse_while_loop(&mut self) -> Stmt {
-        self.scanner.consume(TokenType::While);
-        self.scanner.consume(TokenType::LeftParen);
+        self.expect(TokenType::While);
+        self.expect(TokenType::LeftParen);
         let condition = self.parse_expr();
-        self.scanner.consume(TokenType::RightParen);
+        self.expect(TokenType::RightParen);
         let body = self.parse_stmt();
         Stmt::While {
             condition: Box::new(condition),
@@ -218,7 +245,7 @@ impl<'src> Parser<'src> {
         loop {
             match self.scanner.peek() {
                 TokenType::LeftParen => {
-                    self.scanner.consume(TokenType::LeftParen);
+                    self.expect(TokenType::LeftParen);
                     let mut args = vec![];
                     while !self.scanner.matches(TokenType::RightParen) {
                         args.push(self.parse_expr());
@@ -234,6 +261,14 @@ impl<'src> Parser<'src> {
                     expr = Expr::Call {
                         func: Box::new(expr),
                         args,
+                    }
+                }
+                TokenType::Period => {
+                    self.expect(TokenType::Period);
+                    let name = self.read_ident("Expected field name.");
+                    expr = Expr::GetField {
+                        object: Box::new(expr),
+                        name,
                     }
                 }
                 _ => return expr,
@@ -253,10 +288,10 @@ impl<'src> Parser<'src> {
             },
             TokenType::LeftParen => {
                 let expr = self.parse_expr();
-                self.scanner.consume(TokenType::RightParen);
+                self.expect(TokenType::RightParen);
                 expr
             }
-            _ => self.error("Expected primary expr (number or var access)"),
+            _ => self.err("Expected primary expr (number or var access)", token),
         }
     }
 
@@ -264,47 +299,66 @@ impl<'src> Parser<'src> {
     #[must_use]
     fn read_type(&mut self) -> Option<CType> {
         let token = self.scanner.peek_n(0);
-        let mut look_ahead = 1;
-        match token.kind {
+        let mut ty = match token.kind {
+            TokenType::Struct => {
+                self.expect(TokenType::Struct);
+                let name_token = self.scanner.peek_n(0);
+                let name = self.read_ident("Expected identifier of struct.");
+                let s = self.program.structs.iter().find(|s| s.name == name);
+                let s = match s {
+                    None => self.err("Undeclared struct", name_token),
+                    Some(s) => s,
+                };
+                CType {
+                    ty: ValueType::Struct(s.name),
+                    depth: 0,
+                }
+            }
             TokenType::Identifier => {
                 if token.lexeme != "long" {
-                    println!("not part of type {:?}", token);
                     return None;
                 }
-                let mut ty = CType {
+
+                self.expect(TokenType::Identifier);
+                CType {
                     ty: ValueType::U64,
                     depth: 0,
-                };
-                while self.scanner.peek_n(look_ahead).kind == TokenType::Star {
-                    ty = ty.ref_type();
-                    look_ahead += 1;
                 }
-                for _ in 0..look_ahead {
-                    self.scanner.advance();
-                }
-                println!("found type {:?}", ty);
-                Some(ty)
             }
-            _ => None,
+            _ => return None,
+        };
+
+        while self.scanner.matches(TokenType::Star) {
+            ty = ty.ref_type();
         }
+        println!("found type {:?} next: {:?}", ty, self.scanner.peek());
+        Some(ty)
     }
 
     /// NAME
     fn read_ident(&mut self, msg: &str) -> String {
         let token = self.scanner.next();
         if token.kind != TokenType::Identifier {
-            self.error(msg);
+            self.err(msg, token);
         }
         token.lexeme.into()
     }
 
+    fn expect(&mut self, kind: TokenType) {
+        let token = self.scanner.next();
+        if token.kind != kind {
+            self.err(&format!("Expected {:?}", kind), token);
+        }
+    }
+
+    fn err(&mut self, msg: &str, token: Token) -> ! {
+        let line = self.scanner.line_number(token);
+        panic!("Parse error on line {}: {}. {:?}", line, msg, token);
+    }
+
     fn error(&mut self, msg: &str) -> ! {
-        let i = self.scanner.index;
         let token = self.scanner.next();
         let line = self.scanner.line_number(token);
-        panic!(
-            "Parse error on line {}: {} at {}. {:?}",
-            line, msg, i, token
-        );
+        panic!("Parse error on line {}: {} . {:?}", line, msg, token);
     }
 }

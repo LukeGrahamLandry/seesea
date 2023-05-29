@@ -73,7 +73,6 @@ impl Function {
         }
     }
 
-    // Names for phi nodes use this so the type suffix doesnt get duplicated.
     pub fn name(&self, ssa: &Ssa) -> String {
         match &self.debug_register_names[ssa.0] {
             None => format!("%{}", ssa.0),
@@ -86,6 +85,11 @@ impl Function {
             None => format!("{}[??]", self.name(ssa)),
             Some(ty) => format!("{}[{:?}]", self.name(ssa), ty),
         }
+    }
+
+    // Names for phi nodes use this so they don't get really long.
+    pub fn debug_str(&self, ssa: &Ssa) -> Option<String> {
+        self.debug_register_names[ssa.0].clone()
     }
 }
 

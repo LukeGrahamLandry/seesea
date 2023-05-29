@@ -69,6 +69,9 @@ pub enum TokenType {
     #[token("continue")]
     Continue,
 
+    #[token("struct")]
+    Struct,
+
     #[token(">")]
     Greater,
 

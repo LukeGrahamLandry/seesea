@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 mod parse;
 mod print;
 
 pub struct Module {
     pub functions: Vec<Function>,
+    pub structs: Vec<StructSignature>,
     pub name: String,
 }
 
@@ -18,6 +21,12 @@ pub struct FuncSignature {
     pub name: String,
     // The names are needed for parsing the body code. They don't live on to LLVM IR currently.
     pub param_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct StructSignature {
+    pub name: &'static str,
+    pub fields: HashMap<String, CType>,
 }
 
 // @Speed the expressions here dont need to be boxed
@@ -64,6 +73,10 @@ pub enum Expr {
         func: Box<Expr>,
         args: Vec<Expr>,
     },
+    GetField {
+        object: Box<Expr>,
+        name: String,
+    },
     GetVar {
         name: String,
     },
@@ -105,7 +118,7 @@ pub enum LiteralValue {
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 pub enum ValueType {
     U64,
-    // Struct
+    Struct(&'static str),
 }
 
 // I'd really like these to stay Copy. Maybe give them an 'ast lifetime so they can reference struct prototypes.
@@ -186,5 +199,9 @@ impl CType {
 
     pub fn is_pointer_to(&self, value_type: &CType) -> bool {
         &self.deref_type() == value_type
+    }
+
+    pub fn is_struct(&self) -> bool {
+        self.depth == 0 && matches!(self.ty, ValueType::Struct(_))
     }
 }

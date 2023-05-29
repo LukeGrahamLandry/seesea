@@ -94,6 +94,10 @@ impl Expr {
                 writeln!(f, "{:?}", value)
             }
             Expr::Default(kind) => writeln!(f, "{:?}::default()", kind),
+            Expr::GetField { object, name } => {
+                writeln!(f, "Get Field {}", name)?;
+                object.print(depth + 1, f)
+            }
         }
     }
 }

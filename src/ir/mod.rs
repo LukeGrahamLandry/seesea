@@ -140,7 +140,7 @@ impl Function {
     }
 
     fn assert_valid(&self) {
-        for block in &self.blocks {
+        for (i, block) in self.blocks.iter().enumerate() {
             if block.is_empty() {
                 // TODO: assert!(false);
                 //      cant have this because it implies you could fall out of the function.
@@ -163,8 +163,12 @@ impl Function {
 
             // Exactly one jump op as the last instruction.
             let jumps = block.iter().filter(|op| op.is_jump()).count();
-            assert_eq!(jumps, 1);
-            assert!(block.last().unwrap().is_jump());
+            assert!(
+                block.last().unwrap().is_jump(),
+                "Label({}) must end with a jump",
+                i
+            );
+            assert_eq!(jumps, 1, "Label({}) must have exactly one jump", i);
         }
 
         assert_eq!(
