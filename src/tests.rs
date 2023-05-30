@@ -477,8 +477,10 @@ long main(long start){
     return c;
 }
     ";
+    let ir = compile_module(src);
     type Func = unsafe extern "C" fn(u64) -> u64;
-    llvm_run::<Func, _>(&compile_module(src), "main", |function| {
+    assert_eq!(Vm::eval(&ir, "main", &[VmValue::U64(5)]).to_int(), 54);
+    llvm_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function.call(5) };
         assert_eq!(answer, 54);
     });
@@ -541,7 +543,7 @@ long main()
 
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);
-    // assert_eq!(Vm::eval_int_args(&ir, "main", &[]).to_int(), expected);
+    assert_eq!(Vm::eval_int_args(&ir, "main", &[]).to_int(), expected);
     type Func = unsafe extern "C" fn() -> u64;
     llvm_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function.call() };

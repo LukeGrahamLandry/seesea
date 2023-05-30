@@ -3,10 +3,13 @@
 //! For now it just gives me another backend so if it agrees on results with LLVm then I know my IR gen was the problem.
 #![allow(unused)]
 
-use crate::ast::{BinaryOp, LiteralValue};
-use crate::ir::{Function, Label, Module, Op, Ssa};
+use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
+use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::macros::vm::{do_bin_cmp, do_bin_math};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::mem;
+use std::mem::size_of;
+use std::ops::Add;
 
 pub struct Vm<'ir> {
     module: &'ir Module,
@@ -14,6 +17,7 @@ pub struct Vm<'ir> {
     stack_address_counter: usize,
     tick: usize,
     tick_limit: Option<usize>,
+    heap: DebugAlloc,
 }
 
 struct StackFrame<'ir> {
@@ -23,7 +27,7 @@ struct StackFrame<'ir> {
     block: Label,
     ip: usize,
     return_value_register: Option<Ssa>,
-    memory: HashMap<usize, VmValue>,
+    allocations: Vec<Ptr>,
 }
 
 pub enum VmResult {
@@ -35,9 +39,9 @@ pub enum VmResult {
 pub enum VmValue {
     U64(u64),
     F64(f64),
-    StackAddress(usize),
     Uninit,
     ConstString(&'static str),
+    Pointer(Ptr),
 }
 
 impl<'ir> Vm<'ir> {
@@ -48,6 +52,7 @@ impl<'ir> Vm<'ir> {
             stack_address_counter: 0,
             tick: 0,
             tick_limit: None,
+            heap: DebugAlloc::default(),
         }
     }
 
@@ -71,7 +76,7 @@ impl<'ir> Vm<'ir> {
             block: func.entry_point(),
             ip: 0,
             return_value_register: None,
-            memory: HashMap::new(),
+            allocations: vec![],
         };
         vm.call_stack.push(frame);
         vm.init_params(args.iter().copied());
@@ -79,6 +84,7 @@ impl<'ir> Vm<'ir> {
         loop {
             let result = vm.tick();
             if let VmResult::Done(_) = result {
+                vm.heap.assert_no_leaks();
                 return result;
             }
         }
@@ -151,8 +157,11 @@ impl<'ir> Vm<'ir> {
             }
             Op::Return { value } => {
                 let result = value.map(|v| self.get(v));
-                self.call_stack.pop();
+                let old_frame = self.call_stack.pop().unwrap();
                 println!("--- ret {:?}", result);
+                for addr in old_frame.allocations {
+                    self.heap.free(addr, self.tick);
+                }
                 return if self.call_stack.is_empty() {
                     VmResult::Done(result)
                 } else {
@@ -188,43 +197,47 @@ impl<'ir> Vm<'ir> {
                     block: func.entry_point(),
                     ip: 0,
                     return_value_register: None,
-                    memory: HashMap::new(),
+                    allocations: vec![],
                 };
                 self.call_stack.push(frame);
                 self.init_params(arg_values.into_iter());
                 return VmResult::Continue;
             }
             Op::StackAlloc { dest, ty, count } => {
-                assert_eq!(count, 1);
-                let addr = self.next_address();
-                if ty.is_struct() {
-                    let struct_def = self.module.get_struct(ty.struct_name()).unwrap();
-                    for (i, (_, ty)) in struct_def.fields.iter().enumerate() {
-                        if ty.is_struct() {
-                            todo!()
-                        }
-                        self.mut_frame()
-                            .memory
-                            .insert(addr.offset(i).to_fake_ptr(), VmValue::Uninit);
-                    }
-                } else {
-                    self.mut_frame()
-                        .memory
-                        .insert(addr.to_fake_ptr(), VmValue::Uninit);
-                }
-                self.mut_frame().registers.insert(dest, addr);
-                println!("--- Stack {:?} = {:?} {:?}", addr, VmValue::Uninit, ty);
+                let size = self.module.size_of(ty) * count;
+                let addr = self.heap.malloc(size, self.tick);
+                self.mut_frame().allocations.push(addr);
+                self.mut_frame()
+                    .registers
+                    .insert(dest, VmValue::Pointer(addr));
+                println!("--- Stack {:?} = {:?} ZEROED", addr, ty);
             }
             Op::LoadFromPtr { value_dest, addr } => {
                 let addr = self.get(addr);
-                let value = *self.get_stack_address(addr);
+                let ty = *self
+                    .get_frame()
+                    .function
+                    .register_types
+                    .get(&value_dest)
+                    .unwrap();
+                let value = self.heap.as_ref(addr.to_ptr(), self.module.size_of(ty));
                 println!("--- {:?} = *{:?}", value_dest, addr);
+                let value = VmValue::from_bytes(value, ty);
                 self.set(value_dest, value);
             }
             Op::StoreToPtr { addr, value_source } => {
                 let addr = self.get(addr);
                 let value = self.get(value_source);
-                *self.mut_stack_address(addr) = value;
+                let ty = *self
+                    .get_frame()
+                    .function
+                    .register_types
+                    .get(&value_source)
+                    .unwrap();
+                let source_bytes = value.to_bytes(ty);
+                let dest_bytes = self.heap.as_mut(addr.to_ptr(), self.module.size_of(ty));
+                assert_eq!(dest_bytes.len(), source_bytes.len());
+                dest_bytes.copy_from_slice(&*source_bytes);
                 println!("--- *{:?} = {:?}", addr, value);
             }
             Op::GetFieldAddr {
@@ -232,9 +245,10 @@ impl<'ir> Vm<'ir> {
                 object_addr,
                 field_index,
             } => {
-                let result = self.get(object_addr).offset(field_index);
-                println!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
-                self.set(dest, result);
+                // let result = self.get(object_addr).offset(field_index);
+                // println!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
+                // self.set(dest, result);
+                todo!()
             }
             Op::ConstValue { dest, value, .. } => {
                 let val = match value {
@@ -250,7 +264,55 @@ impl<'ir> Vm<'ir> {
                 };
                 self.set(dest, val);
             }
-            _ => todo!(),
+            Op::Cast {
+                input,
+                output,
+                kind,
+            } => {
+                let in_ty = *self
+                    .get_frame()
+                    .function
+                    .register_types
+                    .get(&input)
+                    .unwrap();
+                let out_ty = *self
+                    .get_frame()
+                    .function
+                    .register_types
+                    .get(&output)
+                    .unwrap();
+                match kind {
+                    CastType::Bits => {
+                        let bytes = self.get(input).to_bytes(in_ty);
+                        let result = VmValue::from_bytes(&bytes, out_ty);
+                        self.set(output, result);
+                    }
+                    CastType::UnsignedIntUp => {
+                        todo!()
+                    }
+                    CastType::IntDown => {
+                        todo!()
+                    }
+                    CastType::FloatUp => {
+                        todo!()
+                    }
+                    CastType::FloatDown => {
+                        todo!()
+                    }
+                    CastType::FloatToUInt => {
+                        todo!()
+                    }
+                    CastType::UIntToFloat => {
+                        todo!()
+                    }
+                    CastType::IntToPtr => {
+                        todo!()
+                    }
+                    CastType::PtrToInt => {
+                        todo!()
+                    }
+                }
+            }
         }
 
         self.mut_frame().ip += 1;
@@ -292,31 +354,6 @@ impl<'ir> Vm<'ir> {
         self.call_stack.last_mut().unwrap()
     }
 
-    fn next_address(&mut self) -> VmValue {
-        self.stack_address_counter += 1;
-        VmValue::StackAddress(self.stack_address_counter)
-    }
-
-    fn get_stack_address(&self, addr: VmValue) -> &VmValue {
-        assert!(addr.is_stack_ptr());
-        for frame in self.call_stack.iter().rev() {
-            if let Some(value) = frame.memory.get(&addr.to_fake_ptr()) {
-                return value;
-            }
-        }
-        panic!("Tried to access dropped stack variable");
-    }
-
-    fn mut_stack_address(&mut self, addr: VmValue) -> &mut VmValue {
-        assert!(addr.is_stack_ptr());
-        for frame in self.call_stack.iter_mut().rev() {
-            if let Some(value) = frame.memory.get_mut(&addr.to_fake_ptr()) {
-                return value;
-            }
-        }
-        panic!("Tried to access dropped stack variable");
-    }
-
     fn call_libc_for_tests(&mut self, name: &str, args: &[VmValue]) -> VmValue {
         match name {
             "sin" => {
@@ -329,11 +366,16 @@ impl<'ir> Vm<'ir> {
                 VmValue::U64(0)
             }
             "malloc" => {
-                // debug allocator that tracks leaks
-                todo!()
+                assert_eq!(args.len(), 1);
+                let size = args[0].to_int() as usize;
+                let ptr = self.heap.malloc(size, self.tick);
+                VmValue::Pointer(ptr)
             }
             "free" => {
-                todo!()
+                assert_eq!(args.len(), 1);
+                let ptr = args[0].to_ptr();
+                self.heap.free(ptr, self.tick);
+                VmValue::Uninit
             }
             _ => {
                 panic!("Called unrecognised function {}", name)
@@ -351,6 +393,56 @@ fn bool_to_int(b: bool) -> u64 {
 }
 
 impl VmValue {
+    fn to_bytes(&self, ty: CType) -> Box<[u8]> {
+        match self {
+            VmValue::U64(v) => {
+                assert!(!ty.is_ptr());
+                match ty.ty {
+                    ValueType::U64 => v.to_le_bytes().to_vec().into_boxed_slice(),
+                    ValueType::U8 => (*v as u8).to_le_bytes().to_vec().into_boxed_slice(),
+                    ValueType::U32 => (*v as u32).to_le_bytes().to_vec().into_boxed_slice(),
+                    _ => unreachable!(),
+                }
+            }
+            VmValue::F64(v) => {
+                assert!(!ty.is_ptr());
+                match ty.ty {
+                    ValueType::F64 => v.to_le_bytes().to_vec().into_boxed_slice(),
+                    ValueType::F32 => (*v as f32).to_le_bytes().to_vec().into_boxed_slice(),
+                    _ => unreachable!(),
+                }
+            }
+            VmValue::Uninit => todo!(),
+            VmValue::ConstString(_) => todo!(),
+            VmValue::Pointer(p) => {
+                assert!(ty.is_ptr());
+                let mut bytes = p.id.to_le_bytes().to_vec();
+                bytes.extend(p.offset.to_le_bytes());
+                bytes.into_boxed_slice()
+            }
+        }
+    }
+
+    fn from_bytes(bytes: &[u8], ty: CType) -> VmValue {
+        if ty.is_ptr() {
+            assert_eq!(bytes.len(), 8);
+            let id = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+            let offset = u32::from_le_bytes(bytes[4..].try_into().unwrap());
+            let ptr = Ptr { id, offset };
+            return VmValue::Pointer(ptr);
+        }
+
+        match ty.ty {
+            ValueType::U64 => VmValue::U64(u64::from_le_bytes(bytes.try_into().unwrap())),
+            ValueType::U8 => VmValue::U64(bytes[0] as u64),
+            ValueType::U32 => VmValue::U64(u32::from_le_bytes(bytes.try_into().unwrap()) as u64),
+            ValueType::F64 => VmValue::F64(f64::from_le_bytes(bytes.try_into().unwrap())),
+            ValueType::F32 => VmValue::F64(f32::from_le_bytes(bytes.try_into().unwrap()) as f64),
+            ValueType::Struct(_) => todo!(),
+            ValueType::Void => unreachable!(),
+        }
+    }
+
     fn to_int(&self) -> u64 {
         if let &VmValue::U64(value) = self {
             return value;
@@ -365,26 +457,15 @@ impl VmValue {
         panic!("Not a float");
     }
 
-    fn to_fake_ptr(&self) -> usize {
-        if let &VmValue::StackAddress(value) = self {
+    fn to_ptr(&self) -> Ptr {
+        if let &VmValue::Pointer(value) = self {
             return value;
         }
-        panic!("Not a StackAddress");
+        panic!("Not a pointer");
     }
 
     fn to_bool(&self) -> bool {
         self.to_int() != 0
-    }
-
-    fn is_stack_ptr(&self) -> bool {
-        matches!(self, VmValue::StackAddress(_))
-    }
-
-    fn offset(&self, offset: usize) -> VmValue {
-        match self {
-            VmValue::StackAddress(addr) => VmValue::StackAddress(addr + offset),
-            _ => unreachable!(),
-        }
     }
 }
 
@@ -401,5 +482,96 @@ impl VmResult {
             VmResult::Continue => unreachable!(),
             VmResult::Done(val) => val.unwrap().to_float(),
         }
+    }
+}
+
+#[derive(Default)]
+struct DebugAlloc {
+    count: u32,
+    allocations: HashMap<u32, Allocation>,
+}
+
+struct Allocation {
+    data: Box<[u8]>,
+    id: u32,
+    alloc_tick: usize,
+    free_tick: Option<usize>,
+}
+
+#[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
+pub struct Ptr {
+    id: u32,
+    offset: u32,
+}
+
+impl DebugAlloc {
+    fn malloc(&mut self, size: usize, alloc_tick: usize) -> Ptr {
+        self.count += 1;
+        self.allocations.insert(
+            self.count,
+            Allocation {
+                data: (0..size).map(|_| 0).collect(),
+                id: self.count,
+                alloc_tick,
+                free_tick: None,
+            },
+        );
+        Ptr {
+            id: self.count,
+            offset: 0,
+        }
+    }
+
+    fn free(&mut self, addr: Ptr, free_tick: usize) {
+        assert_eq!(addr.offset, 0);
+        let allocation = self.allocations.get_mut(&addr.id).unwrap();
+        assert!(allocation.free_tick.is_none(), "double free");
+        allocation.free_tick = Some(free_tick);
+        // Actually release the memory.
+        allocation.data = vec![].into_boxed_slice();
+    }
+
+    fn assert_no_leaks(&self) {
+        assert_eq!(
+            self.allocations
+                .iter()
+                .filter(|(_, alloc)| alloc.free_tick.is_none())
+                .map(|(id, _)| {
+                    println!("Memory leak {:?}", id);
+                })
+                .count(),
+            0
+        );
+    }
+
+    // TODO: this is unsafe because invalid values?
+    fn as_ref(&self, addr: Ptr, size: usize) -> &[u8] {
+        let allocation = self.allocations.get(&addr.id).unwrap();
+        assert!(allocation.free_tick.is_none(), "access dropped memory");
+        let start = addr.offset as usize;
+        let end = start + size;
+        assert!(
+            end <= allocation.data.len(),
+            "Tried to read [{}..{}] from length {}",
+            start,
+            end,
+            allocation.data.len()
+        );
+        &allocation.data[start..end]
+    }
+
+    fn as_mut(&mut self, addr: Ptr, size: usize) -> &mut [u8] {
+        let allocation = self.allocations.get_mut(&addr.id).unwrap();
+        assert!(allocation.free_tick.is_none(), "access dropped memory");
+        let start = addr.offset as usize;
+        let end = start + size;
+        assert!(
+            end <= allocation.data.len(),
+            "Tried to read [{}..{}] from length {}",
+            start,
+            end,
+            allocation.data.len()
+        );
+        &mut allocation.data[start..end]
     }
 }
