@@ -94,7 +94,7 @@ impl<'ir> Vm<'ir> {
         let op = ops[self.get_frame().ip].clone();
         println!("Op: {}", self.get_frame().function.print(&op));
         match op {
-            Op::ConstInt { dest, value } => {
+            Op::ConstInt { dest, value, .. } => {
                 self.set(dest, VmValue::U64(value));
             }
             Op::Binary { dest, a, b, kind } => {
@@ -212,6 +212,9 @@ impl<'ir> Vm<'ir> {
                 let result = self.get(object_addr).offset(field_index);
                 println!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
                 self.set(dest, result);
+            }
+            _ => {
+                todo!()
             }
         }
 

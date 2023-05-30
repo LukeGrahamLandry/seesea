@@ -10,8 +10,6 @@ mod parse;
 mod print;
 
 /// Identifier of a static single-assignment register.
-// TODO: should know its type? easy to change since its opaque to other modules.
-// TODO: could have a lifetime tied to the function? that would be such a pain in the ass to use tho.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Ssa(pub(crate) usize);
 
@@ -24,6 +22,11 @@ pub enum Op {
     ConstInt {
         dest: Ssa,
         value: u64,
+        kind: CType,
+    },
+    ConstString {
+        dest: Ssa,
+        value: String,
     },
     Binary {
         dest: Ssa,
@@ -94,6 +97,7 @@ pub struct Module {
     pub functions: Vec<Function>,
     pub structs: Vec<StructSignature>,
     pub name: String,
+    pub forward_declarations: Vec<FuncSignature>,
 }
 
 impl Module {

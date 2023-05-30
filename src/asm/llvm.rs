@@ -59,9 +59,18 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             let llvm_struct = self.context.opaque_struct_type(struct_def.name);
             llvm_struct.set_body(&field_types, false);
         }
+        for function in &ir.forward_declarations {
+            let t = self.get_func_type(function);
+            let func = self.module.add_function(function.name.as_str(), t, None);
+            self.functions.insert(function.name.clone(), func);
+        }
         for function in &ir.functions {
             self.emit_function(function);
         }
+
+        println!("=== LLVM IR ====");
+        println!("{}", self.module.to_string());
+        println!("=========");
 
         match self.module.verify() {
             Ok(_) => {}
@@ -123,8 +132,8 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
 
     fn emit_ir_op(&mut self, op: &Op) {
         match op {
-            Op::ConstInt { dest, value } => {
-                let number = self.llvm_type(CType::int()).into_int_type();
+            Op::ConstInt { dest, value, kind } => {
+                let number = self.llvm_type(*kind).into_int_type();
                 let val = number.const_int(*value, false);
                 self.set(dest, val);
             }
@@ -173,7 +182,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
             Op::StackAlloc { dest, ty, count } => {
                 assert_eq!(*count, 1);
-                let ptr = self.builder.build_alloca(self.llvm_type(*ty), "s");
+                let ptr = self.builder.build_alloca(self.llvm_type(*ty), "");
                 self.set(dest, ptr);
             }
             Op::GetFieldAddr {
@@ -197,6 +206,12 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 };
                 self.set(dest, field_ptr_value);
             }
+            Op::ConstString { dest, value } => {
+                let string = self.context.const_string(value.as_ref(), true);
+                let ptr = self.builder.build_alloca(string.get_type(), "");
+                self.builder.build_store(ptr, string);
+                self.set(dest, ptr);
+            }
         }
     }
 
@@ -207,7 +222,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             .map(|ty| self.llvm_type(*ty).into())
             .collect();
         let returns = self.llvm_type(signature.return_type);
-        returns.fn_type(&args, false)
+        returns.fn_type(&args, signature.has_var_args)
     }
 
     fn collect_arg_values(&self, args: &[Ssa]) -> Vec<BasicMetadataValueEnum<'ctx>> {
@@ -303,7 +318,9 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     fn llvm_type(&self, ty: CType) -> BasicTypeEnum<'ctx> {
         let mut result = match ty.ty {
             ValueType::U64 => self.context.i64_type().as_basic_type_enum(),
-            ValueType::Struct(name) => self.context.get_struct_type(name).unwrap().into(), // self.module.get_struct_type(name).unwrap().into(),
+            ValueType::Struct(name) => self.context.get_struct_type(name).unwrap().into(),
+            ValueType::U8 => self.context.i8_type().as_basic_type_enum(),
+            ValueType::U32 => self.context.i32_type().as_basic_type_enum(),
         };
 
         for _ in 0..ty.depth {
@@ -311,7 +328,6 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 .ptr_type(AddressSpace::default())
                 .as_basic_type_enum();
         }
-
         result
     }
 

@@ -48,7 +48,7 @@ impl<'src> Parser<'src> {
             let ty = self.read_type().expect("Expected type for struct field.");
             let name = self.read_ident("Expected name for struct field.");
             self.expect(TokenType::Semicolon);
-            assert!(fields.iter().find(|f| f.0 == name).is_none());
+            assert!(!fields.iter().any(|f| f.0 == name));
             fields.push((name, ty));
         }
         let name = Box::leak(name.into_boxed_str());
@@ -65,7 +65,13 @@ impl<'src> Parser<'src> {
         self.expect(TokenType::LeftParen);
         let mut args = vec![];
         let mut names = vec![];
+        let mut has_var_args = false;
         while !self.scanner.matches(TokenType::RightParen) {
+            if self.scanner.matches(TokenType::ThreeDots) {
+                self.scanner.consume(TokenType::RightParen);
+                has_var_args = true;
+                break;
+            }
             args.push(self.read_type().expect("Function arg requires type."));
             names.push(self.read_ident("Function arg requires name.")); // TODO: headers/forward defs dont
             if !self.scanner.matches(TokenType::Comma) {
@@ -76,7 +82,12 @@ impl<'src> Parser<'src> {
                 );
             }
         }
-        let body = self.parse_stmt();
+        let body = if self.scanner.matches(TokenType::Semicolon) {
+            None
+        } else {
+            Some(self.parse_stmt())
+        };
+
         self.program.functions.push(Function {
             body,
             signature: FuncSignature {
@@ -84,6 +95,7 @@ impl<'src> Parser<'src> {
                 param_names: names,
                 return_type: returns,
                 name,
+                has_var_args,
             },
         })
     }
@@ -289,6 +301,11 @@ impl<'src> Parser<'src> {
                 self.expect(TokenType::RightParen);
                 expr
             }
+            TokenType::StringLiteral => Expr::Literal {
+                value: LiteralValue::StringBytes {
+                    value: token.lexeme[1..(token.lexeme.len() - 1)].to_string(),
+                },
+            },
             _ => self.err("Expected primary expr (number or var access)", token),
         }
     }
@@ -313,15 +330,15 @@ impl<'src> Parser<'src> {
                 }
             }
             TokenType::Identifier => {
-                if token.lexeme != "long" {
-                    return None;
-                }
+                let ty = match token.lexeme {
+                    "long" => ValueType::U64,
+                    "int" => ValueType::U32,
+                    "char" => ValueType::U8,
+                    _ => return None,
+                };
 
                 self.expect(TokenType::Identifier);
-                CType {
-                    ty: ValueType::U64,
-                    depth: 0,
-                }
+                CType { ty, depth: 0 }
             }
             _ => return None,
         };

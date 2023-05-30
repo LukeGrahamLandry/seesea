@@ -9,7 +9,6 @@ use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{Label, Op, Ssa};
 use std::collections::{HashMap, HashSet};
 use std::mem;
-use std::ops::Deref;
 
 struct AstParser<'ast> {
     ast: &'ast ast::Module,
@@ -59,6 +58,11 @@ impl<'ast> AstParser<'ast> {
     }
 
     fn parse_function(&mut self, input: &'ast ast::Function) {
+        if input.body.is_none() {
+            println!("extern {:?}\n", input.signature);
+            self.ir.forward_declarations.push(input.signature.clone());
+            return;
+        }
         // TODO: separate these out into an Option
         assert!(
             self.func.is_none()
@@ -84,9 +88,9 @@ impl<'ast> AstParser<'ast> {
             self.func_mut().arg_registers.push(register);
         }
         self.control.push_scope();
-        self.root_node = Some(&input.body);
-        collect_stack_allocs(&input.body, &mut self.needs_stack_address);
-        self.emit_statement(&input.body, &mut entry);
+        self.root_node = Some(input.body.as_ref().unwrap());
+        collect_stack_allocs(input.body.as_ref().unwrap(), &mut self.needs_stack_address);
+        self.emit_statement(input.body.as_ref().unwrap(), &mut entry);
         self.control.pop_scope();
         self.control.pop_scope();
 
@@ -628,6 +632,21 @@ impl<'ast> AstParser<'ast> {
                         Op::ConstInt {
                             dest,
                             value: *value as u64,
+                            kind: CType::int(),
+                        },
+                    );
+                    Some(dest)
+                }
+                LiteralValue::StringBytes { value } => {
+                    let dest = self.make_ssa(CType {
+                        ty: ValueType::U8,
+                        depth: 1,
+                    });
+                    self.func_mut().push(
+                        block,
+                        Op::ConstString {
+                            dest,
+                            value: value.clone(),
                         },
                     );
                     Some(dest)
@@ -684,10 +703,17 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(register)
             }
-            Expr::Default(kind) => {
+            &Expr::Default(kind) => {
                 assert!(!kind.is_struct());
-                let dest = self.make_ssa(*kind);
-                self.func_mut().push(block, Op::ConstInt { dest, value: 0 });
+                let dest = self.make_ssa(kind);
+                self.func_mut().push(
+                    block,
+                    Op::ConstInt {
+                        dest,
+                        value: 0,
+                        kind,
+                    },
+                );
                 Some(dest)
             }
         }

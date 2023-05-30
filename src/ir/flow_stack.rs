@@ -239,6 +239,9 @@ pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
             assert!(!changes.contains_key(dest));
             swap(object_addr, changes);
         }
+        _ => {
+            todo!()
+        }
     }
 }
 

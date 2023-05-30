@@ -105,7 +105,11 @@ impl Expr {
 impl Debug for Function {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         writeln!(f, "{:?}", self.signature)?;
-        self.body.print(1, f)
+        if let Some(body) = &self.body {
+            body.print(1, f)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -134,6 +138,9 @@ impl Debug for FuncSignature {
         let params = self.param_names.iter().zip(self.param_types.iter());
         for (name, ty) in params {
             write!(f, "{}: {:?}, ", name, ty)?;
+        }
+        if self.has_var_args {
+            write!(f, "...")?;
         }
         write!(f, ") -> {:?}", self.return_type)
     }

@@ -10,8 +10,14 @@ pub enum TokenType {
     #[token(".")]
     Period,
 
+    #[token("...")]
+    ThreeDots,
+
     #[regex("[_a-zA-Z][_a-zA-Z0-9]*")]
     Identifier,
+
+    #[regex(r#""([^"\\]|\\t|\\u|\\n|\\")*""#)]
+    StringLiteral,
 
     // TODO: kinda annoying that this has data so i cant pass it around to match against.
     //       i should just parse it from the lexeme as needed.
@@ -218,7 +224,7 @@ impl<'src> Scanner<'src> {
 
 impl<'src> Debug for Scanner<'src> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        writeln!(f, "=== Scanner at {} ===", self.index - self.cache.len())?;
+        writeln!(f, "=== Scanner at ===")?;
         let mut temp = Scanner::new(self.src, self.name.clone());
         while temp.has_next() {
             write!(f, "{:?}, ", temp.next())?;

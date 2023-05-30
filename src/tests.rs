@@ -1,6 +1,9 @@
 use inkwell::context::Context;
 use inkwell::execution_engine::{JitFunction, UnsafeFunctionPointer};
+use inkwell::targets::{InitializationConfig, Target};
 use inkwell::OptimizationLevel;
+use std::fs::File;
+use std::io::Write;
 
 use crate::asm::llvm::LlvmFuncGen;
 use crate::scanning::Scanner;
@@ -427,6 +430,25 @@ long main(){
 }
     ";
     no_args_run_main(src, 5);
+
+    llvm_compile(&compile_module(src), "struct_field_addr");
+}
+
+#[test]
+fn printf() {
+    let src = r#"
+int printf(char* format, ...);
+long main(){
+    printf("hello world!!!!");
+    return 0;
+}
+    "#;
+    // no_args_run_main(src, 0);
+    type Func = unsafe extern "C" fn() -> u64;
+    llvm_run::<Func, _>(&compile_module(src), "main", |function| {
+        let answer = unsafe { function.call() };
+        assert_eq!(answer, 0);
+    });
 }
 
 fn no_args_run_main(src: &str, expected: u64) {
@@ -468,12 +490,21 @@ where
         .create_jit_execution_engine(OptimizationLevel::None)
         .unwrap();
     LlvmFuncGen::new(&module).compile_all(ir);
-    println!("=== LLVM IR ====");
-    println!("{}", module.to_string());
-    println!("=========");
     let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
     action(func);
     // module.verify().unwrap();
+}
+
+fn llvm_compile(ir: &ir::Module, filename: &str) {
+    assert!(ir.get_func("main").is_some(), "Function 'main' not found.");
+    let context = Context::create();
+    let module = context.create_module(&ir.name);
+    LlvmFuncGen::new(&module).compile_all(ir);
+    let mut file = File::create(format!("target/{}.ll", filename)).unwrap();
+    file.write_all(module.to_string().as_bytes()).unwrap();
+    // cd target
+    // llc -filetype=obj struct_field_addr.ll && /usr/bin/clang struct_field_addr.o -o struct_field_addr && ./struct_field_addr
+    // llc -filetype=obj printf_test.ll && /usr/bin/clang printf_test.o -o printf_test && ./printf_test
 }
 
 fn compile_module(src: &str) -> ir::Module {

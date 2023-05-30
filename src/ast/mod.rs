@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 mod parse;
 mod print;
 
@@ -10,7 +8,7 @@ pub struct Module {
 }
 
 pub struct Function {
-    pub body: Stmt,
+    pub body: Option<Stmt>,
     pub signature: FuncSignature,
 }
 
@@ -21,6 +19,7 @@ pub struct FuncSignature {
     pub name: String,
     // The names are needed for parsing the body code. They don't live on to LLVM IR currently.
     pub param_names: Vec<String>,
+    pub has_var_args: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -123,11 +122,14 @@ pub enum UnaryOp {
 #[derive(Debug)]
 pub enum LiteralValue {
     Number { value: f64 },
+    StringBytes { value: String },
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 pub enum ValueType {
     U64,
+    U8,
+    U32,
     Struct(&'static str),
 }
 
