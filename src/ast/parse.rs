@@ -298,14 +298,26 @@ impl<'src> Parser<'src> {
             TokenType::Identifier => Expr::GetVar {
                 name: token.lexeme.to_string(),
             },
-            TokenType::LeftParen => {
-                let expr = self.parse_expr();
-                self.expect(TokenType::RightParen);
-                expr
-            }
+            TokenType::LeftParen => match self.read_type() {
+                None => {
+                    let expr = self.parse_expr();
+                    self.expect(TokenType::RightParen);
+                    expr
+                }
+                Some(target) => {
+                    self.expect(TokenType::RightParen);
+                    let expr = self.parse_expr();
+                    Expr::LooseCast {
+                        value: Box::new(expr),
+                        target,
+                    }
+                }
+            },
             TokenType::StringLiteral => Expr::Literal {
                 value: LiteralValue::StringBytes(
-                    token.lexeme[1..(token.lexeme.len() - 1)].to_string(),
+                    token.lexeme[1..(token.lexeme.len() - 1)]
+                        .to_string()
+                        .into_boxed_str(),
                 ),
             },
             _ => self.err("Expected primary expr (number or var access)", token),

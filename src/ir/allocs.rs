@@ -89,5 +89,8 @@ fn walk_expr<'ast>(
         Expr::GetField { object, .. } => {
             walk_expr(control, object, results);
         }
+        Expr::LooseCast { value, .. } => {
+            walk_expr(control, value, results);
+        }
     }
 }

@@ -65,12 +65,10 @@ impl Function {
                 func_name,
                 args,
                 return_value_dest,
-            } => format!(
-                "{} = call {:?} {:?}",
-                self.name_ty(return_value_dest),
-                func_name,
-                args,
-            ),
+            } => match return_value_dest {
+                None => format!("void call {:?} {:?}", func_name, args),
+                Some(dest) => format!("{} = call {:?} {:?}", self.name_ty(dest), func_name, args),
+            },
             Op::GetFieldAddr {
                 dest,
                 object_addr,
@@ -81,11 +79,23 @@ impl Function {
                 field_index,
                 self.name_ty(object_addr),
             ),
+            Op::Cast {
+                input,
+                output,
+                kind,
+            } => {
+                format!(
+                    "{} = {:?} cast {}",
+                    self.name_ty(output),
+                    kind,
+                    self.name_ty(input)
+                )
+            }
         }
     }
 
     pub fn name(&self, ssa: &Ssa) -> String {
-        match &self.debug_register_names[ssa.0] {
+        match &self.debug_register_names[ssa.index()] {
             None => format!("%{}", ssa.0),
             Some(debug) => format!("%{}_{}", ssa.0, debug),
         }
@@ -100,7 +110,7 @@ impl Function {
 
     // Names for phi nodes use this so they don't get really long.
     pub fn debug_str(&self, ssa: &Ssa) -> Option<String> {
-        self.debug_register_names[ssa.0].clone()
+        self.debug_register_names[ssa.index()].clone()
     }
 }
 

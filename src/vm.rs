@@ -159,13 +159,15 @@ impl<'ir> Vm<'ir> {
                     Some(f) => f,
                     None => {
                         let result = self.call_libc_for_tests(&func_name, &arg_values);
-                        self.set(return_value_dest, result);
+                        if let Some(dest) = return_value_dest {
+                            self.set(dest, result);
+                        }
                         self.mut_frame().ip += 1;
                         return VmResult::Continue;
                     }
                 };
 
-                self.mut_frame().return_value_register = Some(return_value_dest);
+                self.mut_frame().return_value_register = return_value_dest;
                 self.mut_frame().ip += 1;
                 let frame = StackFrame {
                     registers: HashMap::new(),
@@ -230,12 +232,13 @@ impl<'ir> Vm<'ir> {
                         // TODO: leak! but vm is just for tests so doesn't really matter
                         //       needs to be a pointer to a u8
                         //       for now im just doing enough that the vm can run programs that use printf
-                        let val = Box::leak(value.into_boxed_str());
+                        let val = Box::leak(value);
                         VmValue::ConstString(val)
                     }
                 };
                 self.set(dest, val);
             }
+            _ => todo!(),
         }
 
         self.mut_frame().ip += 1;

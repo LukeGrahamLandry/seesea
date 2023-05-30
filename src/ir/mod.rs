@@ -11,12 +11,13 @@ mod print;
 
 /// Identifier of a static single-assignment register.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Ssa(pub(crate) usize);
+pub struct Ssa(usize);
 
 /// Identifier of a basic block that you can jump to.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Label(usize); // sequential indexes into the blocks array
 
+// @Memory u16 would be plenty for those ^ if i care about how big this enum is
 #[derive(Clone, PartialEq)]
 pub enum Op {
     ConstValue {
@@ -66,15 +67,21 @@ pub enum Op {
     },
 
     Call {
-        func_name: String, // TODO: allow function pointers.
-        args: Vec<Ssa>,
-        return_value_dest: Ssa,
+        func_name: Box<str>, // TODO: allow function pointers.
+        args: Box<[Ssa]>,
+        return_value_dest: Option<Ssa>,
     },
 
     GetFieldAddr {
         dest: Ssa,
         object_addr: Ssa,
         field_index: usize,
+    },
+
+    Cast {
+        input: Ssa,
+        output: Ssa,
+        kind: CastType,
     },
 }
 
@@ -94,6 +101,31 @@ pub struct Module {
     pub structs: Vec<StructSignature>,
     pub name: String,
     pub forward_declarations: Vec<FuncSignature>,
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum CastType {
+    // Does not change the raw bits (void* -> int*). Must be the same size?
+    Bits,
+
+    // Extends with leading zeros (u32 -> u64)
+    UnsignedIntUp,
+
+    // Cuts off the first bits (u64 -> u32)
+    IntDown,
+
+    // (float -> double)
+    FloatUp,
+
+    // (double -> float)
+    FloatDown,
+
+    FloatToInt,
+    IntToFloat,
+
+    // For pointer arithmetic, llvm wants it explicit
+    IntToPtr,
+    PtrToInt,
 }
 
 impl Module {
@@ -261,5 +293,11 @@ impl Op {
             self,
             Op::Return { .. } | Op::Jump { .. } | Op::AlwaysJump(_)
         )
+    }
+}
+
+impl Ssa {
+    pub(crate) fn index(&self) -> usize {
+        self.0
     }
 }

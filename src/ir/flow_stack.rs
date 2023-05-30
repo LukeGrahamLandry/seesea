@@ -228,8 +228,11 @@ pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
             return_value_dest,
             ..
         } => {
-            assert!(!changes.contains_key(return_value_dest));
-            for arg in args {
+            if let Some(dest) = return_value_dest {
+                assert!(!changes.contains_key(dest));
+            }
+
+            for arg in args.iter_mut() {
                 swap(arg, changes);
             }
         }
@@ -239,6 +242,7 @@ pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
             assert!(!changes.contains_key(dest));
             swap(object_addr, changes);
         }
+        _ => todo!(),
     }
 }
 

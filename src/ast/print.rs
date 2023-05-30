@@ -98,6 +98,10 @@ impl Expr {
                 writeln!(f, "Get Field {}", name)?;
                 object.print(depth + 1, f)
             }
+            Expr::LooseCast { value, target } => {
+                writeln!(f, "Cast to {:?}", target)?;
+                value.print(depth + 1, f)
+            }
         }
     }
 }

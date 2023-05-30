@@ -3,8 +3,10 @@ use inkwell::execution_engine::{JitFunction, UnsafeFunctionPointer};
 use inkwell::OptimizationLevel;
 use std::fs::File;
 use std::io::Write;
+use std::mem::size_of;
 
 use crate::asm::llvm::LlvmFuncGen;
+use crate::ir::Op;
 use crate::scanning::Scanner;
 use crate::vm::Vm;
 use crate::{ast, ir};
@@ -461,7 +463,29 @@ double main(){
         let answer = unsafe { function.call() };
         assert!(answer.abs() < 0.000001);
     });
+    println!("{}", size_of::<Op>());
 }
+
+#[test]
+fn int_cast() {
+    let src = "
+long main(){
+    int a = (float) 5;
+    double b = 300 + a;
+    a = a + b;
+    char c = a + 0;
+    return c;
+}
+    ";
+    // no_args_run_main(src, 54);
+    type Func = unsafe extern "C" fn() -> u64;
+    llvm_run::<Func, _>(&compile_module(src), "main", |function| {
+        let answer = unsafe { function.call() };
+        assert_eq!(answer, 54);
+    });
+}
+
+// do malloc next!
 
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);

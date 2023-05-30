@@ -93,6 +93,10 @@ pub enum Expr {
         value: LiteralValue,
     },
     Default(CType),
+    LooseCast {
+        value: Box<Expr>,
+        target: CType,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -123,7 +127,7 @@ pub enum UnaryOp {
 pub enum LiteralValue {
     IntNumber(u64),
     FloatNumber(f64),
-    StringBytes(String),
+    StringBytes(Box<str>),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
@@ -134,6 +138,7 @@ pub enum ValueType {
     F64,
     F32,
     Struct(&'static str),
+    Void,
 }
 
 // I'd really like these to stay Copy. Maybe give them an 'ast lifetime so they can reference struct prototypes.
@@ -153,6 +158,29 @@ impl Module {
 
     pub fn get_struct(&self, name: &str) -> Option<&StructSignature> {
         self.structs.iter().find(|&func| func.name == name)
+    }
+
+    pub fn size_of(&self, ty: CType) -> usize {
+        if ty.depth > 0 {
+            return 8;
+        }
+
+        match ty.ty {
+            ValueType::U64 => 8,
+            ValueType::U8 => 1,
+            ValueType::U32 => 4,
+            ValueType::F64 => 8,
+            ValueType::F32 => 4,
+            ValueType::Void => 0,
+            ValueType::Struct(name) => {
+                let def = self.get_struct(name).unwrap();
+                let mut size = 0;
+                for (_, field) in &def.fields {
+                    size += self.size_of(*field);
+                }
+                size
+            }
+        }
     }
 }
 
@@ -230,6 +258,22 @@ impl CType {
 
     pub fn is_basic(&self) -> bool {
         self.depth > 0 || !matches!(self.ty, ValueType::Struct(_))
+    }
+
+    pub fn is_raw_void(&self) -> bool {
+        self.depth == 0 && matches!(self.ty, ValueType::Void)
+    }
+
+    pub fn is_raw_int(&self) -> bool {
+        self.depth == 0 && matches!(self.ty, ValueType::U8 | ValueType::U32 | ValueType::U64)
+    }
+
+    pub fn is_raw_float(&self) -> bool {
+        self.depth == 0 && matches!(self.ty, ValueType::F32 | ValueType::F64)
+    }
+
+    pub fn is_ptr(&self) -> bool {
+        self.depth > 0
     }
 
     pub fn struct_name(&self) -> &str {

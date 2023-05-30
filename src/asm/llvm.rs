@@ -15,7 +15,7 @@ use inkwell::{AddressSpace, IntPredicate};
 
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir;
-use crate::ir::{Function, Label, Op, Ssa};
+use crate::ir::{CastType, Function, Label, Op, Ssa};
 
 pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     pub(crate) context: ContextRef<'ctx>,
@@ -144,7 +144,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                         val.into()
                     }
                     LiteralValue::StringBytes(value) => {
-                        let string = self.context.const_string(value.as_ref(), true);
+                        let string = self.context.const_string(value.as_bytes(), true);
                         let ptr = self.builder.build_alloca(string.get_type(), "");
                         self.builder.build_store(ptr, string);
                         ptr.into()
@@ -181,10 +181,16 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 args,
                 return_value_dest,
             } => {
-                let function = *self.functions.get(func_name).expect("Function not found.");
+                let function = *self
+                    .functions
+                    .get(func_name.as_ref())
+                    .expect("Function not found.");
                 let args = self.collect_arg_values(args);
                 let return_value = self.builder.build_call(function, &args, "");
-                self.set(return_value_dest, return_value);
+                if let Some(dest) = return_value_dest {
+                    // Not returning void
+                    self.set(dest, return_value);
+                }
             }
             Op::LoadFromPtr { value_dest, addr } => {
                 let value =
@@ -219,6 +225,20 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 );
 
                 self.set(dest, field_ptr_value);
+            }
+            Op::Cast {
+                input,
+                output,
+                kind,
+            } => {
+                let in_value = self.read_basic_value(input);
+                let in_type = self.type_in_reg(input);
+                let out_type = self.type_in_reg(output);
+                match kind {
+                    CastType::Bits => {}
+                    _ => todo!(),
+                }
+                todo!()
             }
         }
     }
@@ -331,6 +351,11 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             ValueType::U32 => self.context.i32_type().as_basic_type_enum(),
             ValueType::F32 => self.context.f32_type().as_basic_type_enum(),
             ValueType::F64 => self.context.f64_type().as_basic_type_enum(),
+            ValueType::Void => {
+                assert_ne!(ty.depth, 0, "void type is a special case.");
+                // Using i8 as an untyped pointer.
+                self.context.i8_type().as_basic_type_enum()
+            }
         };
 
         for _ in 0..ty.depth {

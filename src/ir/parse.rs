@@ -6,7 +6,7 @@ use crate::ir;
 use crate::ir::allocs::collect_stack_allocs;
 use crate::ir::debug::IrDebugInfo;
 use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame, Var};
-use crate::ir::{Label, Op, Ssa};
+use crate::ir::{CastType, Label, Op, Ssa};
 use std::collections::{HashMap, HashSet};
 use std::mem;
 
@@ -171,15 +171,13 @@ impl<'ast> AstParser<'ast> {
             return;
         }
 
-        let value_register = self
+        let mut value_register = self
             .emit_expr(value, block)
             .expect("Variable type cannot be void.");
-        let value_type = self.type_of(value_register);
-        assert_eq!(
-            value_type, *kind,
-            "{:?} expected {:?} but found {:?}",
-            variable, kind, value_type
-        );
+
+        if self.type_of(value_register) != *kind {
+            value_register = self.emit_cast(value_register, *kind, block);
+        }
 
         if self.needs_stack_address.contains(&variable) {
             println!("Stack allocation for {:?}", variable);
@@ -253,19 +251,23 @@ impl<'ast> AstParser<'ast> {
             arg_registers.push(arg_ssa);
         }
 
-        let return_value_dest = self.make_ssa(signature.return_type);
+        let return_value_dest = if signature.return_type.is_raw_void() {
+            None
+        } else {
+            Some(self.make_ssa(signature.return_type))
+        };
+
         self.func_mut().push(
             block,
             Op::Call {
                 // TODO: directly reference the func def node since we know we'll already have it from headers
                 //       but then does the IR need the lifetime of the ast?
-                func_name: name.clone(),
-                args: arg_registers,
+                func_name: name.clone().into_boxed_str(),
+                args: arg_registers.into_boxed_slice(),
                 return_value_dest,
             },
         );
-        // TODO: return none if the func is void
-        Some(return_value_dest)
+        return_value_dest
     }
 
     // TODO: this whole passing around a mutable block pointer is scary.
@@ -609,15 +611,32 @@ impl<'ast> AstParser<'ast> {
                 if *op == BinaryOp::Assign {
                     self.emit_assignment(left, right, block)
                 } else {
-                    let a = self
+                    let mut a = self
                         .emit_expr(left, block)
                         .expect("Binary operand cannot be void.");
-                    let b = self
+                    let mut b = self
                         .emit_expr(right, block)
                         .expect("Binary operand cannot be void.");
-                    let ty = self.control.ssa_type(a);
-                    assert_eq!(ty, self.control.ssa_type(b));
-                    let dest = self.make_ssa(*ty);
+
+                    let result_type = {
+                        let ty_a = *self.control.ssa_type(a);
+                        let ty_b = *self.control.ssa_type(b);
+
+                        if ty_a != ty_b {
+                            // TODO: actually think about the priority list
+                            if self.ast.size_of(ty_a) > self.ast.size_of(ty_b) {
+                                b = self.emit_cast(b, ty_a, block);
+                                ty_a
+                            } else {
+                                a = self.emit_cast(a, ty_b, block);
+                                ty_b
+                            }
+                        } else {
+                            ty_a
+                        }
+                    };
+
+                    let dest = self.make_ssa(result_type);
                     self.func_mut().push(
                         block,
                         Op::Binary {
@@ -716,6 +735,13 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(dest)
             }
+            Expr::LooseCast { value, target } => {
+                let input = self
+                    .emit_expr(value, block)
+                    .expect("Cannot cast from void value.");
+                let output = self.emit_cast(input, *target, block);
+                Some(output)
+            }
         }
     }
 
@@ -726,9 +752,13 @@ impl<'ast> AstParser<'ast> {
         block: Label,
     ) -> Option<Ssa> {
         let target = self.parse_lvalue(lvalue, block);
-        let value_source = self
+        let mut value_source = self
             .emit_expr(rvalue, block)
             .expect("Can't assign to void.");
+
+        if self.type_of(value_source) != self.value_type(&target) {
+            value_source = self.emit_cast(value_source, self.value_type(&target), block);
+        }
 
         match target {
             Lvalue::RegisterVar(this_variable) => {
@@ -764,6 +794,14 @@ impl<'ast> AstParser<'ast> {
 
     fn func_mut(&mut self) -> &mut ir::Function {
         self.func.as_mut().unwrap()
+    }
+
+    /// The type of thing that is stored in the Lvalue (so really the Lvalue is a pointer to this)
+    fn value_type(&self, value: &Lvalue) -> CType {
+        match value {
+            Lvalue::RegisterVar(var) => self.type_of(self.control.get(*var).unwrap()),
+            Lvalue::DerefPtr(addr) => self.type_of(*addr).deref_type(),
+        }
     }
 
     /// Get the location in memory that the expr refers to (don't dereference it to extract the value yet).
@@ -815,6 +853,57 @@ impl<'ast> AstParser<'ast> {
             }
             _ => unreachable!(),
         }
+    }
+
+    fn decide_loose_cast(&self, input: CType, output: CType) -> CastType {
+        if input == output || input.is_ptr() && output.is_ptr() {
+            CastType::Bits
+        } else if input.is_raw_float() && output.is_raw_float() {
+            if input.ty == ValueType::F32 {
+                CastType::FloatUp
+            } else {
+                CastType::FloatDown
+            }
+        } else if input.is_raw_int() && output.is_raw_int() {
+            if self.ast.size_of(input) < self.ast.size_of(output) {
+                CastType::UnsignedIntUp
+            } else {
+                CastType::IntDown
+            }
+        } else if input.is_raw_int() && output.is_raw_float() {
+            CastType::IntToFloat
+        } else if input.is_raw_float() && output.is_raw_int() {
+            CastType::FloatToInt
+        } else if input.is_ptr() && output.is_raw_int() {
+            CastType::PtrToInt
+        } else if input.is_raw_int() && output.is_ptr() {
+            CastType::IntToPtr
+        } else {
+            assert_eq!(
+                self.ast.size_of(input),
+                self.ast.size_of(output),
+                "Bit cast needs equal sizes. {:?} != {:?}",
+                input,
+                output
+            );
+            CastType::Bits
+        }
+    }
+
+    fn emit_cast(&mut self, input: Ssa, target: CType, block: Label) -> Ssa {
+        let output = self.make_ssa(target);
+        let kind = self.decide_loose_cast(self.type_of(input), target);
+
+        self.func_mut().push(
+            block,
+            Op::Cast {
+                input,
+                output,
+                kind,
+            },
+        );
+
+        output
     }
 }
 
