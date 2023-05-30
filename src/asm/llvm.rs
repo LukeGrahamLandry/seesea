@@ -137,6 +137,11 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 let val = number.const_int(*value, false);
                 self.set(dest, val);
             }
+            Op::ConstFloat { dest, value, kind } => {
+                let number = self.llvm_type(*kind).into_float_type();
+                let val = number.const_float(*value);
+                self.set(dest, val);
+            }
             Op::Binary { dest, a, b, kind } => self.emit_binary_op(dest, a, b, *kind),
             Op::Return { value } => {
                 self.emit_return(value);
@@ -321,6 +326,8 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             ValueType::Struct(name) => self.context.get_struct_type(name).unwrap().into(),
             ValueType::U8 => self.context.i8_type().as_basic_type_enum(),
             ValueType::U32 => self.context.i32_type().as_basic_type_enum(),
+            ValueType::F32 => self.context.f32_type().as_basic_type_enum(),
+            ValueType::F64 => self.context.f64_type().as_basic_type_enum(),
         };
 
         for _ in 0..ty.depth {

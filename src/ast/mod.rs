@@ -121,7 +121,8 @@ pub enum UnaryOp {
 
 #[derive(Debug)]
 pub enum LiteralValue {
-    Number { value: f64 },
+    IntNumber { value: u64 },
+    FloatNumber { value: f64 },
     StringBytes { value: String },
 }
 
@@ -130,6 +131,8 @@ pub enum ValueType {
     U64,
     U8,
     U32,
+    F64,
+    F32,
     Struct(&'static str),
 }
 
@@ -196,6 +199,10 @@ impl CType {
             ty: ValueType::U64,
             depth: 0,
         }
+    }
+
+    pub fn direct(ty: ValueType) -> CType {
+        CType { ty, depth: 0 }
     }
 
     #[must_use]

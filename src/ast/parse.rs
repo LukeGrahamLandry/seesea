@@ -291,7 +291,10 @@ impl<'src> Parser<'src> {
         let token = self.scanner.next();
         match token.kind {
             TokenType::DecimalInt(v) => Expr::Literal {
-                value: LiteralValue::Number { value: v as f64 },
+                value: LiteralValue::IntNumber { value: v },
+            },
+            TokenType::DecimalFloat(v) => Expr::Literal {
+                value: LiteralValue::FloatNumber { value: v },
             },
             TokenType::Identifier => Expr::GetVar {
                 name: token.lexeme.to_string(),
@@ -334,6 +337,8 @@ impl<'src> Parser<'src> {
                     "long" => ValueType::U64,
                     "int" => ValueType::U32,
                     "char" => ValueType::U8,
+                    "double" => ValueType::F64,
+                    "float" => ValueType::F32,
                     _ => return None,
                 };
 

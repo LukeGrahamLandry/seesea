@@ -23,6 +23,11 @@ impl Function {
                 value,
                 ..
             } => format!("{} = {};", self.name_ty(result), value),
+            Op::ConstFloat {
+                dest: result,
+                value,
+                ..
+            } => format!("{} = {};", self.name_ty(result), value),
             Op::LoadFromPtr {
                 value_dest: dest,
                 addr,

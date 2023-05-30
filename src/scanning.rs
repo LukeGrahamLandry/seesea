@@ -24,6 +24,9 @@ pub enum TokenType {
     #[regex("[0-9]+", |lex| lex.slice().parse().ok())]
     DecimalInt(u64),
 
+    #[regex("[0-9]+\\.[0-9]+", |lex| lex.slice().parse().ok())]
+    DecimalFloat(f64),
+
     #[token("=")]
     Equal,
 

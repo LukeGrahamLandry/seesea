@@ -24,6 +24,11 @@ pub enum Op {
         value: u64,
         kind: CType,
     },
+    ConstFloat {
+        dest: Ssa,
+        value: f64,
+        kind: CType,
+    },
     ConstString {
         dest: Ssa,
         value: String,

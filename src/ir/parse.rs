@@ -623,7 +623,7 @@ impl<'ast> AstParser<'ast> {
                 }
             }
             Expr::Literal { value } => match value {
-                LiteralValue::Number { value } => {
+                LiteralValue::IntNumber { value } => {
                     let dest = self.make_ssa(CType::int());
                     self.func_mut()
                         .set_debug(dest, || format!("const_{}", value));
@@ -647,6 +647,20 @@ impl<'ast> AstParser<'ast> {
                         Op::ConstString {
                             dest,
                             value: value.clone(),
+                        },
+                    );
+                    Some(dest)
+                }
+                LiteralValue::FloatNumber { value } => {
+                    let dest = self.make_ssa(CType::direct(ValueType::F64));
+                    self.func_mut()
+                        .set_debug(dest, || format!("const_{}", value));
+                    self.func_mut().push(
+                        block,
+                        Op::ConstFloat {
+                            dest,
+                            value: *value,
+                            kind: CType::direct(ValueType::F64),
                         },
                     );
                     Some(dest)

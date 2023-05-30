@@ -451,6 +451,23 @@ long main(){
     });
 }
 
+#[test]
+fn math_dot_h_sin() {
+    let src = "
+double sin(double value);
+double main(){
+    double r = sin(3.1415926525897);
+    return r;
+}
+    ";
+    // no_args_run_main(src, 0);
+    type Func = unsafe extern "C" fn() -> f64;
+    llvm_run::<Func, _>(&compile_module(src), "main", |function| {
+        let answer = unsafe { function.call() };
+        assert!(answer.abs() < 0.000001);
+    });
+}
+
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);
     assert_eq!(Vm::eval(&ir, "main", &[]), Some(expected));
