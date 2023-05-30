@@ -6,12 +6,12 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::ContextRef;
 use inkwell::module::Module;
-use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType};
+use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType};
 use inkwell::values::{
-    AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
-    PhiValue, PointerValue,
+    AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue,
+    IntValue, PhiValue, PointerValue,
 };
-use inkwell::{AddressSpace, IntPredicate};
+use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir;
@@ -232,13 +232,47 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 kind,
             } => {
                 let in_value = self.read_basic_value(input);
-                let in_type = self.type_in_reg(input);
-                let out_type = self.type_in_reg(output);
+                let in_type = self.reg_basic_type(input);
+                let out_type = self.reg_basic_type(output);
                 match kind {
-                    CastType::Bits => {}
-                    _ => todo!(),
+                    CastType::Bits => todo!(),
+                    CastType::UnsignedIntUp => {
+                        let result = self.builder.build_int_cast(
+                            in_value.into_int_value(),
+                            IntType::try_from(out_type).unwrap(),
+                            "",
+                        );
+                        self.set(output, result);
+                    }
+                    CastType::IntDown => {
+                        let result = self.builder.build_int_cast(
+                            in_value.into_int_value(),
+                            IntType::try_from(out_type).unwrap(),
+                            "",
+                        );
+                        self.set(output, result);
+                    }
+                    CastType::FloatUp => todo!(),
+                    CastType::FloatDown => todo!(),
+                    CastType::FloatToUInt => {
+                        let result = self.builder.build_float_to_unsigned_int(
+                            in_value.into_float_value(),
+                            IntType::try_from(out_type).unwrap(),
+                            "",
+                        );
+                        self.set(output, result);
+                    }
+                    CastType::UIntToFloat => {
+                        let result = self.builder.build_unsigned_int_to_float(
+                            in_value.into_int_value(),
+                            FloatType::try_from(out_type).unwrap(),
+                            "",
+                        );
+                        self.set(output, result);
+                    }
+                    CastType::IntToPtr => todo!(),
+                    CastType::PtrToInt => todo!(),
                 }
-                todo!()
             }
         }
     }
@@ -262,10 +296,18 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn emit_binary_op(&mut self, dest: &Ssa, a: &Ssa, b: &Ssa, kind: BinaryOp) {
-        // TODO: support pointer math (but probably be explicit about the casts in my IR).
-        assert!(self.type_in_reg(a).is_int_type() && self.type_in_reg(b).is_int_type());
-        let result = self.int_bin_op_factory(self.read_int(a), self.read_int(b), kind);
-        self.set(dest, result);
+        let is_ints = self.type_in_reg(a).is_int_type() && self.type_in_reg(b).is_int_type();
+        let is_floats = self.type_in_reg(a).is_float_type() && self.type_in_reg(b).is_float_type();
+
+        if is_ints {
+            let result = self.int_bin_op_factory(self.read_int(a), self.read_int(b), kind);
+            self.set(dest, result);
+        } else if is_floats {
+            let result = self.float_bin_op_factory(self.read_float(a), self.read_float(b), kind);
+            self.set(dest, result);
+        } else {
+            panic!("Binary op must act on both ints or both floats.");
+        }
     }
 
     fn int_bin_op_factory(
@@ -282,6 +324,30 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 "IR parser should not emit BinaryOp::Assign. It must be converted into SSA from."
             ),
             BinaryOp::Subtract => self.builder.build_int_sub(a, b, ""),
+            _ => todo!(),
+        }
+    }
+
+    fn float_bin_op_factory(
+        &self,
+        a: FloatValue<'ctx>,
+        b: FloatValue<'ctx>,
+        kind: BinaryOp,
+    ) -> BasicValueEnum<'ctx> {
+        match kind {
+            BinaryOp::Add => self.builder.build_float_add(a, b, "").into(),
+            BinaryOp::GreaterThan => self
+                .builder
+                .build_float_compare(FloatPredicate::UGT, a, b, "")
+                .into(),
+            BinaryOp::LessThan => self
+                .builder
+                .build_float_compare(FloatPredicate::ULT, a, b, "")
+                .into(),
+            BinaryOp::Assign => unreachable!(
+                "IR parser should not emit BinaryOp::Assign. It must be converted into SSA from."
+            ),
+            BinaryOp::Subtract => self.builder.build_float_sub(a, b, "").into(),
             _ => todo!(),
         }
     }
@@ -309,6 +375,14 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             .get(ssa)
             .unwrap()
             .into_int_value()
+    }
+
+    fn read_float(&self, ssa: &Ssa) -> FloatValue<'ctx> {
+        self.func_get()
+            .local_registers
+            .get(ssa)
+            .unwrap()
+            .into_float_value()
     }
 
     fn read_ptr(&self, ssa: &Ssa) -> PointerValue<'ctx> {

@@ -120,8 +120,8 @@ pub enum CastType {
     // (double -> float)
     FloatDown,
 
-    FloatToInt,
-    IntToFloat,
+    FloatToUInt,
+    UIntToFloat,
 
     // For pointer arithmetic, llvm wants it explicit
     IntToPtr,

@@ -469,18 +469,17 @@ double main(){
 #[test]
 fn int_cast() {
     let src = "
-long main(){
-    int a = (float) 5;
+long main(long start){
+    int a = (float) start;
     double b = 300 + a;
     a = a + b;
     char c = a + 0;
     return c;
 }
     ";
-    // no_args_run_main(src, 54);
-    type Func = unsafe extern "C" fn() -> u64;
+    type Func = unsafe extern "C" fn(u64) -> u64;
     llvm_run::<Func, _>(&compile_module(src), "main", |function| {
-        let answer = unsafe { function.call() };
+        let answer = unsafe { function.call(5) };
         assert_eq!(answer, 54);
     });
 }

@@ -131,7 +131,14 @@ impl<'ast> AstParser<'ast> {
                     self.func_mut().push(*block, Op::Return { value: None });
                 }
                 Some(value) => {
-                    let value = self.emit_expr(value.as_ref(), *block);
+                    let mut value = self.emit_expr(value.as_ref(), *block);
+                    if let Some(ssa) = value {
+                        let found_type = self.type_of(ssa);
+                        let expected_type = self.func_mut().signature.return_type;
+                        if found_type != expected_type {
+                            value = Some(self.emit_cast(ssa, expected_type, *block));
+                        }
+                    }
                     self.func_mut().push(*block, Op::Return { value });
                 }
             },
@@ -624,7 +631,9 @@ impl<'ast> AstParser<'ast> {
 
                         if ty_a != ty_b {
                             // TODO: actually think about the priority list
-                            if self.ast.size_of(ty_a) > self.ast.size_of(ty_b) {
+                            if (ty_a.is_raw_int() && ty_b.is_ptr())
+                                || self.ast.size_of(ty_a) > self.ast.size_of(ty_b)
+                            {
                                 b = self.emit_cast(b, ty_a, block);
                                 ty_a
                             } else {
@@ -636,6 +645,7 @@ impl<'ast> AstParser<'ast> {
                         }
                     };
 
+                    // TODO: compares always output bools (ints) even if input is floats.
                     let dest = self.make_ssa(result_type);
                     self.func_mut().push(
                         block,
@@ -698,6 +708,7 @@ impl<'ast> AstParser<'ast> {
                     let addr = self
                         .emit_expr(value, block)
                         .expect("Cannot dereference void.");
+                    // TODO: IntToPtr cast
                     let register = self.make_ssa(self.type_of(addr).deref_type());
                     self.func_mut().push(
                         block,
@@ -871,9 +882,9 @@ impl<'ast> AstParser<'ast> {
                 CastType::IntDown
             }
         } else if input.is_raw_int() && output.is_raw_float() {
-            CastType::IntToFloat
+            CastType::UIntToFloat
         } else if input.is_raw_float() && output.is_raw_int() {
-            CastType::FloatToInt
+            CastType::FloatToUInt
         } else if input.is_ptr() && output.is_raw_int() {
             CastType::PtrToInt
         } else if input.is_raw_int() && output.is_ptr() {
