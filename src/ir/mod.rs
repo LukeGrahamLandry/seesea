@@ -1,6 +1,6 @@
 use crate::ast::{BinaryOp, CType, FuncSignature, StructSignature};
 use crate::KEEP_IR_DEBUG_NAMES;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 
 mod allocs;
@@ -16,8 +16,8 @@ mod print;
 pub struct Ssa(pub(crate) usize);
 
 /// Identifier of a basic block that you can jump to.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Label(usize);
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct Label(usize); // sequential indexes into the blocks array
 
 #[derive(Clone, PartialEq)]
 pub enum Op {
@@ -81,7 +81,7 @@ pub enum Op {
 
 #[derive(Clone)]
 pub struct Function {
-    pub blocks: Vec<Vec<Op>>, // in the final codegen these will flatten out and labels will become offsets
+    pub blocks: Vec<Option<Vec<Op>>>, // in the final codegen these will flatten out and labels will become offsets
     var_counter: usize,
     pub signature: FuncSignature,
     pub arg_registers: Vec<Ssa>,
@@ -122,12 +122,12 @@ impl Function {
 
     #[must_use]
     pub fn new_block(&mut self) -> Label {
-        self.blocks.push(vec![]);
+        self.blocks.push(Some(vec![]));
         Label(self.blocks.len() - 1)
     }
 
     pub fn push(&mut self, block: Label, op: Op) {
-        self.blocks[block.0].push(op);
+        self.blocks[block.0].as_mut().unwrap().push(op);
     }
 
     #[must_use]
@@ -146,17 +146,24 @@ impl Function {
     }
 
     fn ends_with_jump(&self, block: Label) -> bool {
-        let last = self.blocks[block.0].last();
+        let last = self.blocks[block.0].as_ref().unwrap();
+        let last = last.last();
         last.is_some() && last.unwrap().is_jump()
     }
 
-    fn assert_valid(&self) {
+    fn finish(&mut self) {
+        let mut empty_blocks = Vec::new();
+        let mut jump_targets = BTreeSet::new();
+        jump_targets.insert(Label(0)); // entry point
         for (i, block) in self.blocks.iter().enumerate() {
+            let block = match block {
+                None => panic!("Label({}) was none. Probably called func.finish() twice which is not allowed currently.", i),
+                Some(b) => b,
+            };
+
             if block.is_empty() {
-                // TODO: assert!(false);
-                //      cant have this because it implies you could fall out of the function.
-                //      llvm catches that in its own validation pass but i put in a garbage return because i dont want top deal with it rn
-                return;
+                empty_blocks.push(Label(i));
+                continue;
             }
 
             // Check Phi placement.
@@ -174,12 +181,43 @@ impl Function {
 
             // Exactly one jump op as the last instruction.
             let jumps = block.iter().filter(|op| op.is_jump()).count();
-            assert!(
-                block.last().unwrap().is_jump(),
-                "Label({}) must end with a jump",
-                i
-            );
             assert_eq!(jumps, 1, "Label({}) must have exactly one jump", i);
+
+            match block.last().unwrap() {
+                &Op::Jump {
+                    if_true, if_false, ..
+                } => {
+                    jump_targets.insert(if_true);
+                    jump_targets.insert(if_false);
+                }
+                &Op::AlwaysJump(target) => {
+                    jump_targets.insert(target);
+                }
+                Op::Return { .. } => {}
+                _ => panic!("Label({}) must end with a jump", i),
+            }
+        }
+
+        // Replace empty blocks with Nones so the backend knows to skip them.
+        for block in &empty_blocks {
+            assert!(
+                !jump_targets.contains(block),
+                "Empty block is a jump target."
+            );
+            self.blocks[block.0] = None;
+        }
+
+        for (i, block) in self.blocks.iter().enumerate() {
+            match block {
+                None => {}
+                Some(_) => {
+                    assert!(
+                        jump_targets.contains(&Label(i)),
+                        "Label({}) is not empty but never jumped to.",
+                        i
+                    );
+                }
+            }
         }
 
         assert_eq!(
@@ -223,11 +261,5 @@ impl Op {
             self,
             Op::Return { .. } | Op::Jump { .. } | Op::AlwaysJump(_)
         )
-    }
-}
-
-impl Ssa {
-    pub fn index(&self) -> usize {
-        self.0
     }
 }

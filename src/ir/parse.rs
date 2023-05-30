@@ -94,7 +94,7 @@ impl<'ast> AstParser<'ast> {
         mem::swap(&mut self.control.register_types, &mut empty);
         self.func_mut().register_types = empty;
         println!("{:?}", self.func_mut());
-        self.func_mut().assert_valid();
+        self.func_mut().finish();
         self.ir.functions.push(self.func.take().unwrap());
         let _ = self.control.pop_flow_frame();
         self.control.clear();
@@ -579,8 +579,13 @@ impl<'ast> AstParser<'ast> {
         let count = self.func_mut().blocks.len();
         for index in start..count {
             let block = &mut self.func_mut().blocks[index];
-            for op in block {
-                patch_reads(op, changes);
+            match block {
+                None => {}
+                Some(block) => {
+                    for op in block {
+                        patch_reads(op, changes);
+                    }
+                }
             }
         }
     }

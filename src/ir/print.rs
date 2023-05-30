@@ -107,12 +107,19 @@ impl Debug for Function {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         writeln!(f, "{:?}", self.signature)?;
         for (i, block) in self.blocks.iter().enumerate() {
-            if block.is_empty() {
-                writeln!(f, "[Label({})] \nEMPTY", i)?;
-            } else {
-                writeln!(f, "[Label({})]", i)?;
-                for (j, op) in block.iter().enumerate() {
-                    writeln!(f, "{}. {:?}", j, self.print(op))?;
+            match block {
+                None => {
+                    writeln!(f, "[Label({})] \nEMPTY", i)?;
+                }
+                Some(block) => {
+                    if block.is_empty() {
+                        writeln!(f, "[Label({})] \nEMPTY", i)?;
+                    } else {
+                        writeln!(f, "[Label({})]", i)?;
+                        for (j, op) in block.iter().enumerate() {
+                            writeln!(f, "{}. {:?}", j, self.print(op))?;
+                        }
+                    }
                 }
             }
         }

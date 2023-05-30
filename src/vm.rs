@@ -87,7 +87,9 @@ impl<'ir> Vm<'ir> {
             self.get_frame().function.signature.name,
             self.call_stack.len()
         );
-        let ops = &self.get_frame().function.blocks[self.get_frame().block.index()];
+        let ops = self.get_frame().function.blocks[self.get_frame().block.index()]
+            .as_ref()
+            .unwrap();
         // TODO: while Op contains a string for function name, this clone means function calls are super slow.
         let op = ops[self.get_frame().ip].clone();
         println!("Op: {}", self.get_frame().function.print(&op));

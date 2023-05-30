@@ -30,7 +30,7 @@ pub struct LlvmFuncGen<'ctx: 'module, 'module> {
 /// Plain old data that holds the state that must be reset for each function.
 struct FuncContext<'ctx: 'module, 'module> {
     local_registers: HashMap<Ssa, AnyValueEnum<'ctx>>,
-    blocks: Vec<BasicBlock<'ctx>>,
+    blocks: Vec<Option<BasicBlock<'ctx>>>,
     func_ir: &'module Function,
     phi_nodes: HashMap<PhiValue<'ctx>, Vec<(Label, Ssa)>>,
 }
@@ -82,7 +82,13 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             .blocks
             .iter()
             .enumerate()
-            .map(|(i, _)| self.context.append_basic_block(func, &format!(".b{}", i)))
+            .map(|(i, b)| {
+                if b.is_none() {
+                    None
+                } else {
+                    Some(self.context.append_basic_block(func, &format!(".b{}", i)))
+                }
+            })
             .collect();
 
         // Map the llvm function arguments to our ssa register system.
@@ -95,19 +101,12 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
 
         // Compile the body of the function.
         for (i, block) in ir.blocks.iter().enumerate() {
-            let code = self.func_get().blocks[i];
+            let block = match block {
+                None => continue,
+                Some(b) => b,
+            };
+            let code = self.func_get().blocks[i].unwrap();
             self.builder.position_at_end(code);
-
-            // TODO: get rid of garbage blocks before it gets to llvm.
-            //       but it crashes with invalid blocks that don't jump anywhere so temp fix.
-            //       llvm optimises it out anyway.
-            if block.is_empty() {
-                println!("Made empty block in LLVM.");
-                let garbage = self.context.i64_type().const_int(3141592, false);
-                self.builder.build_return(Some(&garbage));
-                continue;
-            }
-
             for op in block {
                 self.emit_ir_op(op);
             }
@@ -258,7 +257,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn block(&self, label: Label) -> BasicBlock<'ctx> {
-        self.func_get().blocks[label.index()]
+        self.func_get().blocks[label.index()].unwrap()
     }
 
     fn read_int(&self, ssa: &Ssa) -> IntValue<'ctx> {
