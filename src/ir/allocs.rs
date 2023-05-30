@@ -92,5 +92,6 @@ fn walk_expr<'ast>(
         Expr::LooseCast { value, .. } => {
             walk_expr(control, value, results);
         }
+        Expr::SizeOfType(_) => {}
     }
 }

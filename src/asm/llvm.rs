@@ -6,7 +6,9 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::ContextRef;
 use inkwell::module::Module;
-use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType};
+use inkwell::types::{
+    AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType,
+};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue,
     IntValue, PhiValue, PointerValue,
@@ -232,11 +234,24 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 output,
                 kind,
             } => {
+                let my_in_ty = self.func_get().func_ir.type_of(input);
+                let my_out_ty = self.func_get().func_ir.type_of(input);
                 let in_value = self.read_basic_value(input);
                 let in_type = self.reg_basic_type(input);
                 let out_type = self.reg_basic_type(output);
                 match kind {
-                    CastType::Bits => todo!(),
+                    CastType::Bits => {
+                        assert!(
+                            my_in_ty.is_ptr() && my_out_ty.is_ptr(),
+                            "todo: non-pointer bit casts"
+                        );
+                        let result = self.builder.build_pointer_cast(
+                            in_value.into_pointer_value(),
+                            out_type.into_pointer_type(),
+                            "",
+                        );
+                        self.set(output, result);
+                    }
                     CastType::UnsignedIntUp => {
                         let result = self.builder.build_int_cast(
                             in_value.into_int_value(),
@@ -284,8 +299,14 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             .iter()
             .map(|ty| self.llvm_type(*ty).into())
             .collect();
-        let returns = self.llvm_type(signature.return_type);
-        returns.fn_type(&args, signature.has_var_args)
+        if signature.return_type.is_raw_void() {
+            self.context
+                .void_type()
+                .fn_type(&args, signature.has_var_args)
+        } else {
+            self.llvm_type(signature.return_type)
+                .fn_type(&args, signature.has_var_args)
+        }
     }
 
     fn collect_arg_values(&self, args: &[Ssa]) -> Vec<BasicMetadataValueEnum<'ctx>> {

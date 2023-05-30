@@ -235,6 +235,18 @@ impl<'src> Parser<'src> {
             TokenType::Minus => Some(UnaryOp::Negate),
             TokenType::Star => Some(UnaryOp::Deref),
             TokenType::Ampersand => Some(UnaryOp::AddressOf),
+            TokenType::SizeOf => {
+                let so = self.expect(TokenType::SizeOf);
+                let t = self.expect(TokenType::LeftParen);
+                if let Some(ty) = self.read_type() {
+                    self.expect(TokenType::RightParen);
+                    return Expr::SizeOfType(ty);
+                }
+                self.scanner.replace(t);
+                self.scanner.replace(so);
+
+                Some(UnaryOp::NoEvalSizeOf)
+            }
             _ => None,
         };
 
@@ -351,6 +363,7 @@ impl<'src> Parser<'src> {
                     "char" => ValueType::U8,
                     "double" => ValueType::F64,
                     "float" => ValueType::F32,
+                    "void" => ValueType::Void,
                     _ => return None,
                 };
 
@@ -376,11 +389,12 @@ impl<'src> Parser<'src> {
         token.lexeme.into()
     }
 
-    fn expect(&mut self, kind: TokenType) {
+    fn expect(&mut self, kind: TokenType) -> Token<'src> {
         let token = self.scanner.next();
         if token.kind != kind {
             self.err(&format!("Expected {:?}", kind), token);
         }
+        token
     }
 
     fn err(&mut self, msg: &str, token: Token) -> ! {

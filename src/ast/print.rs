@@ -102,6 +102,7 @@ impl Expr {
                 writeln!(f, "Cast to {:?}", target)?;
                 value.print(depth + 1, f)
             }
+            Expr::SizeOfType(ty) => writeln!(f, "sizeof {:?}", ty),
         }
     }
 }

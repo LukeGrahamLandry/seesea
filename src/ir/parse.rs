@@ -236,18 +236,16 @@ impl<'ast> AstParser<'ast> {
 
         let mut arg_registers = vec![];
         for (i, arg) in args.iter().enumerate() {
-            let arg_ssa = self
+            let mut arg_ssa = self
                 .emit_expr(arg, block)
                 .expect("Passed function arg cannot be void.");
 
-            let found = self.control.ssa_type(arg_ssa);
+            let found = *self.control.ssa_type(arg_ssa);
             if i < signature.param_types.len() {
-                let expected = &signature.param_types[i];
-                assert_eq!(
-                    expected, found,
-                    "{} param {} expected {:?} but found {:?}",
-                    name, i, expected, found
-                );
+                let expected = signature.param_types[i];
+                if expected != found {
+                    arg_ssa = self.emit_cast(arg_ssa, expected, block);
+                }
             } else {
                 assert!(
                     signature.has_var_args,
@@ -752,6 +750,21 @@ impl<'ast> AstParser<'ast> {
                     .expect("Cannot cast from void value.");
                 let output = self.emit_cast(input, *target, block);
                 Some(output)
+            }
+            &Expr::SizeOfType(ty) => {
+                let dest = self.make_ssa(ty);
+                self.func_mut()
+                    .set_debug(dest, || "sizeof_result".to_string());
+                let size = self.ast.size_of(ty);
+                self.func_mut().push(
+                    block,
+                    Op::ConstValue {
+                        dest,
+                        value: LiteralValue::IntNumber(size as u64),
+                        kind: CType::int(),
+                    },
+                );
+                Some(dest)
             }
         }
     }

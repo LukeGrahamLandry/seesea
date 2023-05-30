@@ -328,6 +328,13 @@ impl<'ir> Vm<'ir> {
                 println!("Called printf {:?}", args);
                 VmValue::U64(0)
             }
+            "malloc" => {
+                // debug allocator that tracks leaks
+                todo!()
+            }
+            "free" => {
+                todo!()
+            }
             _ => {
                 panic!("Called unrecognised function {}", name)
             }

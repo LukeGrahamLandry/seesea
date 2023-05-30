@@ -97,6 +97,7 @@ pub enum Expr {
         value: Box<Expr>,
         target: CType,
     },
+    SizeOfType(CType),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -121,6 +122,9 @@ pub enum UnaryOp {
     Not,
     Deref,
     AddressOf,
+
+    // Decide what type the operand would be and return its size but don't evaluate it.
+    NoEvalSizeOf,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -102,6 +102,9 @@ pub enum TokenType {
     #[token("/")]
     Slash,
 
+    #[token("sizeof")]
+    SizeOf,
+
     Eof,
 }
 
@@ -168,6 +171,10 @@ impl<'src> Scanner<'src> {
         let token = self.cache.pop_front().unwrap();
         self.refresh();
         token
+    }
+
+    pub fn replace(&mut self, token: Token<'src>) {
+        self.cache.push_front(token)
     }
 
     pub fn has_next(&mut self) -> bool {
