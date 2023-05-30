@@ -8,7 +8,7 @@ use std::mem::size_of;
 use crate::asm::llvm::LlvmFuncGen;
 use crate::ir::Op;
 use crate::scanning::Scanner;
-use crate::vm::Vm;
+use crate::vm::{Vm, VmValue};
 use crate::{ast, ir};
 
 #[test]
@@ -151,7 +151,7 @@ long main(long a){
     ";
 
     let ir = compile_module(src);
-    let vm_result = Vm::eval(&ir, "main", &[5]).to_int();
+    let vm_result = Vm::eval_int_args(&ir, "main", &[5]).to_int();
     assert_eq!(vm_result, 17);
     type Func = unsafe extern "C" fn(u64) -> u64;
     llvm_run::<Func, _>(&ir, "main", |func| {
@@ -181,7 +181,7 @@ long main(long a){
 }
     ";
     let ir = compile_module(src);
-    assert_eq!(Vm::eval(&ir, "main", &[5]).to_int(), 999);
+    assert_eq!(Vm::eval_int_args(&ir, "main", &[5]).to_int(), 999);
     type Func = unsafe extern "C" fn(u64) -> u64;
     llvm_run::<Func, _>(&ir, "main", |func| {
         assert_eq!(unsafe { func.call(5) }, 999);
@@ -256,7 +256,7 @@ long main(long a){
     ";
 
     let ir = compile_module(src);
-    assert_eq!(Vm::eval(&ir, "main", &[10]).to_int(), 25);
+    assert_eq!(Vm::eval_int_args(&ir, "main", &[10]).to_int(), 25);
     type Func = unsafe extern "C" fn(u64) -> u64;
     llvm_run::<Func, _>(&ir, "main", |func| assert_eq!(unsafe { func.call(10) }, 25));
 }
@@ -457,7 +457,7 @@ double main(){
 }
     ";
     let ir = compile_module(src);
-    assert!(Vm::eval(&ir, "main", &[]).to_float().abs() < 0.000001);
+    assert!(Vm::eval_int_args(&ir, "main", &[]).to_float().abs() < 0.000001);
     type Func = unsafe extern "C" fn() -> f64;
     llvm_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function.call() };
@@ -484,11 +484,42 @@ long main(long start){
     });
 }
 
+#[test]
+fn float_compare() {
+    let src = "
+long main(double a){
+    if (a > 0.5) {
+        return 3;
+    } else {
+        return 2;
+    }
+}
+    ";
+    let ir = compile_module(src);
+    assert_eq!(Vm::eval(&ir, "main", &[VmValue::F64(0.1)]).to_int(), 2);
+    type Func = unsafe extern "C" fn(f64) -> u64;
+    llvm_run::<Func, _>(&ir, "main", |function| {
+        let answer = unsafe { function.call(0.1) };
+        assert_eq!(answer, 2);
+    });
+}
+
+#[test]
+fn mul_div() {
+    let src = "
+long main(){
+    return (2 * 3) / 6;
+}
+    ";
+
+    no_args_run_main(src, 1);
+}
+
 // do malloc next!
 
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);
-    assert_eq!(Vm::eval(&ir, "main", &[]).to_int(), expected);
+    assert_eq!(Vm::eval_int_args(&ir, "main", &[]).to_int(), expected);
     type Func = unsafe extern "C" fn() -> u64;
     llvm_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function.call() };
@@ -498,7 +529,7 @@ fn no_args_run_main(src: &str, expected: u64) {
 
 fn vm_run_cases(ir: &ir::Module, func_name: &str, cases: &[(&[u64], u64)]) {
     for (args, answer) in cases {
-        assert_eq!(Vm::eval(ir, func_name, args).to_int(), *answer);
+        assert_eq!(Vm::eval_int_args(ir, func_name, args).to_int(), *answer);
     }
 }
 

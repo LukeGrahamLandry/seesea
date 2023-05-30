@@ -16,6 +16,7 @@ use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir;
 use crate::ir::{CastType, Function, Label, Op, Ssa};
+use crate::macros::llvm::emit_bin_op;
 
 pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     pub(crate) context: ContextRef<'ctx>,
@@ -300,55 +301,37 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         let is_floats = self.type_in_reg(a).is_float_type() && self.type_in_reg(b).is_float_type();
 
         if is_ints {
-            let result = self.int_bin_op_factory(self.read_int(a), self.read_int(b), kind);
+            let result = emit_bin_op!(
+                self,
+                a,
+                b,
+                kind,
+                read_int,
+                IntPredicate,
+                build_int_compare,
+                build_int_add,
+                build_int_sub,
+                build_int_mul,
+                build_int_unsigned_div // TODO: there are other build_int_div functions
+            );
             self.set(dest, result);
         } else if is_floats {
-            let result = self.float_bin_op_factory(self.read_float(a), self.read_float(b), kind);
+            let result = emit_bin_op!(
+                self,
+                a,
+                b,
+                kind,
+                read_float,
+                FloatPredicate,
+                build_float_compare,
+                build_float_add,
+                build_float_sub,
+                build_float_mul,
+                build_float_div
+            );
             self.set(dest, result);
         } else {
             panic!("Binary op must act on both ints or both floats.");
-        }
-    }
-
-    fn int_bin_op_factory(
-        &self,
-        a: IntValue<'ctx>,
-        b: IntValue<'ctx>,
-        kind: BinaryOp,
-    ) -> IntValue<'ctx> {
-        match kind {
-            BinaryOp::Add => self.builder.build_int_add(a, b, ""),
-            BinaryOp::GreaterThan => self.builder.build_int_compare(IntPredicate::UGT, a, b, ""),
-            BinaryOp::LessThan => self.builder.build_int_compare(IntPredicate::ULT, a, b, ""),
-            BinaryOp::Assign => unreachable!(
-                "IR parser should not emit BinaryOp::Assign. It must be converted into SSA from."
-            ),
-            BinaryOp::Subtract => self.builder.build_int_sub(a, b, ""),
-            _ => todo!(),
-        }
-    }
-
-    fn float_bin_op_factory(
-        &self,
-        a: FloatValue<'ctx>,
-        b: FloatValue<'ctx>,
-        kind: BinaryOp,
-    ) -> BasicValueEnum<'ctx> {
-        match kind {
-            BinaryOp::Add => self.builder.build_float_add(a, b, "").into(),
-            BinaryOp::GreaterThan => self
-                .builder
-                .build_float_compare(FloatPredicate::UGT, a, b, "")
-                .into(),
-            BinaryOp::LessThan => self
-                .builder
-                .build_float_compare(FloatPredicate::ULT, a, b, "")
-                .into(),
-            BinaryOp::Assign => unreachable!(
-                "IR parser should not emit BinaryOp::Assign. It must be converted into SSA from."
-            ),
-            BinaryOp::Subtract => self.builder.build_float_sub(a, b, "").into(),
-            _ => todo!(),
         }
     }
 

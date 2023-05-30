@@ -5,6 +5,7 @@
 
 use crate::ast::{BinaryOp, LiteralValue};
 use crate::ir::{Function, Label, Module, Op, Ssa};
+use crate::macros::vm::{do_bin_cmp, do_bin_math};
 use std::collections::HashMap;
 
 pub struct Vm<'ir> {
@@ -50,7 +51,15 @@ impl<'ir> Vm<'ir> {
         }
     }
 
-    pub fn eval(module: &Module, function_name: &str, args: &[u64]) -> VmResult {
+    pub fn eval_int_args(module: &Module, function_name: &str, args: &[u64]) -> VmResult {
+        Vm::eval(
+            module,
+            function_name,
+            &args.iter().copied().map(VmValue::U64).collect::<Vec<_>>(),
+        )
+    }
+
+    pub fn eval(module: &Module, function_name: &str, args: &[VmValue]) -> VmResult {
         println!("Start VM Eval.");
         let mut vm = Vm::new(module);
         vm.tick_limit = Some(250); // TODO: move limit into tests file
@@ -65,7 +74,7 @@ impl<'ir> Vm<'ir> {
             memory: HashMap::new(),
         };
         vm.call_stack.push(frame);
-        vm.init_params(args.iter().copied().map(VmValue::U64));
+        vm.init_params(args.iter().copied());
 
         loop {
             let result = vm.tick();
@@ -100,16 +109,19 @@ impl<'ir> Vm<'ir> {
         match op {
             Op::Binary { dest, a, b, kind } => {
                 let result = match kind {
-                    BinaryOp::Add => self.get(a).to_int() + self.get(b).to_int(),
-                    BinaryOp::Subtract => self.get(a).to_int() - self.get(b).to_int(),
-                    BinaryOp::GreaterThan => int_cast(self.get(a).to_int() > self.get(b).to_int()),
-                    BinaryOp::LessThan => int_cast(self.get(a).to_int() < self.get(b).to_int()),
+                    BinaryOp::Add => do_bin_math!(self, a, b, +),
+                    BinaryOp::Subtract => do_bin_math!(self, a, b, -),
+                    BinaryOp::GreaterThan => do_bin_cmp!(self, a, b, >),
+                    BinaryOp::LessThan => do_bin_cmp!(self, a, b, <),
+                    BinaryOp::Multiply => do_bin_math!(self, a, b, *),
+                    BinaryOp::Divide => do_bin_math!(self, a, b, /),
+                    BinaryOp::Modulo => do_bin_math!(self, a, b, %),
+                    BinaryOp::Equal => do_bin_cmp!(self, a, b, ==),
                     BinaryOp::Assign => {
                         unreachable!("IR must be in SSA form and have no BinaryOp::Assign")
                     }
-                    _ => todo!(),
                 };
-                self.set(dest, VmValue::U64(result));
+                self.set(dest, result);
             }
             Op::Jump {
                 condition,
@@ -323,7 +335,7 @@ impl<'ir> Vm<'ir> {
     }
 }
 
-fn int_cast(b: bool) -> u64 {
+fn bool_to_int(b: bool) -> u64 {
     if b {
         1
     } else {

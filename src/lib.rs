@@ -3,6 +3,7 @@ pub mod ast;
 pub mod ir;
 pub mod scanning;
 
+mod macros;
 #[cfg(test)]
 mod tests;
 mod vm;

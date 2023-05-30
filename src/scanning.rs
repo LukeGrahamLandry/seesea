@@ -99,6 +99,9 @@ pub enum TokenType {
     #[token("&")]
     Ampersand,
 
+    #[token("/")]
+    Slash,
+
     Eof,
 }
 

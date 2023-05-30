@@ -217,6 +217,7 @@ impl<'src> Parser<'src> {
             TokenType::Equal => BinaryOp::Assign,
             TokenType::Minus => BinaryOp::Subtract,
             TokenType::Star => BinaryOp::Multiply,
+            TokenType::Slash => BinaryOp::Divide,
             _ => return left, // todo: only some tokens are valid here
         };
 
