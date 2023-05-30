@@ -5,7 +5,6 @@ use crate::ast::{
     UnaryOp, ValueType,
 };
 use crate::scanning::{Scanner, Token, TokenType};
-use std::collections::HashMap;
 
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {
@@ -291,10 +290,10 @@ impl<'src> Parser<'src> {
         let token = self.scanner.next();
         match token.kind {
             TokenType::DecimalInt(v) => Expr::Literal {
-                value: LiteralValue::IntNumber { value: v },
+                value: LiteralValue::IntNumber(v),
             },
             TokenType::DecimalFloat(v) => Expr::Literal {
-                value: LiteralValue::FloatNumber { value: v },
+                value: LiteralValue::FloatNumber(v),
             },
             TokenType::Identifier => Expr::GetVar {
                 name: token.lexeme.to_string(),
@@ -305,9 +304,9 @@ impl<'src> Parser<'src> {
                 expr
             }
             TokenType::StringLiteral => Expr::Literal {
-                value: LiteralValue::StringBytes {
-                    value: token.lexeme[1..(token.lexeme.len() - 1)].to_string(),
-                },
+                value: LiteralValue::StringBytes(
+                    token.lexeme[1..(token.lexeme.len() - 1)].to_string(),
+                ),
             },
             _ => self.err("Expected primary expr (number or var access)", token),
         }

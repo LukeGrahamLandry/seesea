@@ -1,8 +1,9 @@
 //! An interpreter for my IR for inspecting the temporary registers while debugging codegen.
 //! A GUI that showed where you were in source / tokens / AST / IR side by side and let you step forward would be really cool.
 //! For now it just gives me another backend so if it agrees on results with LLVm then I know my IR gen was the problem.
+#![allow(unused)]
 
-use crate::ast::BinaryOp;
+use crate::ast::{BinaryOp, LiteralValue};
 use crate::ir::{Function, Label, Module, Op, Ssa};
 use std::collections::HashMap;
 
@@ -21,19 +22,21 @@ struct StackFrame<'ir> {
     block: Label,
     ip: usize,
     return_value_register: Option<Ssa>,
-    memory: HashMap<VmValue, VmValue>,
+    memory: HashMap<usize, VmValue>,
 }
 
 pub enum VmResult {
     Continue,
-    Done(Option<u64>),
+    Done(Option<VmValue>),
 }
 
-#[derive(Eq, PartialEq, Hash, Copy, Clone, Debug)]
+#[derive(PartialEq, Copy, Clone, Debug)]
 pub enum VmValue {
     U64(u64),
+    F64(f64),
     StackAddress(usize),
     Uninit,
+    ConstString(&'static str),
 }
 
 impl<'ir> Vm<'ir> {
@@ -47,7 +50,7 @@ impl<'ir> Vm<'ir> {
         }
     }
 
-    pub fn eval(module: &Module, function_name: &str, args: &[u64]) -> Option<u64> {
+    pub fn eval(module: &Module, function_name: &str, args: &[u64]) -> VmResult {
         println!("Start VM Eval.");
         let mut vm = Vm::new(module);
         vm.tick_limit = Some(250); // TODO: move limit into tests file
@@ -65,7 +68,8 @@ impl<'ir> Vm<'ir> {
         vm.init_params(args.iter().copied().map(VmValue::U64));
 
         loop {
-            if let VmResult::Done(result) = vm.tick() {
+            let result = vm.tick();
+            if let VmResult::Done(_) = result {
                 return result;
             }
         }
@@ -94,9 +98,6 @@ impl<'ir> Vm<'ir> {
         let op = ops[self.get_frame().ip].clone();
         println!("Op: {}", self.get_frame().function.print(&op));
         match op {
-            Op::ConstInt { dest, value, .. } => {
-                self.set(dest, VmValue::U64(value));
-            }
             Op::Binary { dest, a, b, kind } => {
                 let result = match kind {
                     BinaryOp::Add => self.get(a).to_int() + self.get(b).to_int(),
@@ -141,7 +142,7 @@ impl<'ir> Vm<'ir> {
                 self.call_stack.pop();
                 println!("--- ret {:?}", result);
                 return if self.call_stack.is_empty() {
-                    VmResult::Done(Some(result.unwrap().to_int()))
+                    VmResult::Done(result)
                 } else {
                     let ssa = self.get_frame().return_value_register.unwrap();
                     self.set(ssa, result.unwrap());
@@ -153,13 +154,19 @@ impl<'ir> Vm<'ir> {
                 args,
                 return_value_dest,
             } => {
-                let func = self
-                    .module
-                    .get_func(&func_name)
-                    .expect("Function not found.");
+                let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
+                let func = match self.module.get_func(&func_name) {
+                    Some(f) => f,
+                    None => {
+                        let result = self.call_libc_for_tests(&func_name, &arg_values);
+                        self.set(return_value_dest, result);
+                        self.mut_frame().ip += 1;
+                        return VmResult::Continue;
+                    }
+                };
+
                 self.mut_frame().return_value_register = Some(return_value_dest);
                 self.mut_frame().ip += 1;
-                let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
                 let frame = StackFrame {
                     registers: HashMap::new(),
                     function: func,
@@ -184,10 +191,12 @@ impl<'ir> Vm<'ir> {
                         }
                         self.mut_frame()
                             .memory
-                            .insert(addr.offset(i), VmValue::Uninit);
+                            .insert(addr.offset(i).to_fake_ptr(), VmValue::Uninit);
                     }
                 } else {
-                    self.mut_frame().memory.insert(addr, VmValue::Uninit);
+                    self.mut_frame()
+                        .memory
+                        .insert(addr.to_fake_ptr(), VmValue::Uninit);
                 }
                 self.mut_frame().registers.insert(dest, addr);
                 println!("--- Stack {:?} = {:?} {:?}", addr, VmValue::Uninit, ty);
@@ -213,8 +222,19 @@ impl<'ir> Vm<'ir> {
                 println!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
                 self.set(dest, result);
             }
-            _ => {
-                todo!()
+            Op::ConstValue { dest, value, .. } => {
+                let val = match value {
+                    LiteralValue::IntNumber(value) => VmValue::U64(value),
+                    LiteralValue::FloatNumber(value) => VmValue::F64(value),
+                    LiteralValue::StringBytes(value) => {
+                        // TODO: leak! but vm is just for tests so doesn't really matter
+                        //       needs to be a pointer to a u8
+                        //       for now im just doing enough that the vm can run programs that use printf
+                        let val = Box::leak(value.into_boxed_str());
+                        VmValue::ConstString(val)
+                    }
+                };
+                self.set(dest, val);
             }
         }
 
@@ -265,7 +285,7 @@ impl<'ir> Vm<'ir> {
     fn get_stack_address(&self, addr: VmValue) -> &VmValue {
         assert!(addr.is_stack_ptr());
         for frame in self.call_stack.iter().rev() {
-            if let Some(value) = frame.memory.get(&addr) {
+            if let Some(value) = frame.memory.get(&addr.to_fake_ptr()) {
                 return value;
             }
         }
@@ -275,11 +295,28 @@ impl<'ir> Vm<'ir> {
     fn mut_stack_address(&mut self, addr: VmValue) -> &mut VmValue {
         assert!(addr.is_stack_ptr());
         for frame in self.call_stack.iter_mut().rev() {
-            if let Some(value) = frame.memory.get_mut(&addr) {
+            if let Some(value) = frame.memory.get_mut(&addr.to_fake_ptr()) {
                 return value;
             }
         }
         panic!("Tried to access dropped stack variable");
+    }
+
+    fn call_libc_for_tests(&mut self, name: &str, args: &[VmValue]) -> VmValue {
+        match name {
+            "sin" => {
+                assert_eq!(args.len(), 1);
+                let angle = args[0].to_float();
+                VmValue::F64(angle.sin())
+            }
+            "printf" => {
+                println!("Called printf {:?}", args);
+                VmValue::U64(0)
+            }
+            _ => {
+                panic!("Called unrecognised function {}", name)
+            }
+        }
     }
 }
 
@@ -299,6 +336,20 @@ impl VmValue {
         panic!("Not an int");
     }
 
+    fn to_float(&self) -> f64 {
+        if let &VmValue::F64(value) = self {
+            return value;
+        }
+        panic!("Not a float");
+    }
+
+    fn to_fake_ptr(&self) -> usize {
+        if let &VmValue::StackAddress(value) = self {
+            return value;
+        }
+        panic!("Not a StackAddress");
+    }
+
     fn to_bool(&self) -> bool {
         self.to_int() != 0
     }
@@ -311,6 +362,22 @@ impl VmValue {
         match self {
             VmValue::StackAddress(addr) => VmValue::StackAddress(addr + offset),
             _ => unreachable!(),
+        }
+    }
+}
+
+impl VmResult {
+    pub fn to_int(&self) -> u64 {
+        match self {
+            VmResult::Continue => unreachable!(),
+            VmResult::Done(val) => val.unwrap().to_int(),
+        }
+    }
+
+    pub fn to_float(&self) -> f64 {
+        match self {
+            VmResult::Continue => unreachable!(),
+            VmResult::Done(val) => val.unwrap().to_float(),
         }
     }
 }

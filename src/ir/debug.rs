@@ -9,7 +9,7 @@ use std::marker::PhantomData;
 /// so it relies on the original ast::Module being "pinned" to read any data out.
 #[derive(Default)]
 pub struct IrDebugInfo<'ast> {
-    sources: HashMap<&'ast FuncSignature, Vec<(AstRef, OpRef)>>,
+    _sources: HashMap<&'ast FuncSignature, Vec<(AstRef, OpRef)>>,
     _phantom: PhantomData<&'ast ast::Module>, // dont need this if i keep the lifetimes in the hashmap keys
 }
 

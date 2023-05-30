@@ -1,4 +1,4 @@
-use crate::ir::{Function, Module, Op, Ssa};
+use crate::ir::{Function, Op, Ssa};
 use std::fmt::{Debug, Formatter};
 
 impl Function {
@@ -18,16 +18,11 @@ impl Function {
                     self.name(b)
                 )
             }
-            Op::ConstInt {
+            Op::ConstValue {
                 dest: result,
                 value,
                 ..
-            } => format!("{} = {};", self.name_ty(result), value),
-            Op::ConstFloat {
-                dest: result,
-                value,
-                ..
-            } => format!("{} = {};", self.name_ty(result), value),
+            } => format!("{} = {:?};", self.name_ty(result), value),
             Op::LoadFromPtr {
                 value_dest: dest,
                 addr,
@@ -86,8 +81,6 @@ impl Function {
                 field_index,
                 self.name_ty(object_addr),
             ),
-
-            Op::ConstString { dest, value } => format!("{} = {:?}", self.name_ty(dest), value,),
         }
     }
 

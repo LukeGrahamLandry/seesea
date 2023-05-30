@@ -236,12 +236,20 @@ impl<'ast> AstParser<'ast> {
                 .expect("Passed function arg cannot be void.");
 
             let found = self.control.ssa_type(arg_ssa);
-            let expected = &signature.param_types[i];
-            assert_eq!(
-                expected, found,
-                "{} param {} expected {:?} but found {:?}",
-                name, i, expected, found
-            );
+            if i < signature.param_types.len() {
+                let expected = &signature.param_types[i];
+                assert_eq!(
+                    expected, found,
+                    "{} param {} expected {:?} but found {:?}",
+                    name, i, expected, found
+                );
+            } else {
+                assert!(
+                    signature.has_var_args,
+                    "Too many arguments passed to function call."
+                );
+            }
+
             arg_registers.push(arg_ssa);
         }
 
@@ -496,7 +504,7 @@ impl<'ast> AstParser<'ast> {
         }
     }
 
-    fn set_phi_debug(&mut self, new_register: Ssa, a: Ssa, b: Ssa) {
+    fn set_phi_debug(&mut self, new_register: Ssa, a: Ssa, _: Ssa) {
         let name_a = self.func_mut().debug_str(&a);
         let name_b = self.func_mut().debug_str(&a);
         assert_eq!(
@@ -622,50 +630,28 @@ impl<'ast> AstParser<'ast> {
                     Some(dest)
                 }
             }
-            Expr::Literal { value } => match value {
-                LiteralValue::IntNumber { value } => {
-                    let dest = self.make_ssa(CType::int());
-                    self.func_mut()
-                        .set_debug(dest, || format!("const_{}", value));
-                    self.func_mut().push(
-                        block,
-                        Op::ConstInt {
-                            dest,
-                            value: *value as u64,
-                            kind: CType::int(),
-                        },
-                    );
-                    Some(dest)
-                }
-                LiteralValue::StringBytes { value } => {
-                    let dest = self.make_ssa(CType {
+            Expr::Literal { value } => {
+                let kind = match value {
+                    LiteralValue::IntNumber { .. } => CType::int(),
+                    LiteralValue::StringBytes { .. } => CType {
                         ty: ValueType::U8,
                         depth: 1,
-                    });
-                    self.func_mut().push(
-                        block,
-                        Op::ConstString {
-                            dest,
-                            value: value.clone(),
-                        },
-                    );
-                    Some(dest)
-                }
-                LiteralValue::FloatNumber { value } => {
-                    let dest = self.make_ssa(CType::direct(ValueType::F64));
-                    self.func_mut()
-                        .set_debug(dest, || format!("const_{}", value));
-                    self.func_mut().push(
-                        block,
-                        Op::ConstFloat {
-                            dest,
-                            value: *value,
-                            kind: CType::direct(ValueType::F64),
-                        },
-                    );
-                    Some(dest)
-                }
-            },
+                    },
+                    LiteralValue::FloatNumber { .. } => CType::direct(ValueType::F64),
+                };
+
+                let dest = self.make_ssa(kind);
+                self.func_mut().set_debug(dest, || "const_val".to_string());
+                self.func_mut().push(
+                    block,
+                    Op::ConstValue {
+                        dest,
+                        value: value.clone(),
+                        kind,
+                    },
+                );
+                Some(dest)
+            }
             Expr::GetVar { .. } => {
                 let lvalue = self.parse_lvalue(expr, block);
 
@@ -722,9 +708,9 @@ impl<'ast> AstParser<'ast> {
                 let dest = self.make_ssa(kind);
                 self.func_mut().push(
                     block,
-                    Op::ConstInt {
+                    Op::ConstValue {
                         dest,
-                        value: 0,
+                        value: LiteralValue::IntNumber(0),
                         kind,
                     },
                 );
@@ -780,14 +766,6 @@ impl<'ast> AstParser<'ast> {
         self.func.as_mut().unwrap()
     }
 
-    /// The type of thing that is stored in the Lvalue (so really the Lvalue is a pointer to this)
-    fn value_type(&self, value: &Lvalue) -> CType {
-        match value {
-            Lvalue::RegisterVar(var) => self.type_of(self.control.get(*var).unwrap()),
-            Lvalue::DerefPtr(addr) => self.type_of(*addr).deref_type(),
-        }
-    }
-
     /// Get the location in memory that the expr refers to (don't dereference it to extract the value yet).
     fn parse_lvalue(&mut self, expr: &'ast Expr, block: Label) -> Lvalue<'ast> {
         match expr {
@@ -806,7 +784,7 @@ impl<'ast> AstParser<'ast> {
                     assert!(addr_type.is_pointer_to(var_type));
                     Lvalue::DerefPtr(addr)
                 } else {
-                    let val = self.control.get(this_variable).unwrap();
+                    self.control.get(this_variable).unwrap();
                     Lvalue::RegisterVar(this_variable)
                 }
             }

@@ -6,22 +6,21 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::ContextRef;
 use inkwell::module::Module;
-use inkwell::support::LLVMString;
-use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType, StructType};
+use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FunctionType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FunctionValue, IntValue,
     PhiValue, PointerValue,
 };
 use inkwell::{AddressSpace, IntPredicate};
 
-use crate::ast::{BinaryOp, CType, FuncSignature, ValueType};
+use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir;
 use crate::ir::{Function, Label, Op, Ssa};
 
 pub struct LlvmFuncGen<'ctx: 'module, 'module> {
-    context: ContextRef<'ctx>,
+    pub(crate) context: ContextRef<'ctx>,
     module: &'module Module<'ctx>,
-    builder: Builder<'ctx>,
+    pub(crate) builder: Builder<'ctx>,
     functions: HashMap<String, FunctionValue<'ctx>>,
     func: Option<FuncContext<'ctx, 'module>>,
     ir: Option<&'module ir::Module>,
@@ -132,14 +131,25 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
 
     fn emit_ir_op(&mut self, op: &Op) {
         match op {
-            Op::ConstInt { dest, value, kind } => {
-                let number = self.llvm_type(*kind).into_int_type();
-                let val = number.const_int(*value, false);
-                self.set(dest, val);
-            }
-            Op::ConstFloat { dest, value, kind } => {
-                let number = self.llvm_type(*kind).into_float_type();
-                let val = number.const_float(*value);
+            Op::ConstValue { dest, value, kind } => {
+                let val: BasicValueEnum = match value {
+                    &LiteralValue::IntNumber(value) => {
+                        let number = self.llvm_type(*kind).into_int_type();
+                        let val = number.const_int(value, false);
+                        val.into()
+                    }
+                    &LiteralValue::FloatNumber(value) => {
+                        let number = self.llvm_type(*kind).into_float_type();
+                        let val = number.const_float(value);
+                        val.into()
+                    }
+                    LiteralValue::StringBytes(value) => {
+                        let string = self.context.const_string(value.as_ref(), true);
+                        let ptr = self.builder.build_alloca(string.get_type(), "");
+                        self.builder.build_store(ptr, string);
+                        ptr.into()
+                    }
+                };
                 self.set(dest, val);
             }
             Op::Binary { dest, a, b, kind } => self.emit_binary_op(dest, a, b, *kind),
@@ -195,27 +205,20 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 object_addr,
                 field_index,
             } => {
-                let field_type = self.func_get().func_ir.type_of(dest);
                 let struct_type = self.func_get().func_ir.type_of(object_addr).deref_type();
                 let s_ptr_value = self.read_ptr(object_addr);
-                let field_ptr_value = unsafe {
-                    s_ptr_value.const_gep(
-                        self.llvm_type(struct_type),
-                        &[
-                            self.context.i64_type().const_int(0, false),
-                            self.context
-                                .i32_type()
-                                .const_int(*field_index as u64, false),
-                        ],
-                    )
-                };
+                let field_ptr_value = self.const_gep(
+                    s_ptr_value,
+                    struct_type,
+                    &[
+                        self.context.i64_type().const_int(0, false),
+                        self.context
+                            .i32_type()
+                            .const_int(*field_index as u64, false),
+                    ],
+                );
+
                 self.set(dest, field_ptr_value);
-            }
-            Op::ConstString { dest, value } => {
-                let string = self.context.const_string(value.as_ref(), true);
-                let ptr = self.builder.build_alloca(string.get_type(), "");
-                self.builder.build_store(ptr, string);
-                self.set(dest, ptr);
             }
         }
     }
@@ -320,7 +323,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         };
     }
 
-    fn llvm_type(&self, ty: CType) -> BasicTypeEnum<'ctx> {
+    pub(crate) fn llvm_type(&self, ty: CType) -> BasicTypeEnum<'ctx> {
         let mut result = match ty.ty {
             ValueType::U64 => self.context.i64_type().as_basic_type_enum(),
             ValueType::Struct(name) => self.context.get_struct_type(name).unwrap().into(),
@@ -336,16 +339,6 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 .as_basic_type_enum();
         }
         result
-    }
-
-    // TODO: CLion can't cope with features and thinks there's an error here even though it compiles fine.
-    fn build_load(
-        &self,
-        pointee_type: BasicTypeEnum<'ctx>,
-        pointer_value: PointerValue<'ctx>,
-        name: &str,
-    ) -> BasicValueEnum<'ctx> {
-        self.builder.build_load(pointee_type, pointer_value, name)
     }
 
     fn func_get(&self) -> &FuncContext<'ctx, 'module> {

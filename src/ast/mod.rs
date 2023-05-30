@@ -119,11 +119,11 @@ pub enum UnaryOp {
     AddressOf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LiteralValue {
-    IntNumber { value: u64 },
-    FloatNumber { value: f64 },
-    StringBytes { value: String },
+    IntNumber(u64),
+    FloatNumber(f64),
+    StringBytes(String),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]

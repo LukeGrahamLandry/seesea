@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, CType, FuncSignature, StructSignature};
+use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, StructSignature};
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
@@ -19,19 +19,10 @@ pub struct Label(usize); // sequential indexes into the blocks array
 
 #[derive(Clone, PartialEq)]
 pub enum Op {
-    ConstInt {
+    ConstValue {
         dest: Ssa,
-        value: u64,
+        value: LiteralValue,
         kind: CType,
-    },
-    ConstFloat {
-        dest: Ssa,
-        value: f64,
-        kind: CType,
-    },
-    ConstString {
-        dest: Ssa,
-        value: String,
     },
     Binary {
         dest: Ssa,

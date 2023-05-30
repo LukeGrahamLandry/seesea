@@ -1,6 +1,5 @@
 use inkwell::context::Context;
 use inkwell::execution_engine::{JitFunction, UnsafeFunctionPointer};
-use inkwell::targets::{InitializationConfig, Target};
 use inkwell::OptimizationLevel;
 use std::fs::File;
 use std::io::Write;
@@ -150,7 +149,7 @@ long main(long a){
     ";
 
     let ir = compile_module(src);
-    let vm_result = Vm::eval(&ir, "main", &[5]).unwrap();
+    let vm_result = Vm::eval(&ir, "main", &[5]).to_int();
     assert_eq!(vm_result, 17);
     type Func = unsafe extern "C" fn(u64) -> u64;
     llvm_run::<Func, _>(&ir, "main", |func| {
@@ -180,7 +179,7 @@ long main(long a){
 }
     ";
     let ir = compile_module(src);
-    assert_eq!(Vm::eval(&ir, "main", &[5]), Some(999));
+    assert_eq!(Vm::eval(&ir, "main", &[5]).to_int(), 999);
     type Func = unsafe extern "C" fn(u64) -> u64;
     llvm_run::<Func, _>(&ir, "main", |func| {
         assert_eq!(unsafe { func.call(5) }, 999);
@@ -255,7 +254,7 @@ long main(long a){
     ";
 
     let ir = compile_module(src);
-    assert_eq!(Vm::eval(&ir, "main", &[10]), Some(25));
+    assert_eq!(Vm::eval(&ir, "main", &[10]).to_int(), 25);
     type Func = unsafe extern "C" fn(u64) -> u64;
     llvm_run::<Func, _>(&ir, "main", |func| assert_eq!(unsafe { func.call(10) }, 25));
 }
@@ -430,25 +429,20 @@ long main(){
 }
     ";
     no_args_run_main(src, 5);
-
-    llvm_compile(&compile_module(src), "struct_field_addr");
 }
 
 #[test]
-fn printf() {
+fn printf_variadic_args() {
     let src = r#"
 int printf(char* format, ...);
 long main(){
-    printf("hello world!!!!");
+    long number = 12345;
+    printf("hello world!!!! %d", number);
     return 0;
 }
     "#;
-    // no_args_run_main(src, 0);
-    type Func = unsafe extern "C" fn() -> u64;
-    llvm_run::<Func, _>(&compile_module(src), "main", |function| {
-        let answer = unsafe { function.call() };
-        assert_eq!(answer, 0);
-    });
+    // TODO: how to capture results from printf in jit execution engine? can probably define a function on it.
+    no_args_run_main(src, 0);
 }
 
 #[test]
@@ -460,9 +454,10 @@ double main(){
     return r;
 }
     ";
-    // no_args_run_main(src, 0);
+    let ir = compile_module(src);
+    assert!(Vm::eval(&ir, "main", &[]).to_float().abs() < 0.000001);
     type Func = unsafe extern "C" fn() -> f64;
-    llvm_run::<Func, _>(&compile_module(src), "main", |function| {
+    llvm_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function.call() };
         assert!(answer.abs() < 0.000001);
     });
@@ -470,7 +465,7 @@ double main(){
 
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);
-    assert_eq!(Vm::eval(&ir, "main", &[]), Some(expected));
+    assert_eq!(Vm::eval(&ir, "main", &[]).to_int(), expected);
     type Func = unsafe extern "C" fn() -> u64;
     llvm_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function.call() };
@@ -478,15 +473,9 @@ fn no_args_run_main(src: &str, expected: u64) {
     });
 }
 
-// For testing a feature before I get to the llvm part.
-fn no_args_vm_only_main(src: &str, expected: u64) {
-    let ir = compile_module(src);
-    assert_eq!(Vm::eval(&ir, "main", &[]), Some(expected));
-}
-
 fn vm_run_cases(ir: &ir::Module, func_name: &str, cases: &[(&[u64], u64)]) {
     for (args, answer) in cases {
-        assert_eq!(Vm::eval(ir, func_name, args), Some(*answer));
+        assert_eq!(Vm::eval(ir, func_name, args).to_int(), *answer);
     }
 }
 
@@ -512,6 +501,7 @@ where
     // module.verify().unwrap();
 }
 
+#[allow(unused)]
 fn llvm_compile(ir: &ir::Module, filename: &str) {
     assert!(ir.get_func("main").is_some(), "Function 'main' not found.");
     let context = Context::create();
