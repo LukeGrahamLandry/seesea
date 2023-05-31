@@ -7,9 +7,9 @@ pub mod llvm {
                 BinaryOp::Add => $self.builder.$add_func(a, b, "").into(),
                 BinaryOp::GreaterThan => $self.builder.$cmp_func($cmp_pred::UGT, a, b, "").into(),
                 BinaryOp::LessThan => $self.builder.$cmp_func($cmp_pred::ULT, a, b, "").into(),
-                BinaryOp::Assign => unreachable!(
-                    "IR parser should not emit BinaryOp::Assign. It must be converted into SSA from."
-                ),
+                BinaryOp::Assign => {
+                    unreachable!("IR parser should not emit BinaryOp::Assign. It must be converted into SSA from.")
+                }
                 BinaryOp::Subtract => $self.builder.$sub_func(a, b, "").into(),
                 BinaryOp::Multiply => $self.builder.$mul_func(a, b, "").into(),
                 BinaryOp::Divide => $self.builder.$div_func(a, b, "").into(),

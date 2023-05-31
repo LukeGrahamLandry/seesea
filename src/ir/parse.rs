@@ -7,6 +7,7 @@ use crate::ir::allocs::collect_stack_allocs;
 use crate::ir::debug::IrDebugInfo;
 use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{CastType, Label, Op, Ssa};
+use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 
@@ -81,7 +82,7 @@ impl<'ast> AstParser<'ast> {
             .zip(input.signature.param_names.iter());
         for (ty, name) in arguments {
             let variable = Var(name.as_str(), self.control.current_scope());
-            let register = self.make_ssa(*ty);
+            let register = self.make_ssa(ty);
             self.func_mut()
                 .set_debug(register, || format!("{}_arg", name));
             self.control.set(variable, register);
@@ -134,7 +135,7 @@ impl<'ast> AstParser<'ast> {
                     let mut value = self.emit_expr(value.as_ref(), *block);
                     if let Some(ssa) = value {
                         let found_type = self.type_of(ssa);
-                        let expected_type = self.func_mut().signature.return_type;
+                        let expected_type = self.func_mut().signature.return_type.clone();
                         if found_type != expected_type {
                             value = Some(self.emit_cast(ssa, expected_type, *block));
                         }
@@ -170,7 +171,7 @@ impl<'ast> AstParser<'ast> {
                 block,
                 Op::StackAlloc {
                     dest: ptr_register,
-                    ty: *kind,
+                    ty: kind.clone(),
                     count: 1,
                 },
             );
@@ -183,7 +184,7 @@ impl<'ast> AstParser<'ast> {
             .expect("Variable type cannot be void.");
 
         if self.type_of(value_register) != *kind {
-            value_register = self.emit_cast(value_register, *kind, block);
+            value_register = self.emit_cast(value_register, kind.clone(), block);
         }
 
         if self.needs_stack_address.contains(&variable) {
@@ -196,7 +197,7 @@ impl<'ast> AstParser<'ast> {
                 block,
                 Op::StackAlloc {
                     dest: ptr_register,
-                    ty: *kind,
+                    ty: kind.clone(),
                     count: 1,
                 },
             );
@@ -225,7 +226,7 @@ impl<'ast> AstParser<'ast> {
     ) -> Option<Ssa> {
         let name = match func_expr {
             Expr::GetVar { name } => name,
-            _ => todo!("Support function pointers."),
+            _ => todo!("Support function pointers. "),
         };
 
         let signature = &self
@@ -240,9 +241,9 @@ impl<'ast> AstParser<'ast> {
                 .emit_expr(arg, block)
                 .expect("Passed function arg cannot be void.");
 
-            let found = *self.control.ssa_type(arg_ssa);
+            let found = self.control.ssa_type(arg_ssa);
             if i < signature.param_types.len() {
-                let expected = signature.param_types[i];
+                let expected = signature.param_types[i].clone();
                 if expected != found {
                     arg_ssa = self.emit_cast(arg_ssa, expected, block);
                 }
@@ -259,7 +260,7 @@ impl<'ast> AstParser<'ast> {
         let return_value_dest = if signature.return_type.is_raw_void() {
             None
         } else {
-            Some(self.make_ssa(signature.return_type))
+            Some(self.make_ssa(&signature.return_type))
         };
 
         self.func_mut().push(
@@ -267,8 +268,8 @@ impl<'ast> AstParser<'ast> {
             Op::Call {
                 // TODO: directly reference the func def node since we know we'll already have it from headers
                 //       but then does the IR need the lifetime of the ast?
-                func_name: name.clone().into_boxed_str(),
-                args: arg_registers.into_boxed_slice(),
+                func_name: name.clone(),
+                args: arg_registers.into(),
                 return_value_dest,
             },
         );
@@ -624,18 +625,18 @@ impl<'ast> AstParser<'ast> {
                         .expect("Binary operand cannot be void.");
 
                     let result_type = {
-                        let ty_a = *self.control.ssa_type(a);
-                        let ty_b = *self.control.ssa_type(b);
+                        let ty_a = self.control.ssa_type(a);
+                        let ty_b = self.control.ssa_type(b);
 
                         if ty_a != ty_b {
                             // TODO: actually think about the priority list
                             if (ty_a.is_raw_int() && ty_b.is_ptr())
-                                || self.ast.size_of(ty_a) > self.ast.size_of(ty_b)
+                                || self.ast.size_of(&ty_a) > self.ast.size_of(&ty_b)
                             {
-                                b = self.emit_cast(b, ty_a, block);
+                                b = self.emit_cast(b, &ty_a, block);
                                 ty_a
                             } else {
-                                a = self.emit_cast(a, ty_b, block);
+                                a = self.emit_cast(a, &ty_b, block);
                                 ty_b
                             }
                         } else {
@@ -667,7 +668,7 @@ impl<'ast> AstParser<'ast> {
                     LiteralValue::FloatNumber { .. } => CType::direct(ValueType::F64),
                 };
 
-                let dest = self.make_ssa(kind);
+                let dest = self.make_ssa(&kind);
                 self.func_mut().set_debug(dest, || "const_val".to_string());
                 self.func_mut().push(
                     block,
@@ -731,7 +732,7 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(register)
             }
-            &Expr::Default(kind) => {
+            Expr::Default(kind) => {
                 assert!(!kind.is_struct());
                 let dest = self.make_ssa(kind);
                 self.func_mut().push(
@@ -739,7 +740,7 @@ impl<'ast> AstParser<'ast> {
                     Op::ConstValue {
                         dest,
                         value: LiteralValue::IntNumber(0),
-                        kind,
+                        kind: kind.clone(),
                     },
                 );
                 Some(dest)
@@ -748,10 +749,10 @@ impl<'ast> AstParser<'ast> {
                 let input = self
                     .emit_expr(value, block)
                     .expect("Cannot cast from void value.");
-                let output = self.emit_cast(input, *target, block);
+                let output = self.emit_cast(input, target, block);
                 Some(output)
             }
-            &Expr::SizeOfType(ty) => {
+            Expr::SizeOfType(ty) => {
                 let dest = self.make_ssa(ty);
                 self.func_mut()
                     .set_debug(dest, || "sizeof_result".to_string());
@@ -805,14 +806,14 @@ impl<'ast> AstParser<'ast> {
     }
 
     fn type_of(&self, ssa: Ssa) -> CType {
-        *self.control.ssa_type(ssa)
+        self.control.ssa_type(ssa).clone()
     }
 
     // Try to use this instead of directly calling next_var because it forces you to set the type of the register.
     // The ir validation will catch it if you forget.
-    fn make_ssa(&mut self, ty: CType) -> Ssa {
+    fn make_ssa(&mut self, ty: impl Borrow<CType>) -> Ssa {
         let ssa = self.func_mut().next_var();
-        self.control.register_types.insert(ssa, ty);
+        self.control.register_types.insert(ssa, ty.borrow().clone());
         ssa
     }
 
@@ -879,7 +880,9 @@ impl<'ast> AstParser<'ast> {
         }
     }
 
-    fn decide_loose_cast(&self, input: CType, output: CType) -> CastType {
+    fn decide_loose_cast(&self, input: impl Borrow<CType>, output: impl Borrow<CType>) -> CastType {
+        let input = input.borrow();
+        let output = output.borrow();
         if input == output || input.is_ptr() && output.is_ptr() {
             CastType::Bits
         } else if input.is_raw_float() && output.is_raw_float() {
@@ -914,8 +917,8 @@ impl<'ast> AstParser<'ast> {
         }
     }
 
-    fn emit_cast(&mut self, input: Ssa, target: CType, block: Label) -> Ssa {
-        let output = self.make_ssa(target);
+    fn emit_cast(&mut self, input: Ssa, target: impl Borrow<CType>, block: Label) -> Ssa {
+        let output = self.make_ssa(target.borrow());
         let kind = self.decide_loose_cast(self.type_of(input), target);
 
         self.func_mut().push(

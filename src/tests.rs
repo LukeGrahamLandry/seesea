@@ -13,6 +13,7 @@ use crate::{ast, ir};
 
 #[test]
 fn src_to_ast_to_ir() {
+    // language=c
     no_args_run_main(
         "
 long main(){
@@ -28,6 +29,7 @@ long main(){
 
 #[test]
 fn if_statement() {
+    // language=c
     no_args_run_main(
         "
 long main(){
@@ -47,6 +49,7 @@ long main(){
 
 #[test]
 fn if_statement_with_mutation() {
+    // language=c
     let src = "
 long main(){
     long x = 5;
@@ -68,6 +71,7 @@ long main(){
 
 #[test]
 fn scopes() {
+    // language=c
     no_args_run_main(
         "
 long main(){
@@ -99,6 +103,7 @@ long main(){
 
 #[test]
 fn function_args() {
+    // language=c
     let src = "
 long max(long a, long b){
     if (a > b) {
@@ -132,6 +137,7 @@ long max(long a, long b){
 #[test]
 fn nested_ifs() {
     // This failed when I was mutating the block pointer incorrectly.
+    // language=c
     let src = "
 long main(long a){
     long x = a + 5;
@@ -162,6 +168,7 @@ long main(long a){
 #[test]
 fn dont_emit_phi_nodes_referencing_blocks_that_jump_instead_of_falling_through() {
     // LLVM validation failed with "PHINode should have one entry for each predecessor of its parent basic block!\n  %6 = phi i64 [ %5, %.b4 ], [ 7, %.b5 ]"
+    // language=c
     let src = "
 long main(long a){
     long x = a + 5;
@@ -190,6 +197,7 @@ long main(long a){
 
 #[test]
 fn function_calls() {
+    // language=c
     let src = "
 long max(long a, long b){
     if (a > b) {
@@ -221,6 +229,7 @@ long tri_max(long a, long b, long c){
 
 #[test]
 fn recursion() {
+    // language=c
     let src = "
 long fib(long n){
     if (n < 2) return 1;
@@ -245,6 +254,7 @@ long fib(long n){
 
 #[test]
 fn pointers() {
+    // language=c
     let src = "
 long main(long a){
     long x = a + 5;
@@ -263,6 +273,7 @@ long main(long a){
 
 #[test]
 fn if_statement_with_mutation_in_else() {
+    // language=c
     let src = "
 long main(){
     long x = 5;
@@ -281,6 +292,7 @@ long main(){
 
 #[test]
 fn declare_in_else() {
+    // language=c
     let src = "
 long main(){
     if (1 < 0) {
@@ -296,6 +308,7 @@ long main(){
 
 #[test]
 fn while_loop() {
+    // language=c
     let src = "
 long main(){
     long x = 0;
@@ -311,6 +324,7 @@ long main(){
 #[test]
 fn nested_while_loop_var() {
     // Since a variable is declared inside a loop, this fails if emitting phi nodes doesn't know about scopes closing and tries to bubble up dead variables.
+    // language=c
     let src = "
 long main(){
   long x = 0;
@@ -331,6 +345,7 @@ long main(){
 
 #[test]
 fn mutate_in_if_condition() {
+    // language=c
     let src = "
 long main(){
     long x = 0;
@@ -345,6 +360,7 @@ long main(){
 
 #[test]
 fn mutate_in_nested_if_condition() {
+    // language=c
     let src = "
 long main(){
     long x = 0;
@@ -364,6 +380,7 @@ long main(){
 #[test]
 fn mutate_in_while_condition() {
     // this loop relies on mutation in the condition to terminate
+    // language=c
     let src = "
 long main(){
     long y = 0;
@@ -379,6 +396,7 @@ long main(){
 
 #[test]
 fn false_loop_condition_mutates() {
+    // language=c
     let src = "
 long main(){
     long y = 10;
@@ -394,6 +412,7 @@ long main(){
 
 #[test]
 fn struct_defs() {
+    // language=c
     let src = "
 struct Thing {
     long a;
@@ -415,6 +434,7 @@ long main(){
 
 #[test]
 fn struct_field_addr() {
+    // language=c
     let src = "
 struct Thing {
     long a;
@@ -435,6 +455,7 @@ long main(){
 
 #[test]
 fn printf_variadic_args() {
+    // language=c
     let src = r#"
 int printf(char* format, ...);
 long main(){
@@ -468,6 +489,7 @@ double main(){
 
 #[test]
 fn int_cast() {
+    // language=c
     let src = "
 long main(long start){
     int a = (float) start;
@@ -475,8 +497,7 @@ long main(long start){
     a = a + b;
     char c = a + 0;
     return c;
-}
-    ";
+}";
     let ir = compile_module(src);
     type Func = unsafe extern "C" fn(u64) -> u64;
     assert_eq!(Vm::eval(&ir, "main", &[VmValue::U64(5)]).to_int(), 54);
@@ -488,6 +509,7 @@ long main(long start){
 
 #[test]
 fn float_compare() {
+    // language=c
     let src = "
 long main(double a){
     if (a > 0.5) {
@@ -508,6 +530,7 @@ long main(double a){
 
 #[test]
 fn mul_div() {
+    // language=c
     let src = "
 long main(){
     return (2 * 3) / 6;
@@ -519,6 +542,7 @@ long main(){
 
 #[test]
 fn allocation() {
+    // language=c
     let src = "
 void* malloc(long size);
 void free(void* ptr);
@@ -539,6 +563,28 @@ long main()
     ";
 
     no_args_run_main(src, 1);
+}
+
+#[test]
+fn ptr_math() {
+    // language=c
+    let src = "
+void* malloc(long size);
+void free(void* ptr);
+
+long main()
+{
+    long* first = malloc(sizeof(long) * 2);
+    *first = 1;
+    long* second = first + sizeof(long);
+    *second = 2;
+    long result = *first + *second;
+    free(first);
+    return result;
+}
+    ";
+
+    no_args_run_main(src, 3);
 }
 
 fn no_args_run_main(src: &str, expected: u64) {

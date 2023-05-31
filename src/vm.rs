@@ -4,13 +4,17 @@
 #![allow(unused)]
 
 use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
+use crate::ir;
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::macros::vm::{do_bin_cmp, do_bin_math};
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 use std::mem;
 use std::mem::size_of;
 use std::ops::Add;
+use std::rc::Rc;
 
+// TODO: @Speed group allocations and reuse memory (especially for the stack + registers)
 pub struct Vm<'ir> {
     module: &'ir Module,
     call_stack: Vec<StackFrame<'ir>>,
@@ -18,6 +22,7 @@ pub struct Vm<'ir> {
     tick: usize,
     tick_limit: Option<usize>,
     heap: DebugAlloc,
+    strings: Vec<String>,
 }
 
 struct StackFrame<'ir> {
@@ -40,8 +45,16 @@ pub enum VmValue {
     U64(u64),
     F64(f64),
     Uninit,
-    ConstString(&'static str),
+    ConstString(usize),
     Pointer(Ptr),
+}
+
+#[derive(PartialEq, Clone, Debug)]
+struct Location {
+    tick: usize,
+    line: usize,
+    instruction: usize,
+    func_name: Rc<str>,
 }
 
 impl<'ir> Vm<'ir> {
@@ -53,6 +66,7 @@ impl<'ir> Vm<'ir> {
             tick: 0,
             tick_limit: None,
             heap: DebugAlloc::default(),
+            strings: vec![],
         }
     }
 
@@ -94,7 +108,10 @@ impl<'ir> Vm<'ir> {
         // CLion doesn't want to show me the output while it hangs on a mistake in my tests that causes an infinite loop.
         if let Some(tick_limit) = self.tick_limit {
             if self.tick > tick_limit {
-                panic!("Damn bro the VM's been running for {} ticks... maybe check for infinite loops or remove the tick_limit", self.tick);
+                panic!(
+                    "Damn bro the VM's been running for {} ticks... maybe check for infinite loops or remove the tick_limit",
+                    self.tick
+                );
             }
         }
         self.tick += 1;
@@ -109,7 +126,6 @@ impl<'ir> Vm<'ir> {
         let ops = self.get_frame().function.blocks[self.get_frame().block.index()]
             .as_ref()
             .unwrap();
-        // TODO: while Op contains a string for function name, this clone means function calls are super slow.
         let op = ops[self.get_frame().ip].clone();
         println!("Op: {}", self.get_frame().function.print(&op));
         match op {
@@ -157,11 +173,11 @@ impl<'ir> Vm<'ir> {
             }
             Op::Return { value } => {
                 let result = value.map(|v| self.get(v));
-                let old_frame = self.call_stack.pop().unwrap();
                 println!("--- ret {:?}", result);
-                for addr in old_frame.allocations {
-                    self.heap.free(addr, self.tick);
+                for addr in self.get_frame().allocations.clone() {
+                    self.heap.free(addr, self.now());
                 }
+                self.call_stack.pop().unwrap();
                 return if self.call_stack.is_empty() {
                     VmResult::Done(result)
                 } else {
@@ -190,8 +206,9 @@ impl<'ir> Vm<'ir> {
 
                 self.mut_frame().return_value_register = return_value_dest;
                 self.mut_frame().ip += 1;
+                let reg_count = self.mut_frame().function.register_types.len();
                 let frame = StackFrame {
-                    registers: HashMap::new(),
+                    registers: HashMap::with_capacity(reg_count),
                     function: func,
                     last_block: None,
                     block: func.entry_point(),
@@ -204,8 +221,8 @@ impl<'ir> Vm<'ir> {
                 return VmResult::Continue;
             }
             Op::StackAlloc { dest, ty, count } => {
-                let size = self.module.size_of(ty) * count;
-                let addr = self.heap.malloc(size, self.tick);
+                let size = self.module.size_of(&ty) * count;
+                let addr = self.heap.malloc(size, self.now());
                 self.mut_frame().allocations.push(addr);
                 self.mut_frame()
                     .registers
@@ -214,7 +231,7 @@ impl<'ir> Vm<'ir> {
             }
             Op::LoadFromPtr { value_dest, addr } => {
                 let addr = self.get(addr);
-                let ty = *self
+                let ty = self
                     .get_frame()
                     .function
                     .register_types
@@ -222,22 +239,22 @@ impl<'ir> Vm<'ir> {
                     .unwrap();
                 let value = self.heap.as_ref(addr.to_ptr(), self.module.size_of(ty));
                 println!("--- {:?} = *{:?}", value_dest, addr);
-                let value = VmValue::from_bytes(value, ty);
+                let value = VmValue::from_bytes(value, ty, self.module);
                 self.set(value_dest, value);
             }
             Op::StoreToPtr { addr, value_source } => {
                 let addr = self.get(addr);
                 let value = self.get(value_source);
-                let ty = *self
+                let ty = self
                     .get_frame()
                     .function
                     .register_types
                     .get(&value_source)
                     .unwrap();
-                let source_bytes = value.to_bytes(ty);
+                let source_bytes = value.to_bytes(ty, self.module);
                 let dest_bytes = self.heap.as_mut(addr.to_ptr(), self.module.size_of(ty));
                 assert_eq!(dest_bytes.len(), source_bytes.len());
-                dest_bytes.copy_from_slice(&*source_bytes);
+                dest_bytes.copy_from_slice(&source_bytes);
                 println!("--- *{:?} = {:?}", addr, value);
             }
             Op::GetFieldAddr {
@@ -245,21 +262,31 @@ impl<'ir> Vm<'ir> {
                 object_addr,
                 field_index,
             } => {
-                // let result = self.get(object_addr).offset(field_index);
-                // println!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
-                // self.set(dest, result);
-                todo!()
+                let mut offset = 0;
+                let ty = self
+                    .get_frame()
+                    .function
+                    .register_types
+                    .get(&object_addr)
+                    .unwrap()
+                    .deref_type();
+                let struct_def = self.module.get_struct(ty.struct_name()).unwrap();
+                for i in 0..field_index {
+                    offset += self.module.size_of(&struct_def.fields[i].1);
+                }
+
+                let mut result = self.get(object_addr).to_ptr();
+                result.offset += offset as u32;
+                println!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
+                self.set(dest, VmValue::Pointer(result));
             }
             Op::ConstValue { dest, value, .. } => {
                 let val = match value {
                     LiteralValue::IntNumber(value) => VmValue::U64(value),
                     LiteralValue::FloatNumber(value) => VmValue::F64(value),
                     LiteralValue::StringBytes(value) => {
-                        // TODO: leak! but vm is just for tests so doesn't really matter
-                        //       needs to be a pointer to a u8
-                        //       for now im just doing enough that the vm can run programs that use printf
-                        let val = Box::leak(value);
-                        VmValue::ConstString(val)
+                        self.strings.push(value.to_string());
+                        VmValue::ConstString(self.strings.len() - 1)
                     }
                 };
                 self.set(dest, val);
@@ -269,47 +296,56 @@ impl<'ir> Vm<'ir> {
                 output,
                 kind,
             } => {
-                let in_ty = *self
+                let in_ty = self
                     .get_frame()
                     .function
                     .register_types
                     .get(&input)
                     .unwrap();
-                let out_ty = *self
+                let out_ty = self
                     .get_frame()
                     .function
                     .register_types
                     .get(&output)
                     .unwrap();
                 match kind {
-                    CastType::Bits => {
-                        let bytes = self.get(input).to_bytes(in_ty);
-                        let result = VmValue::from_bytes(&bytes, out_ty);
-                        self.set(output, result);
-                    }
                     CastType::UnsignedIntUp => {
-                        todo!()
+                        let mut bytes = self.get(input).to_int().to_be_bytes();
+                        match in_ty.ty {
+                            ValueType::U64 => {}
+                            ValueType::U8 => {
+                                bytes[0..7].iter_mut().for_each(|v| *v = 0);
+                            }
+                            ValueType::U32 => {
+                                bytes[0..4].iter_mut().for_each(|v| *v = 0);
+                            }
+                            _ => unreachable!(),
+                        };
+                        let v = u64::from_be_bytes(bytes.as_ref().try_into().unwrap());
+                        self.set(output, VmValue::U64(v));
                     }
                     CastType::IntDown => {
-                        todo!()
+                        self.set(output, self.get(input));
                     }
                     CastType::FloatUp => {
-                        todo!()
+                        self.set(output, self.get(input));
                     }
                     CastType::FloatDown => {
-                        todo!()
+                        let val = self.get(input).to_float() as f32;
+                        self.set(output, VmValue::F64(val as f64));
                     }
                     CastType::FloatToUInt => {
-                        todo!()
+                        let val = self.get(input).to_float();
+                        self.set(output, VmValue::U64(val as u64));
                     }
                     CastType::UIntToFloat => {
-                        todo!()
+                        let val = self.get(input).to_int();
+                        self.set(output, VmValue::F64(val as f64));
                     }
-                    CastType::IntToPtr => {
-                        todo!()
-                    }
-                    CastType::PtrToInt => {
-                        todo!()
+                    CastType::IntToPtr | CastType::PtrToInt | CastType::Bits => {
+                        let bytes = self.get(input).to_bytes(in_ty, self.module);
+                        let result = VmValue::from_bytes(&bytes, out_ty, self.module);
+                        self.set(output, result);
                     }
                 }
             }
@@ -368,18 +404,27 @@ impl<'ir> Vm<'ir> {
             "malloc" => {
                 assert_eq!(args.len(), 1);
                 let size = args[0].to_int() as usize;
-                let ptr = self.heap.malloc(size, self.tick);
+                let ptr = self.heap.malloc(size, self.now());
                 VmValue::Pointer(ptr)
             }
             "free" => {
                 assert_eq!(args.len(), 1);
                 let ptr = args[0].to_ptr();
-                self.heap.free(ptr, self.tick);
+                self.heap.free(ptr, self.now());
                 VmValue::Uninit
             }
             _ => {
                 panic!("Called unrecognised function {}", name)
             }
+        }
+    }
+
+    fn now(&self) -> Location {
+        Location {
+            tick: self.tick,
+            line: 0,
+            instruction: self.get_frame().ip,
+            func_name: self.get_frame().function.signature.name.clone(),
         }
     }
 }
@@ -393,8 +438,8 @@ fn bool_to_int(b: bool) -> u64 {
 }
 
 impl VmValue {
-    fn to_bytes(&self, ty: CType) -> Box<[u8]> {
-        match self {
+    fn to_bytes(&self, ty: &CType, ir: &Module) -> Box<[u8]> {
+        let result = match self {
             VmValue::U64(v) => {
                 assert!(!ty.is_ptr());
                 match ty.ty {
@@ -416,18 +461,33 @@ impl VmValue {
             VmValue::ConstString(_) => todo!(),
             VmValue::Pointer(p) => {
                 assert!(ty.is_ptr());
-                let mut bytes = p.id.to_le_bytes().to_vec();
-                bytes.extend(p.offset.to_le_bytes());
+                let mut bytes = p.offset.to_le_bytes().to_vec();
+                bytes.extend(p.id.to_le_bytes());
                 bytes.into_boxed_slice()
             }
-        }
+        };
+        assert_eq!(
+            result.len(),
+            ir.size_of(ty),
+            "Failed write {:?} to {} bytes",
+            ty,
+            result.len()
+        );
+
+        result
     }
 
-    fn from_bytes(bytes: &[u8], ty: CType) -> VmValue {
+    fn from_bytes(bytes: &[u8], ty: &CType, ir: &Module) -> VmValue {
+        assert_eq!(
+            bytes.len(),
+            ir.size_of(ty),
+            "Failed read {:?} from {} bytes ",
+            ty,
+            bytes.len()
+        );
         if ty.is_ptr() {
-            assert_eq!(bytes.len(), 8);
-            let id = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-            let offset = u32::from_le_bytes(bytes[4..].try_into().unwrap());
+            let offset = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+            let id = u32::from_le_bytes(bytes[4..].try_into().unwrap());
             let ptr = Ptr { id, offset };
             return VmValue::Pointer(ptr);
         }
@@ -494,8 +554,23 @@ struct DebugAlloc {
 struct Allocation {
     data: Box<[u8]>,
     id: u32,
-    alloc_tick: usize,
-    free_tick: Option<usize>,
+    alloc_at: Location,
+    free_at: Option<Location>,
+}
+
+impl Allocation {
+    pub(crate) fn debug(&self) -> String {
+        format!(
+            "\n    Allocated: [{:?}]. \n    Dropped: [{}].",
+            self.alloc_at,
+            match &self.free_at {
+                None => {
+                    "Never".to_string()
+                }
+                Some(loc) => format!("{:?}", loc),
+            }
+        )
+    }
 }
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
@@ -505,15 +580,16 @@ pub struct Ptr {
 }
 
 impl DebugAlloc {
-    fn malloc(&mut self, size: usize, alloc_tick: usize) -> Ptr {
+    fn malloc(&mut self, size: usize, alloc_at: Location) -> Ptr {
+        assert!(size < u32::MAX as usize);
         self.count += 1;
         self.allocations.insert(
             self.count,
             Allocation {
-                data: (0..size).map(|_| 0).collect(),
+                data: vec![0; size].into_boxed_slice(),
                 id: self.count,
-                alloc_tick,
-                free_tick: None,
+                alloc_at,
+                free_at: None,
             },
         );
         Ptr {
@@ -522,55 +598,69 @@ impl DebugAlloc {
         }
     }
 
-    fn free(&mut self, addr: Ptr, free_tick: usize) {
+    fn free(&mut self, addr: Ptr, free_at: Location) {
         assert_eq!(addr.offset, 0);
         let allocation = self.allocations.get_mut(&addr.id).unwrap();
-        assert!(allocation.free_tick.is_none(), "double free");
-        allocation.free_tick = Some(free_tick);
+        assert!(
+            allocation.free_at.is_none(),
+            "Double free {}",
+            allocation.debug()
+        );
+        allocation.free_at = Some(free_at);
         // Actually release the memory.
         allocation.data = vec![].into_boxed_slice();
     }
 
     fn assert_no_leaks(&self) {
+        // TODO: the vm could even notice when you dropped the last reference to this allocation if i really wanted.
         assert_eq!(
             self.allocations
                 .iter()
-                .filter(|(_, alloc)| alloc.free_tick.is_none())
-                .map(|(id, _)| {
-                    println!("Memory leak {:?}", id);
+                .filter(|(_, alloc)| alloc.free_at.is_none())
+                .map(|(_, alloc)| {
+                    println!("Memory leak {}", alloc.debug());
                 })
                 .count(),
             0
         );
     }
 
-    // TODO: this is unsafe because invalid values?
     fn as_ref(&self, addr: Ptr, size: usize) -> &[u8] {
         let allocation = self.allocations.get(&addr.id).unwrap();
-        assert!(allocation.free_tick.is_none(), "access dropped memory");
+        assert!(
+            allocation.free_at.is_none(),
+            "Read dropped memory {}",
+            allocation.debug()
+        );
         let start = addr.offset as usize;
         let end = start + size;
         assert!(
             end <= allocation.data.len(),
-            "Tried to read [{}..{}] from length {}",
+            "Tried to read [{}..{}] from length {}. {}",
             start,
             end,
-            allocation.data.len()
+            allocation.data.len(),
+            allocation.debug()
         );
         &allocation.data[start..end]
     }
 
     fn as_mut(&mut self, addr: Ptr, size: usize) -> &mut [u8] {
         let allocation = self.allocations.get_mut(&addr.id).unwrap();
-        assert!(allocation.free_tick.is_none(), "access dropped memory");
+        assert!(
+            allocation.free_at.is_none(),
+            "Write dropped memory {}",
+            allocation.debug()
+        );
         let start = addr.offset as usize;
         let end = start + size;
         assert!(
             end <= allocation.data.len(),
-            "Tried to read [{}..{}] from length {}",
+            "Tried to read [{}..{}] from length {}. {}",
             start,
             end,
-            allocation.data.len()
+            allocation.data.len(),
+            allocation.debug()
         );
         &mut allocation.data[start..end]
     }

@@ -101,13 +101,14 @@ impl<'ast> ControlFlowStack<'ast> {
         }
     }
 
-    pub fn ssa_type(&self, ssa: Ssa) -> &CType {
+    pub fn ssa_type(&self, ssa: Ssa) -> CType {
         self.register_types
             .get(&ssa)
             .expect("Can't type check unused register.")
+            .clone()
     }
 
-    pub fn var_type(&self, var: Var<'ast>) -> &CType {
+    pub fn var_type(&self, var: Var<'ast>) -> CType {
         let ssa = self.get(var);
         match ssa {
             None => {
@@ -115,6 +116,7 @@ impl<'ast> ControlFlowStack<'ast> {
                 self.stack_var_types
                     .get(&var)
                     .expect("Can't type check unused variable.")
+                    .clone()
             }
             Some(ssa) => self.ssa_type(ssa),
         }
@@ -123,7 +125,7 @@ impl<'ast> ControlFlowStack<'ast> {
     pub fn set_stack_alloc(&mut self, variable: Var<'ast>, value_ty: &CType, addr_register: Ssa) {
         assert_eq!(variable.1, self.current_scope());
         assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
-        self.stack_var_types.insert(variable, *value_ty);
+        self.stack_var_types.insert(variable, value_ty.clone());
         self.register_types
             .insert(addr_register, value_ty.ref_type());
     }

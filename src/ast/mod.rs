@@ -1,3 +1,6 @@
+use std::borrow::Borrow;
+use std::rc::Rc;
+
 mod parse;
 mod print;
 
@@ -16,7 +19,7 @@ pub struct Function {
 pub struct FuncSignature {
     pub param_types: Vec<CType>,
     pub return_type: CType,
-    pub name: String,
+    pub name: Rc<str>,
     // The names are needed for parsing the body code. They don't live on to LLVM IR currently.
     pub param_names: Vec<String>,
     pub has_var_args: bool,
@@ -24,13 +27,13 @@ pub struct FuncSignature {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct StructSignature {
-    pub name: &'static str,
+    pub name: Rc<str>,
     pub fields: Vec<(String, CType)>,
 }
 
 impl StructSignature {
-    pub fn field_type(&self, name: &str) -> CType {
-        self.fields.iter().find(|f| f.0 == name).unwrap().1
+    pub fn field_type(&self, name: &str) -> &CType {
+        &self.fields.iter().find(|f| f.0 == name).unwrap().1
     }
 
     pub fn field_index(&self, name: &str) -> usize {
@@ -59,7 +62,7 @@ pub enum Stmt {
     },
     // For { initializer: Box<Stmt>, condition: Box<Expr>, increment: Box<Expr>, body: Box<Stmt> },
     DeclareVar {
-        name: String,
+        name: Rc<str>,
         value: Box<Expr>,
         kind: CType,
     },
@@ -84,10 +87,10 @@ pub enum Expr {
     },
     GetField {
         object: Box<Expr>,
-        name: String,
+        name: Rc<str>,
     },
     GetVar {
-        name: String,
+        name: Rc<str>,
     },
     Literal {
         value: LiteralValue,
@@ -131,22 +134,21 @@ pub enum UnaryOp {
 pub enum LiteralValue {
     IntNumber(u64),
     FloatNumber(f64),
-    StringBytes(Box<str>),
+    StringBytes(Rc<str>),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub enum ValueType {
     U64,
     U8,
     U32,
     F64,
     F32,
-    Struct(&'static str),
+    Struct(Rc<str>),
     Void,
 }
 
-// I'd really like these to stay Copy. Maybe give them an 'ast lifetime so they can reference struct prototypes.
-#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 pub struct CType {
     pub ty: ValueType,
     pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
@@ -157,19 +159,22 @@ impl Module {
     pub fn get_func(&self, name: &str) -> Option<&Function> {
         self.functions
             .iter()
-            .find(|&func| func.signature.name == name)
+            .find(|&func| func.signature.name.as_ref() == name)
     }
 
-    pub fn get_struct(&self, name: &str) -> Option<&StructSignature> {
-        self.structs.iter().find(|&func| func.name == name)
+    pub fn get_struct(&self, name: impl AsRef<str>) -> Option<&StructSignature> {
+        self.structs
+            .iter()
+            .find(|&func| func.name.as_ref() == name.as_ref())
     }
 
-    pub fn size_of(&self, ty: CType) -> usize {
+    pub fn size_of(&self, ty: impl Borrow<CType>) -> usize {
+        let ty = ty.borrow();
         if ty.depth > 0 {
             return 8;
         }
 
-        match ty.ty {
+        match &ty.ty {
             ValueType::U64 => 8,
             ValueType::U8 => 1,
             ValueType::U32 => 4,
@@ -180,7 +185,7 @@ impl Module {
                 let def = self.get_struct(name).unwrap();
                 let mut size = 0;
                 for (_, field) in &def.fields {
-                    size += self.size_of(*field);
+                    size += self.size_of(field);
                 }
                 size
             }
@@ -240,20 +245,20 @@ impl CType {
     #[must_use]
     pub fn deref_type(&self) -> CType {
         assert!(self.depth > 0, "Tried to dereference non-pointer type.");
-        let mut other = *self;
+        let mut other = self.clone();
         other.depth -= 1;
         other
     }
 
     #[must_use]
     pub fn ref_type(&self) -> CType {
-        let mut other = *self;
+        let mut other = self.clone();
         other.depth += 1;
         other
     }
 
-    pub fn is_pointer_to(&self, value_type: &CType) -> bool {
-        &self.deref_type() == value_type
+    pub fn is_pointer_to(&self, value_type: impl Borrow<CType>) -> bool {
+        &self.deref_type() == value_type.borrow()
     }
 
     pub fn is_struct(&self) -> bool {
@@ -282,8 +287,8 @@ impl CType {
 
     pub fn struct_name(&self) -> &str {
         assert!(self.is_struct());
-        match self.ty {
-            ValueType::Struct(name) => name,
+        match &self.ty {
+            ValueType::Struct(name) => name.as_ref(),
             _ => unreachable!(),
         }
     }

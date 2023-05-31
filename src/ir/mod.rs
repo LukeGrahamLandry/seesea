@@ -1,7 +1,9 @@
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, StructSignature, ValueType};
 use crate::KEEP_IR_DEBUG_NAMES;
+use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
+use std::rc::Rc;
 
 mod allocs;
 mod debug;
@@ -67,7 +69,7 @@ pub enum Op {
     },
 
     Call {
-        func_name: Box<str>, // TODO: allow function pointers.
+        func_name: Rc<str>, // TODO: allow function pointers.
         args: Box<[Ssa]>,
         return_value_dest: Option<Ssa>,
     },
@@ -129,22 +131,25 @@ pub enum CastType {
 }
 
 impl Module {
-    pub fn get_func(&self, name: &str) -> Option<&Function> {
+    pub fn get_func(&self, name: impl AsRef<str>) -> Option<&Function> {
         self.functions
             .iter()
-            .find(|&func| func.signature.name == name)
+            .find(|&func| func.signature.name.as_ref() == name.as_ref())
     }
 
-    pub fn get_struct(&self, name: &str) -> Option<&StructSignature> {
-        self.structs.iter().find(|&func| func.name == name)
+    pub fn get_struct(&self, name: impl AsRef<str>) -> Option<&StructSignature> {
+        self.structs
+            .iter()
+            .find(|&func| func.name.as_ref() == name.as_ref())
     }
 
-    pub fn size_of(&self, ty: CType) -> usize {
+    pub fn size_of(&self, ty: impl Borrow<CType>) -> usize {
+        let ty = ty.borrow();
         if ty.depth > 0 {
             return 8;
         }
 
-        match ty.ty {
+        match &ty.ty {
             ValueType::U64 => 8,
             ValueType::U8 => 1,
             ValueType::U32 => 4,
@@ -155,7 +160,7 @@ impl Module {
                 let def = self.get_struct(name).unwrap();
                 let mut size = 0;
                 for (_, field) in &def.fields {
-                    size += self.size_of(*field);
+                    size += self.size_of(field);
                 }
                 size
             }
@@ -212,7 +217,10 @@ impl Function {
         jump_targets.insert(Label(0)); // entry point
         for (i, block) in self.blocks.iter().enumerate() {
             let block = match block {
-                None => panic!("Label({}) was none. Probably called func.finish() twice which is not allowed currently.", i),
+                None => panic!(
+                    "Label({}) was none. Probably called func.finish() twice which is not allowed currently.",
+                    i
+                ),
                 Some(b) => b,
             };
 
@@ -290,9 +298,8 @@ impl Function {
         self.arg_registers.clone().into_iter()
     }
 
-    pub fn type_of(&self, ssa: &Ssa) -> CType {
-        *self
-            .register_types
+    pub fn type_of(&self, ssa: &Ssa) -> &CType {
+        self.register_types
             .get(ssa)
             .expect("Register must have type.")
     }

@@ -50,7 +50,7 @@ impl<'src> Parser<'src> {
             assert!(!fields.iter().any(|f| f.0 == name));
             fields.push((name, ty));
         }
-        let name = Box::leak(name.into_boxed_str());
+        let name = name.into();
         self.program.structs.push(StructSignature { name, fields });
         self.expect(TokenType::RightBrace);
         self.expect(TokenType::Semicolon);
@@ -93,7 +93,7 @@ impl<'src> Parser<'src> {
                 param_types: args,
                 param_names: names,
                 return_type: returns,
-                name,
+                name: name.into(),
                 has_var_args,
             },
         })
@@ -157,7 +157,7 @@ impl<'src> Parser<'src> {
         let name = self.read_ident("assert var name");
 
         let value = if self.scanner.matches(TokenType::Semicolon) {
-            Expr::Default(kind)
+            Expr::Default(kind.clone())
         } else {
             self.expect(TokenType::Equal);
             let value = self.parse_expr();
@@ -165,8 +165,8 @@ impl<'src> Parser<'src> {
             value
         };
         Stmt::DeclareVar {
-            name,
-            kind,
+            name: name.into(),
+            kind: kind.clone(),
             value: Box::new(value),
         }
     }
@@ -290,7 +290,7 @@ impl<'src> Parser<'src> {
                     let name = self.read_ident("Expected field name.");
                     expr = Expr::GetField {
                         object: Box::new(expr),
-                        name,
+                        name: name.into(),
                     }
                 }
                 _ => return expr,
@@ -309,7 +309,7 @@ impl<'src> Parser<'src> {
                 value: LiteralValue::FloatNumber(v),
             },
             TokenType::Identifier => Expr::GetVar {
-                name: token.lexeme.to_string(),
+                name: token.lexeme.into(),
             },
             TokenType::LeftParen => match self.read_type() {
                 None => {
@@ -328,9 +328,7 @@ impl<'src> Parser<'src> {
             },
             TokenType::StringLiteral => Expr::Literal {
                 value: LiteralValue::StringBytes(
-                    token.lexeme[1..(token.lexeme.len() - 1)]
-                        .to_string()
-                        .into_boxed_str(),
+                    token.lexeme[1..(token.lexeme.len() - 1)].to_string().into(),
                 ),
             },
             _ => self.err("Expected primary expr (number or var access)", token),
@@ -346,13 +344,17 @@ impl<'src> Parser<'src> {
                 self.expect(TokenType::Struct);
                 let name_token = self.scanner.peek_n(0);
                 let name = self.read_ident("Expected identifier of struct.");
-                let s = self.program.structs.iter().find(|s| s.name == name);
+                let s = self
+                    .program
+                    .structs
+                    .iter()
+                    .find(|s| s.name.as_ref() == name);
                 let s = match s {
                     None => self.err("Undeclared struct", name_token),
                     Some(s) => s,
                 };
                 CType {
-                    ty: ValueType::Struct(s.name),
+                    ty: ValueType::Struct(s.name.clone()),
                     depth: 0,
                 }
             }

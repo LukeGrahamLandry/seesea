@@ -26,7 +26,9 @@ impl Function {
             Op::LoadFromPtr {
                 value_dest: dest,
                 addr,
-            } => format!("{} = deref {};", self.name_ty(dest), self.name(addr)),
+            } => {
+                format!("{} = deref {};", self.name_ty(dest), self.name(addr))
+            }
             Op::StoreToPtr {
                 addr: dest,
                 value_source: addr,

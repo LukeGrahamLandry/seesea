@@ -31,7 +31,7 @@ fn walk_stmt<'ast>(
             walk_expr(control, expr, results);
         }
         Stmt::DeclareVar { name, value, .. } => {
-            let new_results = Var(name.as_str(), control.current_scope());
+            let new_results = Var(name.as_ref(), control.current_scope());
             control.set(new_results, Ssa(0)); // don't actually care about the ssas being unique/correct
 
             walk_expr(control, value, results);

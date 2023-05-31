@@ -1,14 +1,14 @@
 //! IR -> LLVM IR
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::ContextRef;
 use inkwell::module::Module;
-use inkwell::types::{
-    AnyType, AnyTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType,
-};
+use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType};
 use inkwell::values::{
     AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue,
     IntValue, PhiValue, PointerValue,
@@ -24,7 +24,7 @@ pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     pub(crate) context: ContextRef<'ctx>,
     module: &'module Module<'ctx>,
     pub(crate) builder: Builder<'ctx>,
-    functions: HashMap<String, FunctionValue<'ctx>>,
+    functions: HashMap<Rc<str>, FunctionValue<'ctx>>,
     func: Option<FuncContext<'ctx, 'module>>,
     ir: Option<&'module ir::Module>,
 }
@@ -55,15 +55,15 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         for struct_def in &ir.structs {
             let mut field_types = vec![];
             for (_, ty) in &struct_def.fields {
-                field_types.push(self.llvm_type(*ty));
+                field_types.push(self.llvm_type(ty));
             }
 
-            let llvm_struct = self.context.opaque_struct_type(struct_def.name);
+            let llvm_struct = self.context.opaque_struct_type(struct_def.name.as_ref());
             llvm_struct.set_body(&field_types, false);
         }
         for function in &ir.forward_declarations {
             let t = self.get_func_type(function);
-            let func = self.module.add_function(function.name.as_str(), t, None);
+            let func = self.module.add_function(function.name.as_ref(), t, None);
             self.functions.insert(function.name.clone(), func);
         }
         for function in &ir.functions {
@@ -85,7 +85,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         let t = self.get_func_type(&ir.signature);
         let func = self
             .module
-            .add_function(ir.signature.name.as_str(), t, None);
+            .add_function(ir.signature.name.as_ref(), t, None);
         self.functions.insert(ir.signature.name.clone(), func);
 
         // All the blocks need to exist ahead of time so jumps can reference them.
@@ -137,12 +137,12 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             Op::ConstValue { dest, value, kind } => {
                 let val: BasicValueEnum = match value {
                     &LiteralValue::IntNumber(value) => {
-                        let number = self.llvm_type(*kind).into_int_type();
+                        let number = self.llvm_type(kind).into_int_type();
                         let val = number.const_int(value, false);
                         val.into()
                     }
                     &LiteralValue::FloatNumber(value) => {
-                        let number = self.llvm_type(*kind).into_float_type();
+                        let number = self.llvm_type(kind).into_float_type();
                         let val = number.const_float(value);
                         val.into()
                     }
@@ -206,7 +206,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             }
             Op::StackAlloc { dest, ty, count } => {
                 assert_eq!(*count, 1);
-                let ptr = self.builder.build_alloca(self.llvm_type(*ty), "");
+                let ptr = self.builder.build_alloca(self.llvm_type(ty), "");
                 self.set(dest, ptr);
             }
             Op::GetFieldAddr {
@@ -237,7 +237,6 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 let my_in_ty = self.func_get().func_ir.type_of(input);
                 let my_out_ty = self.func_get().func_ir.type_of(input);
                 let in_value = self.read_basic_value(input);
-                let in_type = self.reg_basic_type(input);
                 let out_type = self.reg_basic_type(output);
                 match kind {
                     CastType::Bits => {
@@ -286,8 +285,22 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                         );
                         self.set(output, result);
                     }
-                    CastType::IntToPtr => todo!(),
-                    CastType::PtrToInt => todo!(),
+                    CastType::IntToPtr => {
+                        let result = self.builder.build_int_to_ptr(
+                            in_value.into_int_value(),
+                            out_type.into_pointer_type(),
+                            "",
+                        );
+                        self.set(output, result);
+                    }
+                    CastType::PtrToInt => {
+                        let result = self.builder.build_ptr_to_int(
+                            in_value.into_pointer_value(),
+                            out_type.into_int_type(),
+                            "",
+                        );
+                        self.set(output, result);
+                    }
                 }
             }
         }
@@ -297,14 +310,15 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         let args: Vec<_> = signature
             .param_types
             .iter()
-            .map(|ty| self.llvm_type(*ty).into())
+            .cloned()
+            .map(|ty| self.llvm_type(ty).into())
             .collect();
         if signature.return_type.is_raw_void() {
             self.context
                 .void_type()
                 .fn_type(&args, signature.has_var_args)
         } else {
-            self.llvm_type(signature.return_type)
+            self.llvm_type(&signature.return_type)
                 .fn_type(&args, signature.has_var_args)
         }
     }
@@ -421,10 +435,11 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         };
     }
 
-    pub(crate) fn llvm_type(&self, ty: CType) -> BasicTypeEnum<'ctx> {
-        let mut result = match ty.ty {
+    pub(crate) fn llvm_type(&self, ty: impl Borrow<CType>) -> BasicTypeEnum<'ctx> {
+        let ty = ty.borrow();
+        let mut result = match &ty.ty {
             ValueType::U64 => self.context.i64_type().as_basic_type_enum(),
-            ValueType::Struct(name) => self.context.get_struct_type(name).unwrap().into(),
+            ValueType::Struct(name) => self.context.get_struct_type(name.as_ref()).unwrap().into(),
             ValueType::U8 => self.context.i8_type().as_basic_type_enum(),
             ValueType::U32 => self.context.i32_type().as_basic_type_enum(),
             ValueType::F32 => self.context.f32_type().as_basic_type_enum(),
