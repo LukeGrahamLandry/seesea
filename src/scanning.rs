@@ -6,6 +6,7 @@ use std::fmt::{Debug, Formatter};
 // But also I really just don't care right now cause its boring.
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
 #[logos(skip r"[ \t\n\f]+")]
+#[logos(skip r"//.*\n")]
 pub enum TokenType {
     #[token(".")]
     Period,
@@ -57,6 +58,9 @@ pub enum TokenType {
     #[token("return")]
     Return,
 
+    #[token("typedef")]
+    TypeDef,
+
     #[token("if")]
     If,
 
@@ -86,6 +90,15 @@ pub enum TokenType {
 
     #[token("<")]
     Less,
+
+    #[token(">=")]
+    GreaterEqual,
+
+    #[token("<=")]
+    LessEqual,
+
+    #[token("->")]
+    Arrow,
 
     #[token(",")]
     Comma,

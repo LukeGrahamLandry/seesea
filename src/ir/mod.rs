@@ -1,6 +1,5 @@
-use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, StructSignature, ValueType};
+use crate::ast::{BinaryOp, CType, EitherModule, FuncRepr, FuncSignature, LiteralValue, StructSignature};
 use crate::KEEP_IR_DEBUG_NAMES;
-use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 use std::rc::Rc;
@@ -97,13 +96,7 @@ pub struct Function {
     pub register_types: HashMap<Ssa, CType>,
 }
 
-#[derive(Default)]
-pub struct Module {
-    pub functions: Vec<Function>,
-    pub structs: Vec<StructSignature>,
-    pub name: String,
-    pub forward_declarations: Vec<FuncSignature>,
-}
+pub type Module = EitherModule<Function>;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum CastType {
@@ -128,44 +121,6 @@ pub enum CastType {
     // For pointer arithmetic, llvm wants it explicit
     IntToPtr,
     PtrToInt,
-}
-
-impl Module {
-    pub fn get_func(&self, name: impl AsRef<str>) -> Option<&Function> {
-        self.functions
-            .iter()
-            .find(|&func| func.signature.name.as_ref() == name.as_ref())
-    }
-
-    pub fn get_struct(&self, name: impl AsRef<str>) -> Option<&StructSignature> {
-        self.structs
-            .iter()
-            .find(|&func| func.name.as_ref() == name.as_ref())
-    }
-
-    pub fn size_of(&self, ty: impl Borrow<CType>) -> usize {
-        let ty = ty.borrow();
-        if ty.depth > 0 {
-            return 8;
-        }
-
-        match &ty.ty {
-            ValueType::U64 => 8,
-            ValueType::U8 => 1,
-            ValueType::U32 => 4,
-            ValueType::F64 => 8,
-            ValueType::F32 => 4,
-            ValueType::Void => 0,
-            ValueType::Struct(name) => {
-                let def = self.get_struct(name).unwrap();
-                let mut size = 0;
-                for (_, field) in &def.fields {
-                    size += self.size_of(field);
-                }
-                size
-            }
-        }
-    }
 }
 
 impl Function {
@@ -329,5 +284,11 @@ impl Op {
 impl Ssa {
     pub(crate) fn index(&self) -> usize {
         self.0
+    }
+}
+
+impl FuncRepr for Function {
+    fn get_signature(&self) -> &FuncSignature {
+        &self.signature
     }
 }

@@ -1,17 +1,22 @@
 use std::borrow::Borrow;
+use std::mem::size_of;
 use std::rc::Rc;
 
 mod parse;
 mod print;
 
-pub struct Module {
-    pub functions: Vec<Function>,
+pub struct EitherModule<Func: FuncRepr> {
+    // Order matters (for not needing forward declarations)
+    pub functions: Vec<Func>,
     pub structs: Vec<StructSignature>,
     pub name: String,
+    pub forward_declarations: Vec<FuncSignature>,
 }
 
+pub type Module = EitherModule<Function>;
+
 pub struct Function {
-    pub body: Option<Stmt>,
+    pub body: Stmt,
     pub signature: FuncSignature,
 }
 
@@ -21,7 +26,7 @@ pub struct FuncSignature {
     pub return_type: CType,
     pub name: Rc<str>,
     // The names are needed for parsing the body code. They don't live on to LLVM IR currently.
-    pub param_names: Vec<String>,
+    pub param_names: Vec<Rc<str>>,
     pub has_var_args: bool,
 }
 
@@ -113,6 +118,9 @@ pub enum BinaryOp {
     Equal,
     GreaterThan,
     LessThan,
+    GreaterOrEqual,
+    LessOrEqual,
+    FollowPtr,
 
     /// This is a fancy special case but since pointer derefs and stuff can be on the left
     /// this seems like a reasonable way to represent it. Not that much weirder than short circuiting bools.
@@ -154,12 +162,32 @@ pub struct CType {
     pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
 }
 
-impl Module {
-    // TODO: hash map?
-    pub fn get_func(&self, name: &str) -> Option<&Function> {
+impl<Func: FuncRepr> EitherModule<Func> {
+    pub fn new(name: String) -> Self {
+        Self {
+            functions: vec![],
+            structs: vec![],
+            name,
+            forward_declarations: vec![],
+        }
+    }
+
+    pub fn get_func(&self, name: &str) -> Option<&Func> {
         self.functions
             .iter()
-            .find(|&func| func.signature.name.as_ref() == name)
+            .find(|&func| func.get_signature().name.as_ref() == name)
+    }
+
+    pub fn get_func_signature(&self, name: &str) -> Option<&FuncSignature> {
+        self.functions
+            .iter()
+            .map(FuncRepr::get_signature)
+            .find(|&func| func.name.as_ref() == name)
+            .or_else(|| {
+                self.forward_declarations
+                    .iter()
+                    .find(|&func| func.name.as_ref() == name)
+            })
     }
 
     pub fn get_struct(&self, name: impl AsRef<str>) -> Option<&StructSignature> {
@@ -171,6 +199,7 @@ impl Module {
     pub fn size_of(&self, ty: impl Borrow<CType>) -> usize {
         let ty = ty.borrow();
         if ty.depth > 0 {
+            assert_eq!(size_of::<usize>(), size_of::<u64>());
             return 8;
         }
 
@@ -291,5 +320,15 @@ impl CType {
             ValueType::Struct(name) => name.as_ref(),
             _ => unreachable!(),
         }
+    }
+}
+
+pub trait FuncRepr {
+    fn get_signature(&self) -> &FuncSignature;
+}
+
+impl FuncRepr for Function {
+    fn get_signature(&self) -> &FuncSignature {
+        &self.signature
     }
 }

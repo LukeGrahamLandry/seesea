@@ -110,11 +110,7 @@ impl Expr {
 impl Debug for Function {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         writeln!(f, "{:?}", self.signature)?;
-        if let Some(body) = &self.body {
-            body.print(1, f)
-        } else {
-            Ok(())
-        }
+        self.body.print(1, f)
     }
 }
 

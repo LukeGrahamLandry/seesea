@@ -587,6 +587,56 @@ long main()
     no_args_run_main(src, 3);
 }
 
+#[test]
+fn ptr_to_struct() {
+    // language=c
+    let src = "
+struct Thing {
+    long a;
+    long b;
+};
+
+long main(){
+    struct Thing z;
+    z.b = 5;
+    struct Thing* zz = &z;
+    (*zz).a = 10;
+    return z.a + (*zz).b;
+}
+    ";
+    no_args_run_main(src, 15);
+}
+
+#[test]
+fn typedef() {
+    // language=c
+    let src = "
+typedef struct Thing {
+    long a;
+    long b;
+} Thing;
+
+long main(){
+    Thing z;
+    z.b = 5;
+    return z.b;
+}
+    ";
+    no_args_run_main(src, 5);
+}
+
+#[test]
+fn array_list() {
+    // language=c
+    let src = "
+long main(){
+    return 1;
+}
+    ";
+    let src = &[src, include_str!("../tests/array_list.c")].join("");
+    no_args_run_main(src, 1);
+}
+
 fn no_args_run_main(src: &str, expected: u64) {
     let ir = compile_module(src);
     assert_eq!(Vm::eval_int_args(&ir, "main", &[]).to_int(), expected);

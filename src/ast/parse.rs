@@ -5,17 +5,14 @@ use crate::ast::{
     UnaryOp, ValueType,
 };
 use crate::scanning::{Scanner, Token, TokenType};
+use std::collections::HashMap;
 
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {
         let name = scanner.name.clone();
         let mut parser = Parser {
             scanner,
-            program: Module {
-                functions: vec![],
-                structs: vec![],
-                name,
-            },
+            program: Module::new(name),
         };
         parser.run();
         parser.program
@@ -72,7 +69,7 @@ impl<'src> Parser<'src> {
                 break;
             }
             args.push(self.read_type().expect("Function arg requires type."));
-            names.push(self.read_ident("Function arg requires name.")); // TODO: headers/forward defs dont
+            names.push(self.read_ident("Function arg requires name.").into()); // TODO: headers/forward defs dont
             if !self.scanner.matches(TokenType::Comma) {
                 assert_eq!(
                     self.scanner.peek(),
@@ -81,22 +78,21 @@ impl<'src> Parser<'src> {
                 );
             }
         }
-        let body = if self.scanner.matches(TokenType::Semicolon) {
-            None
-        } else {
-            Some(self.parse_stmt())
+
+        let signature = FuncSignature {
+            param_types: args,
+            param_names: names,
+            return_type: returns,
+            name: name.into(),
+            has_var_args,
         };
 
-        self.program.functions.push(Function {
-            body,
-            signature: FuncSignature {
-                param_types: args,
-                param_names: names,
-                return_type: returns,
-                name: name.into(),
-                has_var_args,
-            },
-        })
+        if self.scanner.matches(TokenType::Semicolon) {
+            self.program.forward_declarations.push(signature);
+        } else {
+            let body = self.parse_stmt();
+            self.program.functions.push(Function { body, signature });
+        }
     }
 
     /// STMT
@@ -218,6 +214,9 @@ impl<'src> Parser<'src> {
             TokenType::Minus => BinaryOp::Subtract,
             TokenType::Star => BinaryOp::Multiply,
             TokenType::Slash => BinaryOp::Divide,
+            TokenType::GreaterEqual => BinaryOp::GreaterOrEqual,
+            TokenType::LessEqual => BinaryOp::LessOrEqual,
+            TokenType::Arrow => BinaryOp::FollowPtr,
             _ => return left, // todo: only some tokens are valid here
         };
 
@@ -401,12 +400,12 @@ impl<'src> Parser<'src> {
 
     fn err(&mut self, msg: &str, token: Token) -> ! {
         let line = self.scanner.line_number(token);
-        panic!("Parse error on line {}: {}. {:?}", line, msg, token);
+        panic!("Parse error on line {}: {}. {:?}", line + 1, msg, token);
     }
 
     fn error(&mut self, msg: &str) -> ! {
         let token = self.scanner.next();
         let line = self.scanner.line_number(token);
-        panic!("Parse error on line {}: {} . {:?}", line, msg, token);
+        panic!("Parse error on line {}: {} . {:?}", line + 1, msg, token);
     }
 }

@@ -34,6 +34,11 @@ impl From<ast::Module> for ir::Module {
 pub fn parse_ast<'ast>(program: &'ast ast::Module) -> (ir::Module, IrDebugInfo<'ast>) {
     let mut parser: AstParser<'ast> = AstParser::new(program);
 
+    for func in program.forward_declarations.clone() {
+        println!("extern {:?}\n", func);
+        parser.ir.forward_declarations.push(func);
+    }
+
     for func in program.functions.iter() {
         parser.parse_function(func)
     }
@@ -48,7 +53,7 @@ impl<'ast> AstParser<'ast> {
     fn new(ast: &ast::Module) -> AstParser {
         AstParser {
             ast,
-            ir: Default::default(),
+            ir: ir::Module::new(ast.name.clone()),
             func: None,
             control: Default::default(),
             debug: Default::default(),
@@ -59,11 +64,6 @@ impl<'ast> AstParser<'ast> {
     }
 
     fn parse_function(&mut self, input: &'ast ast::Function) {
-        if input.body.is_none() {
-            println!("extern {:?}\n", input.signature);
-            self.ir.forward_declarations.push(input.signature.clone());
-            return;
-        }
         // TODO: separate these out into an Option
         assert!(
             self.func.is_none()
@@ -81,7 +81,7 @@ impl<'ast> AstParser<'ast> {
             .iter()
             .zip(input.signature.param_names.iter());
         for (ty, name) in arguments {
-            let variable = Var(name.as_str(), self.control.current_scope());
+            let variable = Var(name.as_ref(), self.control.current_scope());
             let register = self.make_ssa(ty);
             self.func_mut()
                 .set_debug(register, || format!("{}_arg", name));
@@ -89,9 +89,9 @@ impl<'ast> AstParser<'ast> {
             self.func_mut().arg_registers.push(register);
         }
         self.control.push_scope();
-        self.root_node = Some(input.body.as_ref().unwrap());
-        collect_stack_allocs(input.body.as_ref().unwrap(), &mut self.needs_stack_address);
-        self.emit_statement(input.body.as_ref().unwrap(), &mut entry);
+        self.root_node = Some(&input.body);
+        collect_stack_allocs(&input.body, &mut self.needs_stack_address);
+        self.emit_statement(&input.body, &mut entry);
         self.control.pop_scope();
         self.control.pop_scope();
 
@@ -231,9 +231,8 @@ impl<'ast> AstParser<'ast> {
 
         let signature = &self
             .ast
-            .get_func(name)
-            .unwrap_or_else(|| panic!("Call undeclared function {}", name))
-            .signature;
+            .get_func_signature(name)
+            .unwrap_or_else(|| panic!("Call undeclared function {}", name));
 
         let mut arg_registers = vec![];
         for (i, arg) in args.iter().enumerate() {
@@ -627,7 +626,6 @@ impl<'ast> AstParser<'ast> {
                     let result_type = {
                         let ty_a = self.control.ssa_type(a);
                         let ty_b = self.control.ssa_type(b);
-
                         if ty_a != ty_b {
                             // TODO: actually think about the priority list
                             if (ty_a.is_raw_int() && ty_b.is_ptr())

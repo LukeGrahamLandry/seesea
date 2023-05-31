@@ -139,6 +139,11 @@ impl<'ir> Vm<'ir> {
                     BinaryOp::Divide => do_bin_math!(self, a, b, /),
                     BinaryOp::Modulo => do_bin_math!(self, a, b, %),
                     BinaryOp::Equal => do_bin_cmp!(self, a, b, ==),
+                    BinaryOp::GreaterOrEqual => do_bin_cmp!(self, a, b, >=),
+                    BinaryOp::LessOrEqual => do_bin_cmp!(self, a, b, <=),
+                    BinaryOp::FollowPtr => {
+                        unreachable!()
+                    }
                     BinaryOp::Assign => {
                         unreachable!("IR must be in SSA form and have no BinaryOp::Assign")
                     }
