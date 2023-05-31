@@ -57,6 +57,21 @@ impl Stmt {
                 condition.print(depth + 1, f)?;
                 body.print(depth + 1, f)
             }
+            Stmt::For {
+                initializer,
+                condition,
+                increment,
+                body,
+            } => {
+                writeln!(f, "For: ")?;
+                initializer.print(depth + 1, f)?;
+                condition.print(depth + 1, f)?;
+                increment.print(depth + 1, f)?;
+                body.print(depth + 1, f)
+            }
+            Stmt::Nothing => {
+                writeln!(f, "Nothing")
+            }
         }
     }
 }

@@ -153,6 +153,15 @@ impl<'ast> AstParser<'ast> {
             Stmt::While { condition, body } => {
                 self.emit_while_loop(block, condition, body);
             }
+            Stmt::For {
+                initializer,
+                condition,
+                increment,
+                body,
+            } => {
+                todo!()
+            }
+            Stmt::Nothing => {}
         }
     }
 
@@ -612,50 +621,33 @@ impl<'ast> AstParser<'ast> {
     #[must_use]
     fn emit_expr(&mut self, expr: &'ast Expr, block: Label) -> Option<Ssa> {
         match expr {
-            Expr::Binary { left, op, right } => {
-                if *op == BinaryOp::Assign {
-                    self.emit_assignment(left, right, block)
-                } else {
-                    let mut a = self
-                        .emit_expr(left, block)
-                        .expect("Binary operand cannot be void.");
-                    let mut b = self
-                        .emit_expr(right, block)
-                        .expect("Binary operand cannot be void.");
-
-                    let result_type = {
-                        let ty_a = self.control.ssa_type(a);
-                        let ty_b = self.control.ssa_type(b);
-                        if ty_a != ty_b {
-                            // TODO: actually think about the priority list
-                            if (ty_a.is_raw_int() && ty_b.is_ptr())
-                                || self.ast.size_of(&ty_a) > self.ast.size_of(&ty_b)
-                            {
-                                b = self.emit_cast(b, &ty_a, block);
-                                ty_a
-                            } else {
-                                a = self.emit_cast(a, &ty_b, block);
-                                ty_b
-                            }
-                        } else {
-                            ty_a
-                        }
+            Expr::Binary { left, op, right } => match *op {
+                BinaryOp::FollowPtr => {
+                    println!("{:?} {:?}", left, right);
+                    let name = match right.as_ref() {
+                        Expr::GetVar { name } => name,
+                        _ => unreachable!("{:?}", right),
                     };
-
-                    // TODO: compares always output bools (ints) even if input is floats.
-                    let dest = self.make_ssa(result_type);
-                    self.func_mut().push(
-                        block,
-                        Op::Binary {
-                            dest,
-                            a,
-                            b,
-                            kind: *op,
-                        },
-                    );
-                    Some(dest)
+                    let struct_ptr = self.emit_expr(left, block).unwrap();
+                    let field = self.emit_get_field(Lvalue::DerefPtr(struct_ptr), name, block);
+                    match field {
+                        Lvalue::RegisterVar(_) => unreachable!(),
+                        Lvalue::DerefPtr(field_ptr) => {
+                            let register = self.make_ssa(self.type_of(field_ptr).deref_type());
+                            self.func_mut().push(
+                                block,
+                                Op::LoadFromPtr {
+                                    value_dest: register,
+                                    addr: field_ptr,
+                                },
+                            );
+                            Some(register)
+                        }
+                    }
                 }
-            }
+                BinaryOp::Assign => self.emit_assignment(left, right, block),
+                _ => self.emit_simple_binary_op(left, op, right, block),
+            },
             Expr::Literal { value } => {
                 let kind = match value {
                     LiteralValue::IntNumber { .. } => CType::int(),
@@ -751,7 +743,7 @@ impl<'ast> AstParser<'ast> {
                 Some(output)
             }
             Expr::SizeOfType(ty) => {
-                let dest = self.make_ssa(ty);
+                let dest = self.make_ssa(CType::int());
                 self.func_mut()
                     .set_debug(dest, || "sizeof_result".to_string());
                 let size = self.ast.size_of(ty);
@@ -765,6 +757,65 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(dest)
             }
+        }
+    }
+
+    fn emit_simple_binary_op(
+        &mut self,
+        left: &'ast Expr,
+        op: &'ast BinaryOp,
+        right: &'ast Expr,
+        block: Label,
+    ) -> Option<Ssa> {
+        let mut a = self
+            .emit_expr(left, block)
+            .expect("Binary operand cannot be void.");
+        let mut b = self
+            .emit_expr(right, block)
+            .expect("Binary operand cannot be void.");
+
+        let mut target_ptr_type = None;
+        let result_type = {
+            let ty_a = self.control.ssa_type(a);
+            let ty_b = self.control.ssa_type(b);
+            if ty_a != ty_b {
+                // TODO: actually think about the priority list
+                if ty_a.is_ptr() {
+                    a = self.emit_cast(a, &CType::int(), block);
+                    b = self.emit_cast(b, &CType::int(), block);
+                    target_ptr_type = Some(ty_a);
+                    CType::int()
+                } else if ty_b.is_ptr() {
+                    a = self.emit_cast(a, &CType::int(), block);
+                    b = self.emit_cast(b, &CType::int(), block);
+                    target_ptr_type = Some(ty_b);
+                    CType::int()
+                } else if self.ast.size_of(&ty_a) > self.ast.size_of(&ty_b) {
+                    b = self.emit_cast(b, &ty_a, block);
+                    ty_a
+                } else {
+                    a = self.emit_cast(a, &ty_b, block);
+                    ty_b
+                }
+            } else {
+                ty_a
+            }
+        };
+
+        // TODO: compares always output bools (ints) even if input is floats.
+        let dest = self.make_ssa(result_type);
+        self.func_mut().push(
+            block,
+            Op::Binary {
+                dest,
+                a,
+                b,
+                kind: *op,
+            },
+        );
+        match target_ptr_type {
+            None => Some(dest),
+            Some(ty) => Some(self.emit_cast(dest, &ty, block)),
         }
     }
 
@@ -855,26 +906,51 @@ impl<'ast> AstParser<'ast> {
                 Lvalue::DerefPtr(addr)
             }
             Expr::GetField { object, name } => {
-                let the_struct = self.parse_lvalue(object, block).get_addr();
-                let ty = self.type_of(the_struct);
-                assert_eq!(ty.depth, 1);
-                if let ValueType::Struct(struct_name) = ty.ty {
-                    let struct_def = self.ast.get_struct(struct_name).unwrap();
-                    let field_addr_dest = self.make_ssa(struct_def.field_type(name).ref_type());
-                    self.func_mut().push(
-                        block,
-                        Op::GetFieldAddr {
-                            dest: field_addr_dest,
-                            object_addr: the_struct,
-                            field_index: struct_def.field_index(name),
-                        },
-                    );
-                    Lvalue::DerefPtr(field_addr_dest)
-                } else {
-                    panic!("Tried to access field {} on non-struct {:?}", name, object)
-                }
+                let s = self.parse_lvalue(object, block);
+                self.emit_get_field(s, name, block)
+            }
+            Expr::Binary {
+                left,
+                right,
+                op: BinaryOp::FollowPtr,
+            } => {
+                let name = match right.as_ref() {
+                    Expr::GetVar { name } => name,
+                    _ => unreachable!(),
+                };
+                let addr = self.emit_expr(left, block).unwrap();
+                self.emit_get_field(Lvalue::DerefPtr(addr), name, block)
             }
             _ => unreachable!(),
+        }
+    }
+
+    fn emit_get_field(
+        &mut self,
+        struct_value: Lvalue<'ast>,
+        field_name: &str,
+        block: Label,
+    ) -> Lvalue<'ast> {
+        let the_struct = struct_value.get_addr();
+        let ty = self.type_of(the_struct);
+        assert_eq!(ty.depth, 1);
+        if let ValueType::Struct(struct_name) = ty.ty {
+            let struct_def = self.ast.get_struct(struct_name).unwrap();
+            let field_addr_dest = self.make_ssa(struct_def.field_type(field_name).ref_type());
+            self.func_mut().push(
+                block,
+                Op::GetFieldAddr {
+                    dest: field_addr_dest,
+                    object_addr: the_struct,
+                    field_index: struct_def.field_index(field_name),
+                },
+            );
+            Lvalue::DerefPtr(field_addr_dest)
+        } else {
+            panic!(
+                "Tried to access field {} on non-struct {:?}",
+                field_name, struct_value
+            )
         }
     }
 
@@ -933,6 +1009,7 @@ impl<'ast> AstParser<'ast> {
 }
 
 /// A location in memory.
+#[derive(Debug)]
 enum Lvalue<'ast> {
     RegisterVar(Var<'ast>), // value
     DerefPtr(Ssa),          // addr

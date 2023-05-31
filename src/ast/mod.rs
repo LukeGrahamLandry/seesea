@@ -67,7 +67,12 @@ pub enum Stmt {
         condition: Box<Expr>,
         body: Box<Stmt>,
     },
-    // For { initializer: Box<Stmt>, condition: Box<Expr>, increment: Box<Expr>, body: Box<Stmt> },
+    For {
+        initializer: Box<Stmt>,
+        condition: Box<Expr>,
+        increment: Box<Expr>,
+        body: Box<Stmt>,
+    },
     DeclareVar {
         name: Rc<str>,
         value: Box<Expr>,
@@ -76,6 +81,7 @@ pub enum Stmt {
     Return {
         value: Option<Box<Expr>>,
     },
+    Nothing,
 }
 
 pub enum Expr {

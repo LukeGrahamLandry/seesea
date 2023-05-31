@@ -67,6 +67,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             self.functions.insert(function.name.clone(), func);
         }
         for function in ir.functions.iter() {
+            println!("Compling {:?}", function.signature);
             self.emit_function(function);
         }
 
@@ -133,6 +134,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn emit_ir_op(&mut self, op: &Op) {
+        println!("{}", self.func_get().func_ir.print(op));
         match op {
             Op::ConstValue { dest, value, kind } => {
                 let val: BasicValueEnum = match value {
@@ -236,14 +238,24 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 kind,
             } => {
                 let my_in_ty = self.func_get().func_ir.type_of(input);
-                let my_out_ty = self.func_get().func_ir.type_of(input);
+                let my_out_ty = self.func_get().func_ir.type_of(output);
                 let in_value = self.read_basic_value(input);
                 let out_type = self.reg_basic_type(output);
+                println!("{:?} Cast", kind);
+                println!("    IN: {:?} {:?} {:?}", input, my_in_ty, in_value);
+                println!("    OUT: {:?} {:?} {:?}", output, my_out_ty, out_type);
                 match kind {
                     CastType::Bits => {
+                        if my_in_ty == my_out_ty {
+                            self.set(output, in_value);
+                            println!("CastType::Bits where input type == output type which is weird but fine I guess");
+                            return;
+                        }
                         assert!(
                             my_in_ty.is_ptr() && my_out_ty.is_ptr(),
-                            "todo: non-pointer bit casts"
+                            "todo: non-pointer bit casts {:?} to {:?}",
+                            my_in_ty,
+                            my_out_ty
                         );
                         let result = self.builder.build_pointer_cast(
                             in_value.into_pointer_value(),
@@ -367,7 +379,12 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             );
             self.set(dest, result);
         } else {
-            panic!("Binary op must act on both ints or both floats.");
+            panic!(
+                "Binary op {:?} must act on both ints or both floats not {:?} and {:?}",
+                kind,
+                self.type_in_reg(a),
+                self.type_in_reg(b)
+            );
         }
     }
 

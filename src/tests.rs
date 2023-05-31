@@ -634,7 +634,7 @@ long main(){
     return 1;
 }
     ";
-    let src = &[src, include_str!("../tests/array_list.c")].join("");
+    let src = &[include_str!("../tests/array_list.c"), src].join("");
     no_args_run_main(src, 1);
 }
 

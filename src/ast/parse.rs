@@ -29,6 +29,7 @@ impl<'src> Parser<'src> {
     fn run(&mut self) {
         while self.scanner.has_next() {
             match self.scanner.peek() {
+                // TODO: function returning struct without typedef
                 TokenType::Struct => {
                     self.parse_struct_def();
                     self.expect(TokenType::Semicolon);
@@ -158,6 +159,15 @@ impl<'src> Parser<'src> {
             return self.parse_while_loop();
         }
 
+        if self.scanner.peek() == TokenType::For {
+            return self.parse_for_loop();
+        }
+
+        // ;
+        if self.scanner.matches(TokenType::Semicolon) {
+            return Stmt::Nothing;
+        }
+
         // Better error messages for tokens we know can't start expressions.
         if self.scanner.peek() == TokenType::Else {
             self.error(
@@ -229,6 +239,37 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// for (STMT? EXPR? EXPR?) STMT
+    fn parse_for_loop(&mut self) -> Stmt {
+        self.expect(TokenType::For);
+        self.expect(TokenType::LeftParen);
+        let initializer = self.parse_stmt();
+        let condition = self.parse_stmt();
+        let condition = match condition {
+            Stmt::Expression { expr } => expr,
+            Stmt::Nothing => Box::new(Expr::Literal {
+                value: LiteralValue::IntNumber(1),
+            }),
+            _ => self.error("For loop condition must be expr or nothing."),
+        };
+
+        let increment = if self.scanner.peek() == TokenType::RightParen {
+            Expr::Literal {
+                value: LiteralValue::IntNumber(0),
+            }
+        } else {
+            self.parse_expr()
+        };
+        self.expect(TokenType::RightParen);
+        let body = self.parse_stmt();
+        Stmt::For {
+            initializer: Box::new(initializer),
+            condition,
+            increment: Box::new(increment),
+            body: Box::new(body),
+        }
+    }
+
     // TODO: it parses long* x = &a; as (long * x) = &a; because statement checker doesnt know long* is a type
     /// EXPR
     fn parse_expr(&mut self) -> Expr {
@@ -243,7 +284,6 @@ impl<'src> Parser<'src> {
             TokenType::Slash => BinaryOp::Divide,
             TokenType::GreaterEqual => BinaryOp::GreaterOrEqual,
             TokenType::LessEqual => BinaryOp::LessOrEqual,
-            TokenType::Arrow => BinaryOp::FollowPtr,
             _ => return left, // todo: only some tokens are valid here
         };
 
@@ -278,6 +318,16 @@ impl<'src> Parser<'src> {
 
         match op {
             None => self.parse_primary(),
+            Some(UnaryOp::Negate) => {
+                self.scanner.advance();
+                Expr::Binary {
+                    left: Box::new(Expr::Literal {
+                        value: LiteralValue::IntNumber(0),
+                    }),
+                    right: Box::new(self.parse_unary()),
+                    op: BinaryOp::Subtract,
+                }
+            }
             Some(op) => {
                 self.scanner.advance();
                 Expr::Unary {
@@ -318,6 +368,16 @@ impl<'src> Parser<'src> {
                         object: Box::new(expr),
                         name: name.into(),
                     }
+                }
+                TokenType::Arrow => {
+                    self.expect(TokenType::Arrow);
+                    return Expr::Binary {
+                        left: Box::new(expr),
+                        right: Box::new(Expr::GetVar {
+                            name: self.read_ident("expect field name").into(),
+                        }),
+                        op: BinaryOp::FollowPtr,
+                    };
                 }
                 _ => return expr,
             }

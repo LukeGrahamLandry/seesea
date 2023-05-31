@@ -54,6 +54,18 @@ fn walk_stmt<'ast>(
             walk_expr(control, condition, results);
             walk_stmt(control, body, results);
         }
+        Stmt::For {
+            initializer,
+            condition,
+            increment,
+            body,
+        } => {
+            walk_stmt(control, initializer, results);
+            walk_expr(control, condition, results);
+            walk_expr(control, increment, results);
+            walk_stmt(control, body, results);
+        }
+        Stmt::Nothing => {}
     }
 }
 
