@@ -1,7 +1,7 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{BinaryOp, CType, Expr, LiteralValue, Stmt, UnaryOp, ValueType};
+use crate::ast::{BinaryOp, CType, Expr, LiteralValue, MetaExpr, Stmt, UnaryOp, ValueType};
 use crate::ir;
 use crate::ir::allocs::collect_stack_allocs;
 use crate::ir::debug::IrDebugInfo;
@@ -10,6 +10,7 @@ use crate::ir::{CastType, Label, Op, Ssa};
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::ops::Deref;
 
 struct AstParser<'ast> {
     ast: &'ast ast::Module,
@@ -129,18 +130,20 @@ impl<'ast> AstParser<'ast> {
             }
             Stmt::Return { value } => match value {
                 None => {
-                    self.func_mut().push(*block, Op::Return { value: None });
+                    self.func_mut()
+                        .push_no_debug(*block, Op::Return { value: None });
                 }
                 Some(value) => {
-                    let mut value = self.emit_expr(value.as_ref(), *block);
-                    if let Some(ssa) = value {
+                    let mut result = self.emit_expr(value.as_ref(), *block);
+                    if let Some(ssa) = result {
                         let found_type = self.type_of(ssa);
                         let expected_type = self.func_mut().signature.return_type.clone();
                         if found_type != expected_type {
-                            value = Some(self.emit_cast(ssa, expected_type, *block));
+                            result = Some(self.emit_cast(ssa, expected_type, *block));
                         }
                     }
-                    self.func_mut().push(*block, Op::Return { value });
+                    self.func_mut()
+                        .push(*block, Op::Return { value: result }, value.info());
                 }
             },
             Stmt::If {
@@ -165,11 +168,17 @@ impl<'ast> AstParser<'ast> {
         }
     }
 
-    fn declare_variable(&mut self, name: &'ast str, value: &'ast Expr, kind: &CType, block: Label) {
+    fn declare_variable(
+        &mut self,
+        name: &'ast str,
+        value: &'ast MetaExpr,
+        kind: &CType,
+        block: Label,
+    ) {
         let variable = Var(name, self.control.current_scope());
 
         if kind.is_struct() {
-            match value {
+            match value.as_ref() {
                 Expr::Default(ty) => assert_eq!(ty, kind),
                 _ => todo!("Struct that is not init to default."),
             }
@@ -183,6 +192,7 @@ impl<'ast> AstParser<'ast> {
                     ty: kind.clone(),
                     count: 1,
                 },
+                value.info(),
             );
             self.stack_addresses.insert(variable, ptr_register);
             return;
@@ -209,6 +219,7 @@ impl<'ast> AstParser<'ast> {
                     ty: kind.clone(),
                     count: 1,
                 },
+                value.info(),
             );
             self.func_mut().push(
                 block,
@@ -216,6 +227,7 @@ impl<'ast> AstParser<'ast> {
                     addr: ptr_register,
                     value_source: value_register,
                 },
+                value.info(),
             );
             self.stack_addresses.insert(variable, ptr_register);
         } else {
@@ -230,10 +242,10 @@ impl<'ast> AstParser<'ast> {
     fn emit_function_call(
         &mut self,
         block: Label,
-        func_expr: &'ast Expr,
-        args: &'ast [Expr],
+        func_expr: &'ast MetaExpr,
+        args: &'ast [MetaExpr],
     ) -> Option<Ssa> {
-        let name = match func_expr {
+        let name = match func_expr.as_ref() {
             Expr::GetVar { name } => name,
             _ => todo!("Support function pointers. "),
         };
@@ -280,6 +292,7 @@ impl<'ast> AstParser<'ast> {
                 args: arg_registers.into(),
                 return_value_dest,
             },
+            func_expr.info(),
         );
         return_value_dest
     }
@@ -290,14 +303,14 @@ impl<'ast> AstParser<'ast> {
     fn emit_if_stmt(
         &mut self,
         block: &mut Label,
-        condition: &'ast Expr,
+        condition_expr: &'ast MetaExpr,
         then_body: &'ast Stmt,
         else_body: &'ast Stmt,
     ) {
         let parent_block = *block;
         // TODO: type check that this is an int llvm can use for conditions
         let condition = self
-            .emit_expr(condition, *block)
+            .emit_expr(condition_expr, *block)
             .expect("If condition cannot be void.");
 
         // Execution branches into two new blocks.
@@ -313,6 +326,7 @@ impl<'ast> AstParser<'ast> {
                 if_true: then_block_start,
                 if_false: else_block_start,
             },
+            condition_expr.info(),
         );
 
         // A new block to continue from when the paths converge.
@@ -402,7 +416,7 @@ impl<'ast> AstParser<'ast> {
             // Since i kept a garbage block in the ast when they had no else clause,
             // there will always be a block here and it doesn't need a special case.
             self.func_mut()
-                .push(branch_block, Op::AlwaysJump(next_block));
+                .push_no_debug(branch_block, Op::AlwaysJump(next_block));
         }
     }
 
@@ -426,7 +440,7 @@ impl<'ast> AstParser<'ast> {
                 self.type_of(*branch_register)
             );
             let new_register = self.make_ssa(self.type_of(parent_register));
-            self.func_mut().push(
+            self.func_mut().push_no_debug(
                 new_block,
                 Op::Phi {
                     dest: new_register,
@@ -476,7 +490,7 @@ impl<'ast> AstParser<'ast> {
 
             assert_eq!(self.type_of(then_register), self.type_of(other_register));
             let new_register = self.make_ssa(self.type_of(then_register));
-            self.func_mut().push(
+            self.func_mut().push_no_debug(
                 block,
                 Op::Phi {
                     dest: new_register,
@@ -502,7 +516,7 @@ impl<'ast> AstParser<'ast> {
             assert_eq!(self.type_of(else_register), self.type_of(original_register));
             let new_register = self.make_ssa(self.type_of(original_register));
 
-            self.func_mut().push(
+            self.func_mut().push_no_debug(
                 block,
                 Op::Phi {
                     dest: new_register,
@@ -533,12 +547,12 @@ impl<'ast> AstParser<'ast> {
     // parent > setup > condition
     //                           body_block > end_of_body_block <setup
     //                           exit_block
-    fn emit_while_loop(&mut self, block: &mut Label, condition: &'ast Expr, body: &'ast Stmt) {
+    fn emit_while_loop(&mut self, block: &mut Label, condition: &'ast MetaExpr, body: &'ast Stmt) {
         let parent_block = *block;
         let setup_block = self.func_mut().new_block();
         let condition_block = self.func_mut().new_block();
         self.func_mut()
-            .push(parent_block, Op::AlwaysJump(setup_block));
+            .push(parent_block, Op::AlwaysJump(setup_block), condition.info());
 
         self.control.push_flow_frame(condition_block);
         let condition_register = self
@@ -579,10 +593,16 @@ impl<'ast> AstParser<'ast> {
 
         let exit_block = self.func_mut().new_block();
 
-        self.func_mut()
-            .push(setup_block, Op::AlwaysJump(condition_block));
-        self.func_mut()
-            .push(end_of_body_block, Op::AlwaysJump(setup_block));
+        self.func_mut().push(
+            setup_block,
+            Op::AlwaysJump(condition_block),
+            condition.info(),
+        );
+        self.func_mut().push(
+            end_of_body_block,
+            Op::AlwaysJump(setup_block),
+            condition.info(),
+        );
         self.func_mut().push(
             condition_block,
             Op::Jump {
@@ -590,6 +610,7 @@ impl<'ast> AstParser<'ast> {
                 if_true: start_body_block,
                 if_false: exit_block,
             },
+            condition.info(),
         );
 
         self.patch_below(condition_block, &condition_changes);
@@ -619,17 +640,18 @@ impl<'ast> AstParser<'ast> {
     }
 
     #[must_use]
-    fn emit_expr(&mut self, expr: &'ast Expr, block: Label) -> Option<Ssa> {
-        match expr {
+    fn emit_expr(&mut self, expr: &'ast MetaExpr, block: Label) -> Option<Ssa> {
+        match expr.as_ref() {
             Expr::Binary { left, op, right } => match *op {
                 BinaryOp::FollowPtr => {
                     println!("{:?} {:?}", left, right);
-                    let name = match right.as_ref() {
+                    let name = match right.deref().as_ref() {
                         Expr::GetVar { name } => name,
                         _ => unreachable!("{:?}", right),
                     };
                     let struct_ptr = self.emit_expr(left, block).unwrap();
-                    let field = self.emit_get_field(Lvalue::DerefPtr(struct_ptr), name, block);
+                    let field =
+                        self.emit_get_field(expr.info(), Lvalue::DerefPtr(struct_ptr), name, block);
                     match field {
                         Lvalue::RegisterVar(_) => unreachable!(),
                         Lvalue::DerefPtr(field_ptr) => {
@@ -640,13 +662,14 @@ impl<'ast> AstParser<'ast> {
                                     value_dest: register,
                                     addr: field_ptr,
                                 },
+                                expr.info(),
                             );
                             Some(register)
                         }
                     }
                 }
-                BinaryOp::Assign => self.emit_assignment(left, right, block),
-                _ => self.emit_simple_binary_op(left, op, right, block),
+                BinaryOp::Assign => self.emit_assignment(expr, left, right, block),
+                _ => self.emit_simple_binary_op(expr, left, op, right, block),
             },
             Expr::Literal { value } => {
                 let kind = match value {
@@ -667,6 +690,7 @@ impl<'ast> AstParser<'ast> {
                         value: value.clone(),
                         kind,
                     },
+                    expr.info(),
                 );
                 Some(dest)
             }
@@ -679,8 +703,11 @@ impl<'ast> AstParser<'ast> {
                         let value_type = self.type_of(addr);
                         assert!(value_type.is_basic()); // TODO
                         let value_dest = self.make_ssa(value_type.deref_type());
-                        self.func_mut()
-                            .push(block, Op::LoadFromPtr { value_dest, addr });
+                        self.func_mut().push(
+                            block,
+                            Op::LoadFromPtr { value_dest, addr },
+                            expr.info(),
+                        );
                         value_dest
                     }
                 };
@@ -705,6 +732,7 @@ impl<'ast> AstParser<'ast> {
                             value_dest: register,
                             addr,
                         },
+                        expr.info(),
                     );
                     Some(register)
                 }
@@ -719,6 +747,7 @@ impl<'ast> AstParser<'ast> {
                         value_dest: register,
                         addr: field_ptr,
                     },
+                    expr.info(),
                 );
                 Some(register)
             }
@@ -732,6 +761,7 @@ impl<'ast> AstParser<'ast> {
                         value: LiteralValue::IntNumber(0),
                         kind: kind.clone(),
                     },
+                    expr.info(),
                 );
                 Some(dest)
             }
@@ -754,6 +784,7 @@ impl<'ast> AstParser<'ast> {
                         value: LiteralValue::IntNumber(size as u64),
                         kind: CType::int(),
                     },
+                    expr.info(),
                 );
                 Some(dest)
             }
@@ -762,9 +793,10 @@ impl<'ast> AstParser<'ast> {
 
     fn emit_simple_binary_op(
         &mut self,
-        left: &'ast Expr,
+        outer: &'ast MetaExpr,
+        left: &'ast MetaExpr,
         op: &'ast BinaryOp,
-        right: &'ast Expr,
+        right: &'ast MetaExpr,
         block: Label,
     ) -> Option<Ssa> {
         let mut a = self
@@ -812,6 +844,7 @@ impl<'ast> AstParser<'ast> {
                 b,
                 kind: *op,
             },
+            outer.info(),
         );
         match target_ptr_type {
             None => Some(dest),
@@ -821,8 +854,9 @@ impl<'ast> AstParser<'ast> {
 
     fn emit_assignment(
         &mut self,
-        lvalue: &'ast Expr,
-        rvalue: &'ast Expr,
+        outer: &'ast MetaExpr,
+        lvalue: &'ast MetaExpr,
+        rvalue: &'ast MetaExpr,
         block: Label,
     ) -> Option<Ssa> {
         let target = self.parse_lvalue(lvalue, block);
@@ -847,7 +881,7 @@ impl<'ast> AstParser<'ast> {
                     .ssa_type(addr)
                     .is_pointer_to(self.control.ssa_type(value_source)));
                 self.func_mut()
-                    .push(block, Op::StoreToPtr { addr, value_source });
+                    .push(block, Op::StoreToPtr { addr, value_source }, outer.info());
             }
         }
 
@@ -907,19 +941,19 @@ impl<'ast> AstParser<'ast> {
             }
             Expr::GetField { object, name } => {
                 let s = self.parse_lvalue(object, block);
-                self.emit_get_field(s, name, block)
+                self.emit_get_field(object.info(), s, name, block)
             }
             Expr::Binary {
                 left,
                 right,
                 op: BinaryOp::FollowPtr,
             } => {
-                let name = match right.as_ref() {
+                let name = match right.as_ref().deref() {
                     Expr::GetVar { name } => name,
                     _ => unreachable!(),
                 };
                 let addr = self.emit_expr(left, block).unwrap();
-                self.emit_get_field(Lvalue::DerefPtr(addr), name, block)
+                self.emit_get_field(right.info(), Lvalue::DerefPtr(addr), name, block)
             }
             _ => unreachable!(),
         }
@@ -927,6 +961,7 @@ impl<'ast> AstParser<'ast> {
 
     fn emit_get_field(
         &mut self,
+        debug: usize,
         struct_value: Lvalue<'ast>,
         field_name: &str,
         block: Label,
@@ -944,6 +979,7 @@ impl<'ast> AstParser<'ast> {
                     object_addr: the_struct,
                     field_index: struct_def.field_index(field_name),
                 },
+                debug,
             );
             Lvalue::DerefPtr(field_addr_dest)
         } else {
@@ -995,7 +1031,7 @@ impl<'ast> AstParser<'ast> {
         let output = self.make_ssa(target.borrow());
         let kind = self.decide_loose_cast(self.type_of(input), target);
 
-        self.func_mut().push(
+        self.func_mut().push_no_debug(
             block,
             Op::Cast {
                 input,

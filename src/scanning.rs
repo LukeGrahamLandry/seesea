@@ -126,6 +126,7 @@ pub struct Token<'src> {
     pub kind: TokenType,
     pub lexeme: &'src str,
     pub index: usize,
+    pub line: usize,
 }
 
 pub struct Scanner<'src> {
@@ -134,6 +135,7 @@ pub struct Scanner<'src> {
     cache: VecDeque<Token<'src>>, // @Speed: this should be a small static array
     pub(crate) index: usize,
     pub(crate) name: String,
+    prev: Option<Token<'src>>,
 }
 
 // TODO: It feels like this should be a real iterator but I worry that the way I want to write the
@@ -148,9 +150,14 @@ impl<'src> Scanner<'src> {
             cache: VecDeque::new(),
             index: 0,
             name,
+            prev: None,
         };
         s.refresh();
         s
+    }
+
+    pub(crate) fn prev(&self) -> Token<'src> {
+        self.prev.unwrap()
     }
 
     fn refresh(&mut self) {
@@ -166,16 +173,21 @@ impl<'src> Scanner<'src> {
             .map(|token| {
                 self.index += 1;
                 let lexeme = self.lex.slice();
-                Token {
+                let mut t = Token {
                     lexeme,
                     kind: token.unwrap(),
                     index: self.index,
-                }
+                    line: 0,
+                };
+                // TODO: @Speed
+                t.line = self.line_number(t);
+                t
             })
             .unwrap_or_else(|| Token {
                 kind: TokenType::Eof,
                 lexeme: "",
                 index: self.index,
+                line: 88888,
             })
     }
 
@@ -183,6 +195,7 @@ impl<'src> Scanner<'src> {
     pub fn next(&mut self) -> Token<'src> {
         let token = self.cache.pop_front().unwrap();
         self.refresh();
+        self.prev = Some(token.clone());
         token
     }
 
@@ -223,13 +236,13 @@ impl<'src> Scanner<'src> {
         }
     }
 
-    pub fn consume(&mut self, ty: TokenType) -> Token {
+    pub fn consume(&mut self, ty: TokenType) -> Token<'src> {
         assert_eq!(self.peek(), ty);
         self.next()
     }
 
-    pub fn advance(&mut self) {
-        let _ = self.next();
+    pub fn advance(&mut self) -> Token<'src> {
+        self.next()
     }
 
     // This can be super slow because it's just used for error messages.

@@ -2,6 +2,7 @@ use crate::ast::{Expr, Stmt, UnaryOp};
 use crate::ir::flow_stack::{ControlFlowStack, Var};
 use crate::ir::{Label, Ssa};
 use std::collections::HashSet;
+use std::ops::Deref;
 
 // If I keep this, it would be a good place to put other things I want to do in a pre-pass.
 // Idk if keeping this distinction is silly. Does clang just use alloca everywhere? Looks like it in Compiler Explorer.
@@ -81,7 +82,7 @@ fn walk_expr<'ast>(
         }
         Expr::Unary { value, op } => {
             if *op == UnaryOp::AddressOf {
-                if let Expr::GetVar { name } = value.as_ref() {
+                if let Expr::GetVar { name } = value.as_ref().deref() {
                     let variable = control
                         .resolve_name(name)
                         .unwrap_or_else(|| panic!("Cannot access undeclared variable {}", name));

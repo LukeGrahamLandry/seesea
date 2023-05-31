@@ -85,7 +85,7 @@ value_t list_pop(ArrayList* list) {
 }
 
 void list_free(ArrayList* list) {
-    if (list->capacity < 1) {
+    if (list->capacity >= 1) {
         free(list->values);
     }
     free(list);

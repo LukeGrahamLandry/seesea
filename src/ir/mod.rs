@@ -146,9 +146,20 @@ impl Function {
         Label(self.blocks.len() - 1)
     }
 
-    pub fn push(&mut self, block: Label, op: Op) {
+    pub fn push(&mut self, block: Label, op: Op, line: usize) {
         self.blocks[block.0].as_mut().unwrap().push(op);
-        self.blocks_debug_lines[block.0].as_mut().unwrap().push(0);
+        self.blocks_debug_lines[block.0]
+            .as_mut()
+            .unwrap()
+            .push(line);
+    }
+
+    pub fn push_no_debug(&mut self, block: Label, op: Op) {
+        self.blocks[block.0].as_mut().unwrap().push(op);
+        self.blocks_debug_lines[block.0]
+            .as_mut()
+            .unwrap()
+            .push(9999);
     }
 
     #[must_use]

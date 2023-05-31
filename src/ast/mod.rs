@@ -1,6 +1,9 @@
+use crate::scanning::Token;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
+use std::ops::Deref;
 use std::rc::Rc;
 
 mod parse;
@@ -55,51 +58,51 @@ pub enum Stmt {
         lines: Option<Vec<usize>>,
     },
     Expression {
-        expr: Box<Expr>,
+        expr: Box<MetaExpr>,
     },
     If {
-        condition: Box<Expr>,
+        condition: Box<MetaExpr>,
         then_body: Box<Stmt>,
         else_body: Box<Stmt>,
     },
     // Does the backend need different handling for while/for/do_while or should I just transform the ast so all become DoWhile
     While {
-        condition: Box<Expr>,
+        condition: Box<MetaExpr>,
         body: Box<Stmt>,
     },
     For {
         initializer: Box<Stmt>,
-        condition: Box<Expr>,
-        increment: Box<Expr>,
+        condition: Box<MetaExpr>,
+        increment: Box<MetaExpr>,
         body: Box<Stmt>,
     },
     DeclareVar {
         name: Rc<str>,
-        value: Box<Expr>,
+        value: Box<MetaExpr>,
         kind: CType,
     },
     Return {
-        value: Option<Box<Expr>>,
+        value: Option<Box<MetaExpr>>,
     },
     Nothing,
 }
 
 pub enum Expr {
     Binary {
-        left: Box<Expr>,
-        right: Box<Expr>,
+        left: Box<MetaExpr>,
+        right: Box<MetaExpr>,
         op: BinaryOp,
     },
     Unary {
-        value: Box<Expr>,
+        value: Box<MetaExpr>,
         op: UnaryOp,
     },
     Call {
-        func: Box<Expr>,
-        args: Vec<Expr>,
+        func: Box<MetaExpr>,
+        args: Vec<MetaExpr>,
     },
     GetField {
-        object: Box<Expr>,
+        object: Box<MetaExpr>,
         name: Rc<str>,
     },
     GetVar {
@@ -110,7 +113,7 @@ pub enum Expr {
     },
     Default(CType),
     LooseCast {
-        value: Box<Expr>,
+        value: Box<MetaExpr>,
         target: CType,
     },
     SizeOfType(CType),
@@ -231,37 +234,6 @@ impl<Func: FuncRepr> EitherModule<Func> {
     }
 }
 
-impl Expr {
-    pub fn logical_not(self) -> Expr {
-        UnaryOp::Not.apply(self)
-    }
-
-    // TODO: I'm tempted to put type resolution logic here, separate from the IR generation.
-    //       It would mean I could type check the program before starting IR stuff.
-    //       But it's annoying to do an extra traversal here where the ir gen will do it again anyway.
-    //       Convoluted visitor abstraction that let's you write the passes separately but run them in one traversal?
-    //       But I think it would just be annoying to write code that way.
-}
-
-impl BinaryOp {
-    pub fn apply(self, left: Expr, right: Expr) -> Expr {
-        Expr::Binary {
-            left: Box::new(left),
-            right: Box::new(right),
-            op: self,
-        }
-    }
-}
-
-impl UnaryOp {
-    pub fn apply(self, value: Expr) -> Expr {
-        Expr::Unary {
-            value: Box::new(value),
-            op: self,
-        }
-    }
-}
-
 impl From<LiteralValue> for Expr {
     fn from(value: LiteralValue) -> Self {
         Expr::Literal { value }
@@ -339,5 +311,52 @@ pub trait FuncRepr {
 impl FuncRepr for Function {
     fn get_signature(&self) -> &FuncSignature {
         &self.signature
+    }
+}
+
+pub struct MetaExpr {
+    expr: Expr,
+    line: usize,
+}
+
+impl MetaExpr {
+    pub fn info(&self) -> usize {
+        self.line
+    }
+}
+
+impl Deref for MetaExpr {
+    type Target = Expr;
+
+    fn deref(&self) -> &Self::Target {
+        &self.expr
+    }
+}
+
+impl AsRef<Expr> for MetaExpr {
+    fn as_ref(&self) -> &Expr {
+        self.deref()
+    }
+}
+
+impl Expr {
+    pub fn debug(self, token: Token) -> MetaExpr {
+        MetaExpr {
+            expr: self,
+            line: token.line + 1,
+        }
+    }
+
+    pub fn boxed(self, token: Token) -> Box<MetaExpr> {
+        Box::new(MetaExpr {
+            expr: self,
+            line: 0,
+        })
+    }
+}
+
+impl Debug for MetaExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.expr.fmt(f)
     }
 }

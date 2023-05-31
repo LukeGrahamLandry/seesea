@@ -1,8 +1,8 @@
 //! TOKENS -> AST
 
 use crate::ast::{
-    BinaryOp, CType, Expr, FuncSignature, Function, LiteralValue, Module, Stmt, StructSignature,
-    UnaryOp, ValueType,
+    BinaryOp, CType, Expr, FuncSignature, Function, LiteralValue, MetaExpr, Module, Stmt,
+    StructSignature, UnaryOp, ValueType,
 };
 use crate::scanning::{Scanner, Token, TokenType};
 use std::collections::HashMap;
@@ -190,7 +190,7 @@ impl<'src> Parser<'src> {
         let name = self.read_ident("assert var name");
 
         let value = if self.scanner.matches(TokenType::Semicolon) {
-            Expr::Default(kind.clone())
+            Expr::Default(kind.clone()).debug(self.scanner.prev())
         } else {
             self.expect(TokenType::Equal);
             let value = self.parse_expr();
@@ -247,9 +247,10 @@ impl<'src> Parser<'src> {
         let condition = self.parse_stmt();
         let condition = match condition {
             Stmt::Expression { expr } => expr,
-            Stmt::Nothing => Box::new(Expr::Literal {
+            Stmt::Nothing => Expr::Literal {
                 value: LiteralValue::IntNumber(1),
-            }),
+            }
+            .boxed(self.scanner.prev()),
             _ => self.error("For loop condition must be expr or nothing."),
         };
 
@@ -257,6 +258,7 @@ impl<'src> Parser<'src> {
             Expr::Literal {
                 value: LiteralValue::IntNumber(0),
             }
+            .debug(self.scanner.peek_n(0))
         } else {
             self.parse_expr()
         };
@@ -272,7 +274,7 @@ impl<'src> Parser<'src> {
 
     // TODO: it parses long* x = &a; as (long * x) = &a; because statement checker doesnt know long* is a type
     /// EXPR
-    fn parse_expr(&mut self) -> Expr {
+    fn parse_expr(&mut self) -> MetaExpr {
         let left = self.parse_unary();
         let op = match self.scanner.peek() {
             TokenType::Plus => BinaryOp::Add,
@@ -287,16 +289,18 @@ impl<'src> Parser<'src> {
             _ => return left, // todo: only some tokens are valid here
         };
 
-        self.scanner.advance();
+        let op_token = self.scanner.advance();
         let right = self.parse_expr();
         Expr::Binary {
             left: Box::new(left),
             right: Box::new(right),
             op,
         }
+        .debug(op_token)
     }
 
-    fn parse_unary(&mut self) -> Expr {
+    fn parse_unary(&mut self) -> MetaExpr {
+        let token = self.scanner.peek_n(0);
         let op = match self.scanner.peek() {
             TokenType::Minus => Some(UnaryOp::Negate),
             TokenType::Star => Some(UnaryOp::Deref),
@@ -306,7 +310,7 @@ impl<'src> Parser<'src> {
                 let t = self.expect(TokenType::LeftParen);
                 if let Some(ty) = self.read_type() {
                     self.expect(TokenType::RightParen);
-                    return Expr::SizeOfType(ty);
+                    return Expr::SizeOfType(ty).debug(token);
                 }
                 self.scanner.replace(t);
                 self.scanner.replace(so);
@@ -321,12 +325,14 @@ impl<'src> Parser<'src> {
             Some(UnaryOp::Negate) => {
                 self.scanner.advance();
                 Expr::Binary {
-                    left: Box::new(Expr::Literal {
+                    left: Expr::Literal {
                         value: LiteralValue::IntNumber(0),
-                    }),
+                    }
+                    .boxed(token),
                     right: Box::new(self.parse_unary()),
                     op: BinaryOp::Subtract,
                 }
+                .debug(token)
             }
             Some(op) => {
                 self.scanner.advance();
@@ -334,13 +340,15 @@ impl<'src> Parser<'src> {
                     value: Box::new(self.parse_unary()),
                     op,
                 }
+                .debug(token)
             }
         }
     }
 
-    fn parse_primary(&mut self) -> Expr {
+    fn parse_primary(&mut self) -> MetaExpr {
         let mut expr = self.parse_basic();
         loop {
+            let token = self.scanner.peek_n(0);
             match self.scanner.peek() {
                 TokenType::LeftParen => {
                     self.expect(TokenType::LeftParen);
@@ -360,6 +368,7 @@ impl<'src> Parser<'src> {
                         func: Box::new(expr),
                         args,
                     }
+                    .debug(token)
                 }
                 TokenType::Period => {
                     self.expect(TokenType::Period);
@@ -368,16 +377,21 @@ impl<'src> Parser<'src> {
                         object: Box::new(expr),
                         name: name.into(),
                     }
+                    .debug(token)
                 }
                 TokenType::Arrow => {
                     self.expect(TokenType::Arrow);
                     return Expr::Binary {
                         left: Box::new(expr),
-                        right: Box::new(Expr::GetVar {
-                            name: self.read_ident("expect field name").into(),
-                        }),
+                        right: Box::new(
+                            Expr::GetVar {
+                                name: self.read_ident("expect field name").into(),
+                            }
+                            .debug(token),
+                        ),
                         op: BinaryOp::FollowPtr,
-                    };
+                    }
+                    .debug(token);
                 }
                 _ => return expr,
             }
@@ -385,7 +399,7 @@ impl<'src> Parser<'src> {
     }
 
     /// NAME | NUMBER | (EXPR)
-    fn parse_basic(&mut self) -> Expr {
+    fn parse_basic(&mut self) -> MetaExpr {
         let token = self.scanner.next();
         match token.kind {
             TokenType::DecimalInt(v) => Expr::Literal {
@@ -401,7 +415,7 @@ impl<'src> Parser<'src> {
                 None => {
                     let expr = self.parse_expr();
                     self.expect(TokenType::RightParen);
-                    expr
+                    expr.expr
                 }
                 Some(target) => {
                     self.expect(TokenType::RightParen);
@@ -419,6 +433,7 @@ impl<'src> Parser<'src> {
             },
             _ => self.err("Expected primary expr (number or var access)", token),
         }
+        .debug(token)
     }
 
     /// TYPE
