@@ -1,4 +1,6 @@
-use crate::ast::{BinaryOp, CType, EitherModule, FuncRepr, FuncSignature, LiteralValue, StructSignature};
+use crate::ast::{
+    BinaryOp, CType, EitherModule, FuncRepr, FuncSignature, LiteralValue, StructSignature,
+};
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
@@ -16,7 +18,7 @@ pub struct Ssa(usize);
 
 /// Identifier of a basic block that you can jump to.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
-pub struct Label(usize); // sequential indexes into the blocks array
+pub struct Label(pub usize); // sequential indexes into the blocks array
 
 // @Memory u16 would be plenty for those ^ if i care about how big this enum is
 #[derive(Clone, PartialEq)]
@@ -89,6 +91,7 @@ pub enum Op {
 #[derive(Clone)]
 pub struct Function {
     pub blocks: Vec<Option<Vec<Op>>>, // in the final codegen these will flatten out and labels will become offsets
+    pub blocks_debug_lines: Vec<Option<Vec<usize>>>, // in the final codegen these will flatten out and labels will become offsets
     var_counter: usize,
     pub signature: FuncSignature,
     pub arg_registers: Vec<Ssa>,
@@ -127,6 +130,7 @@ impl Function {
     pub fn new(sig: FuncSignature) -> Self {
         Function {
             blocks: vec![],
+            blocks_debug_lines: vec![],
             var_counter: 0,
             signature: sig,
             arg_registers: vec![],
@@ -138,11 +142,13 @@ impl Function {
     #[must_use]
     pub fn new_block(&mut self) -> Label {
         self.blocks.push(Some(vec![]));
+        self.blocks_debug_lines.push(Some(vec![]));
         Label(self.blocks.len() - 1)
     }
 
     pub fn push(&mut self, block: Label, op: Op) {
         self.blocks[block.0].as_mut().unwrap().push(op);
+        self.blocks_debug_lines[block.0].as_mut().unwrap().push(0);
     }
 
     #[must_use]

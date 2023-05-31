@@ -631,11 +631,11 @@ fn array_list() {
     // language=c
     let src = "
 long main(){
-    return 1;
+    return test();
 }
     ";
     let src = &[include_str!("../tests/array_list.c"), src].join("");
-    no_args_run_main(src, 1);
+    no_args_run_main(src, 0);
 }
 
 fn no_args_run_main(src: &str, expected: u64) {
@@ -673,7 +673,6 @@ where
     LlvmFuncGen::new(&module).compile_all(ir);
     let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
     action(func);
-    // module.verify().unwrap();
 }
 
 #[allow(unused)]

@@ -8,10 +8,12 @@ use crate::ir;
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::macros::vm::{do_bin_cmp, do_bin_math};
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 use std::mem;
 use std::mem::size_of;
 use std::ops::Add;
+use std::ptr::write;
 use std::rc::Rc;
 
 // TODO: @Speed group allocations and reuse memory (especially for the stack + registers)
@@ -33,6 +35,7 @@ struct StackFrame<'ir> {
     ip: usize,
     return_value_register: Option<Ssa>,
     allocations: Vec<Ptr>,
+    entry_location: Location,
 }
 
 pub enum VmResult {
@@ -54,7 +57,13 @@ struct Location {
     tick: usize,
     line: usize,
     instruction: usize,
+    block: Label,
     func_name: Rc<str>,
+}
+
+#[derive(PartialEq, Clone)]
+struct StackTrace {
+    data: Vec<Location>,
 }
 
 impl<'ir> Vm<'ir> {
@@ -91,6 +100,13 @@ impl<'ir> Vm<'ir> {
             ip: 0,
             return_value_register: None,
             allocations: vec![],
+            entry_location: Location {
+                tick: 0,
+                line: 0,
+                instruction: 0,
+                block: Label(0),
+                func_name: "Program_Start".into(),
+            },
         };
         vm.call_stack.push(frame);
         vm.init_params(args.iter().copied());
@@ -180,14 +196,15 @@ impl<'ir> Vm<'ir> {
                 let result = value.map(|v| self.get(v));
                 println!("--- ret {:?}", result);
                 for addr in self.get_frame().allocations.clone() {
-                    self.heap.free(addr, self.now());
+                    self.heap.free(addr, self.trace());
                 }
                 self.call_stack.pop().unwrap();
                 return if self.call_stack.is_empty() {
                     VmResult::Done(result)
                 } else {
-                    let ssa = self.get_frame().return_value_register.unwrap();
-                    self.set(ssa, result.unwrap());
+                    if let Some(ssa) = self.get_frame().return_value_register {
+                        self.set(ssa, result.unwrap());
+                    }
                     VmResult::Continue
                 };
             }
@@ -196,10 +213,11 @@ impl<'ir> Vm<'ir> {
                 args,
                 return_value_dest,
             } => {
-                let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
+                let entry_location = self.here();
                 let func = match self.module.get_func(&func_name) {
                     Some(f) => f,
                     None => {
+                        let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
                         let result = self.call_libc_for_tests(&func_name, &arg_values);
                         if let Some(dest) = return_value_dest {
                             self.set(dest, result);
@@ -208,6 +226,8 @@ impl<'ir> Vm<'ir> {
                         return VmResult::Continue;
                     }
                 };
+                assert_eq!(args.len(), func.signature.param_types.len());
+                let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
 
                 self.mut_frame().return_value_register = return_value_dest;
                 self.mut_frame().ip += 1;
@@ -220,6 +240,7 @@ impl<'ir> Vm<'ir> {
                     ip: 0,
                     return_value_register: None,
                     allocations: vec![],
+                    entry_location,
                 };
                 self.call_stack.push(frame);
                 self.init_params(arg_values.into_iter());
@@ -227,7 +248,7 @@ impl<'ir> Vm<'ir> {
             }
             Op::StackAlloc { dest, ty, count } => {
                 let size = self.module.size_of(&ty) * count;
-                let addr = self.heap.malloc(size, self.now());
+                let addr = self.heap.malloc(size, self.trace());
                 self.mut_frame().allocations.push(addr);
                 self.mut_frame()
                     .registers
@@ -384,7 +405,11 @@ impl<'ir> Vm<'ir> {
     }
 
     pub fn get(&self, register: Ssa) -> VmValue {
-        *self.get_frame().registers.get(&register).unwrap()
+        *self
+            .get_frame()
+            .registers
+            .get(&register)
+            .unwrap_or_else(|| panic!("Failed to get register {:?}", register))
     }
 
     fn get_frame(&self) -> &StackFrame<'ir> {
@@ -409,13 +434,24 @@ impl<'ir> Vm<'ir> {
             "malloc" => {
                 assert_eq!(args.len(), 1);
                 let size = args[0].to_int() as usize;
-                let ptr = self.heap.malloc(size, self.now());
+                let ptr = self.heap.malloc(size, self.trace());
                 VmValue::Pointer(ptr)
             }
             "free" => {
                 assert_eq!(args.len(), 1);
                 let ptr = args[0].to_ptr();
-                self.heap.free(ptr, self.now());
+                self.heap.free(ptr, self.trace());
+                VmValue::Uninit
+            }
+            "memcpy" => {
+                assert_eq!(args.len(), 3);
+                let dest = args[0].to_ptr();
+                let src = args[1].to_ptr();
+                let size = args[2].to_int();
+                VmValue::Uninit
+            }
+            "print_vm_stack_trace" => {
+                println!("{:?}", self.trace());
                 VmValue::Uninit
             }
             _ => {
@@ -424,11 +460,26 @@ impl<'ir> Vm<'ir> {
         }
     }
 
-    fn now(&self) -> Location {
+    fn trace(&self) -> StackTrace {
+        let mut data = vec![];
+
+        for frame in &self.call_stack {
+            data.push(frame.entry_location.clone());
+        }
+        data.push(self.here());
+
+        StackTrace { data }
+    }
+
+    fn here(&self) -> Location {
+        let lines = self.get_frame().function.blocks_debug_lines[self.get_frame().block.index()]
+            .as_ref()
+            .unwrap();
         Location {
             tick: self.tick,
-            line: 0,
+            line: lines[self.get_frame().ip],
             instruction: self.get_frame().ip,
+            block: self.get_frame().block,
             func_name: self.get_frame().function.signature.name.clone(),
         }
     }
@@ -559,14 +610,16 @@ struct DebugAlloc {
 struct Allocation {
     data: Box<[u8]>,
     id: u32,
-    alloc_at: Location,
-    free_at: Option<Location>,
+    alloc_at: StackTrace,
+    free_at: Option<StackTrace>,
 }
 
 impl Allocation {
     pub(crate) fn debug(&self) -> String {
         format!(
-            "\n    Allocated: [{:?}]. \n    Dropped: [{}].",
+            "ID: {}. Size: {} bytes.\n    Allocated: {{\n{:?}}}. \n    Dropped: {{\n{}}}.",
+            self.id,
+            self.data.len(),
             self.alloc_at,
             match &self.free_at {
                 None => {
@@ -578,6 +631,22 @@ impl Allocation {
     }
 }
 
+impl Debug for StackTrace {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        for (i, data) in self.data.iter().enumerate() {
+            for _ in 0..i {
+                write!(f, "  ")?;
+            }
+            writeln!(
+                f,
+                "{} at [line={}, {:?}, ip={}, tick={}]",
+                data.func_name, data.line, data.block, data.instruction, data.tick
+            )?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Hash, Eq, PartialEq, Debug, Clone, Copy)]
 pub struct Ptr {
     id: u32,
@@ -585,7 +654,7 @@ pub struct Ptr {
 }
 
 impl DebugAlloc {
-    fn malloc(&mut self, size: usize, alloc_at: Location) -> Ptr {
+    fn malloc(&mut self, size: usize, alloc_at: StackTrace) -> Ptr {
         assert!(size < u32::MAX as usize);
         self.count += 1;
         self.allocations.insert(
@@ -603,9 +672,14 @@ impl DebugAlloc {
         }
     }
 
-    fn free(&mut self, addr: Ptr, free_at: Location) {
+    fn free(&mut self, addr: Ptr, free_at: StackTrace) {
         assert_eq!(addr.offset, 0);
-        let allocation = self.allocations.get_mut(&addr.id).unwrap();
+        let allocation = self.allocations.get_mut(&addr.id).unwrap_or_else(|| {
+            panic!(
+                "Freed pointer that wasn't allocated {:?} {:?}",
+                addr, free_at
+            )
+        });
         assert!(
             allocation.free_at.is_none(),
             "Double free {}",
