@@ -611,8 +611,9 @@ long main(){
 fn typedef() {
     // language=c
     let src = "
+typedef long i64;
 typedef struct Thing {
-    long a;
+    i64 a;
     long b;
 } Thing;
 

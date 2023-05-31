@@ -1,4 +1,5 @@
 use std::borrow::Borrow;
+use std::collections::HashMap;
 use std::mem::size_of;
 use std::rc::Rc;
 
@@ -11,6 +12,7 @@ pub struct EitherModule<Func: FuncRepr> {
     pub structs: Vec<StructSignature>,
     pub name: String,
     pub forward_declarations: Vec<FuncSignature>,
+    pub type_defs: HashMap<Rc<str>, CType>,
 }
 
 pub type Module = EitherModule<Function>;
@@ -169,6 +171,7 @@ impl<Func: FuncRepr> EitherModule<Func> {
             structs: vec![],
             name,
             forward_declarations: vec![],
+            type_defs: Default::default(),
         }
     }
 

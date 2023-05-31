@@ -6,6 +6,7 @@ use crate::ast::{
 };
 use crate::scanning::{Scanner, Token, TokenType};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {
@@ -28,13 +29,36 @@ impl<'src> Parser<'src> {
     fn run(&mut self) {
         while self.scanner.has_next() {
             match self.scanner.peek() {
-                TokenType::Struct => self.parse_struct_def(),
+                TokenType::Struct => {
+                    self.parse_struct_def();
+                    self.expect(TokenType::Semicolon);
+                }
+                TokenType::TypeDef => self.parse_type_def(),
                 _ => self.parse_function(),
             }
         }
     }
 
-    fn parse_struct_def(&mut self) {
+    fn parse_type_def(&mut self) {
+        self.expect(TokenType::TypeDef);
+
+        let is_def = self.scanner.peek_n(0).kind == TokenType::Struct
+            && self.scanner.peek_n(1).kind == TokenType::Identifier
+            && self.scanner.peek_n(2).kind == TokenType::LeftBrace;
+
+        let ty = if !is_def {
+            self.read_type().unwrap()
+        } else {
+            let name = self.parse_struct_def();
+            CType::direct(ValueType::Struct(name))
+        };
+        let alias = self.read_ident("Expected alias after 'typedef <type>'");
+        self.program.type_defs.insert(alias.into(), ty);
+        self.expect(TokenType::Semicolon);
+    }
+
+    /// struct IDENT { TYPE IDENT }
+    fn parse_struct_def(&mut self) -> Rc<str> {
         self.expect(TokenType::Struct);
         let name = self.read_ident("Expected name in struct definition.");
         self.expect(TokenType::LeftBrace);
@@ -47,10 +71,13 @@ impl<'src> Parser<'src> {
             assert!(!fields.iter().any(|f| f.0 == name));
             fields.push((name, ty));
         }
-        let name = name.into();
-        self.program.structs.push(StructSignature { name, fields });
+        let name: Rc<str> = name.into();
+        self.program.structs.push(StructSignature {
+            name: name.clone(),
+            fields,
+        });
         self.expect(TokenType::RightBrace);
-        self.expect(TokenType::Semicolon);
+        name
     }
 
     // TODO: separate the signature cause i need to support forward declarations
@@ -358,18 +385,23 @@ impl<'src> Parser<'src> {
                 }
             }
             TokenType::Identifier => {
-                let ty = match token.lexeme {
-                    "long" => ValueType::U64,
-                    "int" => ValueType::U32,
-                    "char" => ValueType::U8,
-                    "double" => ValueType::F64,
-                    "float" => ValueType::F32,
-                    "void" => ValueType::Void,
-                    _ => return None,
-                };
+                if let Some(ty) = self.program.type_defs.get(token.lexeme).cloned() {
+                    self.expect(TokenType::Identifier);
+                    ty
+                } else {
+                    let ty = match token.lexeme {
+                        "long" => ValueType::U64,
+                        "int" => ValueType::U32,
+                        "char" => ValueType::U8,
+                        "double" => ValueType::F64,
+                        "float" => ValueType::F32,
+                        "void" => ValueType::Void,
+                        _ => return None,
+                    };
 
-                self.expect(TokenType::Identifier);
-                CType { ty, depth: 0 }
+                    self.expect(TokenType::Identifier);
+                    CType { ty, depth: 0 }
+                }
             }
             _ => return None,
         };
