@@ -4,6 +4,7 @@ pub mod ir;
 pub mod scanning;
 
 mod macros;
+mod resolve;
 #[cfg(test)]
 mod tests;
 mod vm;

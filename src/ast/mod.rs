@@ -9,7 +9,7 @@ use std::rc::Rc;
 mod parse;
 mod print;
 
-pub struct EitherModule<Func: FuncRepr> {
+pub struct AnyModule<Func: FuncRepr> {
     // Order matters (for not needing forward declarations)
     pub functions: Vec<Func>,
     pub structs: Vec<StructSignature>,
@@ -18,10 +18,11 @@ pub struct EitherModule<Func: FuncRepr> {
     pub type_defs: HashMap<Rc<str>, CType>,
 }
 
-pub type Module = EitherModule<Function>;
+pub type Module = AnyModule<Function>;
+pub type Function = AnyFunction<MetaExpr>;
 
-pub struct Function {
-    pub body: Stmt,
+pub struct AnyFunction<Expr> {
+    pub body: AnyStmt<Expr>,
     pub signature: FuncSignature,
 }
 
@@ -51,43 +52,45 @@ impl StructSignature {
     }
 }
 
+// TODO: this is prep for having a different "resolved" form of the ast that goes into the ir parser with exact types.
+pub type Stmt = AnyStmt<MetaExpr>;
+
 // @Speed the expressions here dont need to be boxed
-pub enum Stmt {
+pub enum AnyStmt<Expr> {
     Block {
-        body: Vec<Stmt>,
-        lines: Option<Vec<usize>>,
+        body: Vec<AnyStmt<Expr>>,
     },
     Expression {
-        expr: Box<MetaExpr>,
+        expr: Box<Expr>,
     },
     If {
-        condition: Box<MetaExpr>,
-        then_body: Box<Stmt>,
-        else_body: Box<Stmt>,
+        condition: Box<Expr>,
+        then_body: Box<AnyStmt<Expr>>,
+        else_body: Box<AnyStmt<Expr>>,
     },
     // Does the backend need different handling for while/for/do_while or should I just transform the ast so all become DoWhile
     While {
-        condition: Box<MetaExpr>,
-        body: Box<Stmt>,
+        condition: Box<Expr>,
+        body: Box<AnyStmt<Expr>>,
     },
     For {
-        initializer: Box<Stmt>,
-        condition: Box<MetaExpr>,
-        increment: Box<MetaExpr>,
-        body: Box<Stmt>,
+        initializer: Box<AnyStmt<Expr>>,
+        condition: Box<Expr>,
+        increment: Box<Expr>,
+        body: Box<AnyStmt<Expr>>,
     },
     DeclareVar {
         name: Rc<str>,
-        value: Box<MetaExpr>,
+        value: Box<Expr>,
         kind: CType,
     },
     Return {
-        value: Option<Box<MetaExpr>>,
+        value: Option<Box<Expr>>,
     },
     Nothing,
 }
 
-pub enum Expr {
+pub enum RawExpr {
     Binary {
         left: Box<MetaExpr>,
         right: Box<MetaExpr>,
@@ -143,6 +146,7 @@ pub enum ValueType {
     U32,
     F64,
     F32,
+    // should probably be an Rc<StructSignature>
     Struct(Rc<str>),
     Void,
 }
@@ -153,7 +157,7 @@ pub struct CType {
     pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
 }
 
-impl<Func: FuncRepr> EitherModule<Func> {
+impl<Func: FuncRepr> AnyModule<Func> {
     pub fn new(name: String) -> Self {
         Self {
             functions: vec![],
@@ -282,7 +286,7 @@ pub trait FuncRepr {
     fn get_signature(&self) -> &FuncSignature;
 }
 
-impl FuncRepr for Function {
+impl<T> FuncRepr for AnyFunction<T> {
     fn get_signature(&self) -> &FuncSignature {
         &self.signature
     }
@@ -290,7 +294,7 @@ impl FuncRepr for Function {
 
 pub type OpDebugInfo = i64;
 pub struct MetaExpr {
-    expr: Expr,
+    pub expr: RawExpr,
     line: i64,
 }
 
@@ -300,7 +304,7 @@ impl MetaExpr {
     }
 }
 
-impl Expr {
+impl RawExpr {
     pub fn debug(self, token: Token) -> MetaExpr {
         MetaExpr {
             expr: self,
@@ -317,21 +321,21 @@ impl Expr {
 }
 
 impl Deref for MetaExpr {
-    type Target = Expr;
+    type Target = RawExpr;
 
     fn deref(&self) -> &Self::Target {
         &self.expr
     }
 }
 
-impl AsRef<Expr> for MetaExpr {
-    fn as_ref(&self) -> &Expr {
+impl AsRef<RawExpr> for MetaExpr {
+    fn as_ref(&self) -> &RawExpr {
         self.deref()
     }
 }
 
 impl Debug for MetaExpr {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         self.expr.fmt(f)
     }
 }

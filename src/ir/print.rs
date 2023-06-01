@@ -55,7 +55,7 @@ impl Function {
                 bb,
                 self.name(br)
             ),
-            Op::Return { value } => match value {
+            Op::Return(value) => match value {
                 None => "return;".to_string(),
                 Some(v) => format!("return {};", self.name_ty(v)),
             },

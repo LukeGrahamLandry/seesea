@@ -157,7 +157,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 self.set(dest, val);
             }
             Op::Binary { dest, a, b, kind } => self.emit_binary_op(dest, a, b, *kind),
-            Op::Return { value } => {
+            Op::Return(value) => {
                 self.emit_return(value);
             }
             Op::AlwaysJump(target) => {

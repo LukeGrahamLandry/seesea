@@ -14,7 +14,7 @@ pub mod llvm {
                     $self.builder.$cmp_func($cmp_pred::UGE, a, b, "").into()
                 }
                 BinaryOp::LessOrEqual => $self.builder.$cmp_func($cmp_pred::ULE, a, b, "").into(),
-                BinaryOp::Modulo | BinaryOp::Equal => todo!(),
+                BinaryOp::Modulo | BinaryOp::Equality => todo!(),
             };
             result
         }};

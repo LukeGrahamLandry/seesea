@@ -186,7 +186,7 @@ impl<'ir> Vm<'ir> {
                     panic!("Invalid Phi prev block.");
                 }
             }
-            Op::Return { value } => {
+            Op::Return(value) => {
                 let result = value.map(|v| self.get(v));
                 println!("--- ret {:?}", result);
                 for addr in self.get_frame().allocations.clone() {
@@ -362,6 +362,7 @@ impl<'ir> Vm<'ir> {
                         let val = self.get(input).to_int();
                         self.set(output, VmValue::F64(val as f64));
                     }
+                    // TODO: type safe void pointers to structs
                     CastType::IntToPtr | CastType::PtrToInt | CastType::Bits => {
                         let bytes = self.get(input).to_bytes(in_ty, self.module);
                         let result = VmValue::from_bytes(&bytes, out_ty, self.module);

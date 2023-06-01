@@ -1,4 +1,4 @@
-use crate::ast::{CType, Expr, FuncSignature, Function, Module, Stmt};
+use crate::ast::{AnyFunction, AnyStmt, CType, FuncSignature, Function, Module, RawExpr, Stmt};
 use std::fmt::{Debug, Formatter};
 
 impl Debug for Stmt {
@@ -7,7 +7,7 @@ impl Debug for Stmt {
     }
 }
 
-impl Debug for Expr {
+impl Debug for RawExpr {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         self.print(0, f)
     }
@@ -76,7 +76,7 @@ impl Stmt {
     }
 }
 
-impl Expr {
+impl RawExpr {
     fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result {
         for _ in 0..depth {
             f.write_str("    ")?;
@@ -84,16 +84,16 @@ impl Expr {
         write!(f, "[{}] ", depth)?;
 
         match self {
-            Expr::Binary { left, op, right } => {
+            RawExpr::Binary { left, op, right } => {
                 writeln!(f, "{:?}", op)?;
                 left.print(depth + 1, f)?;
                 right.print(depth + 1, f)
             }
-            Expr::Unary(op, value) => {
+            RawExpr::Unary(op, value) => {
                 writeln!(f, "{:?}", op)?;
                 value.print(depth + 1, f)
             }
-            Expr::Call { func, args, .. } => {
+            RawExpr::Call { func, args, .. } => {
                 writeln!(f, "Function Call")?;
                 func.print(depth + 1, f)?;
                 for arg in args {
@@ -102,31 +102,31 @@ impl Expr {
 
                 Ok(())
             }
-            Expr::GetVar(name) => {
+            RawExpr::GetVar(name) => {
                 writeln!(f, "'{}'", name)
             }
-            Expr::Literal(value) => {
+            RawExpr::Literal(value) => {
                 writeln!(f, "{:?}", value)
             }
-            Expr::Default(kind) => writeln!(f, "{:?}::default()", kind),
-            Expr::GetField(object, name) => {
+            RawExpr::Default(kind) => writeln!(f, "{:?}::default()", kind),
+            RawExpr::GetField(object, name) => {
                 writeln!(f, "Get Field {}", name)?;
                 object.print(depth + 1, f)
             }
-            Expr::LooseCast(value, target) => {
+            RawExpr::LooseCast(value, target) => {
                 writeln!(f, "Cast to {:?}", target)?;
                 value.print(depth + 1, f)
             }
-            Expr::SizeOfType(ty) => writeln!(f, "sizeof {:?}", ty),
-            Expr::DerefPtr(value) => {
+            RawExpr::SizeOfType(ty) => writeln!(f, "sizeof {:?}", ty),
+            RawExpr::DerefPtr(value) => {
                 writeln!(f, "Dereference:")?;
                 value.print(depth + 1, f)
             }
-            Expr::AddressOf(value) => {
+            RawExpr::AddressOf(value) => {
                 writeln!(f, "AddressOf:")?;
                 value.print(depth + 1, f)
             }
-            Expr::Assign(left, right) => {
+            RawExpr::Assign(left, right) => {
                 writeln!(f, "Assign:")?;
                 left.print(depth + 1, f)?;
                 right.print(depth + 1, f)

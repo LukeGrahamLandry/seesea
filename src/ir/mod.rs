@@ -1,20 +1,18 @@
 use crate::ast::{
-    BinaryOp, CType, EitherModule, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo,
-    StructSignature,
+    BinaryOp, CType, AnyModule, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo,
 };
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 use std::rc::Rc;
 
-mod allocs;
-mod flow_stack;
+pub mod flow_stack;
 mod parse;
 mod print;
 
 /// Identifier of a static single-assignment register.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct Ssa(usize);
+pub struct Ssa(pub usize);
 
 /// Identifier of a basic block that you can jump to.
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -58,9 +56,7 @@ pub enum Op {
         a: (Label, Ssa),
         b: (Label, Ssa),
     },
-    Return {
-        value: Option<Ssa>,
-    },
+    Return(Option<Ssa>),
 
     /// Allocate enough space on the stack to hold a specific type and put a pointer to it in a register.
     StackAlloc {
@@ -99,7 +95,7 @@ pub struct Function {
     pub register_types: HashMap<Ssa, CType>,
 }
 
-pub type Module = EitherModule<Function>;
+pub type Module = AnyModule<Function>;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum CastType {

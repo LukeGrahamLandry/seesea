@@ -1,4 +1,4 @@
-use crate::ast::{Expr, Stmt, UnaryOp};
+use crate::ast::{RawExpr, Stmt};
 use crate::ir::flow_stack::{ControlFlowStack, Var};
 use crate::ir::{Label, Ssa};
 use std::collections::HashSet;
@@ -72,36 +72,36 @@ fn walk_stmt<'ast>(
 
 fn walk_expr<'ast>(
     control: &ControlFlowStack<'ast>,
-    expr: &'ast Expr,
+    expr: &'ast RawExpr,
     results: &mut HashSet<Var<'ast>>,
 ) {
     match expr {
-        Expr::Binary { left, right, .. } => {
+        RawExpr::Binary { left, right, .. } => {
             walk_expr(control, left, results);
             walk_expr(control, right, results);
         }
-        Expr::Unary(op, value) => {
+        RawExpr::Unary(_, value) => {
             walk_expr(control, value, results);
         }
-        Expr::Call { func, args } => {
+        RawExpr::Call { func, args } => {
             walk_expr(control, func, results);
             for arg in args {
                 walk_expr(control, arg, results);
             }
         }
-        Expr::GetVar { .. } | Expr::Literal { .. } | Expr::Default(_) => {}
-        Expr::GetField(object, _) => {
+        RawExpr::GetVar { .. } | RawExpr::Literal { .. } | RawExpr::Default(_) => {}
+        RawExpr::GetField(object, _) => {
             walk_expr(control, object, results);
         }
-        Expr::LooseCast(value, _) => {
+        RawExpr::LooseCast(value, _) => {
             walk_expr(control, value, results);
         }
-        Expr::SizeOfType(_) => {}
-        Expr::DerefPtr(value) => {
+        RawExpr::SizeOfType(_) => {}
+        RawExpr::DerefPtr(value) => {
             walk_expr(control, value, results);
         }
-        Expr::AddressOf(value) => {
-            if let Expr::GetVar(name) = value.as_ref().deref() {
+        RawExpr::AddressOf(value) => {
+            if let RawExpr::GetVar(name) = value.as_ref().deref() {
                 let variable = control
                     .resolve_name(name)
                     .unwrap_or_else(|| panic!("Cannot access undeclared variable {}", name));
@@ -109,7 +109,7 @@ fn walk_expr<'ast>(
             }
             // TODO: make sure address of more complex expressions doesn't need more work
         }
-        Expr::Assign(place, value) => {
+        RawExpr::Assign(place, value) => {
             walk_expr(control, place, results);
             walk_expr(control, value, results);
         }

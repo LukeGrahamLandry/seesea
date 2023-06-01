@@ -217,7 +217,7 @@ pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
             swap(&mut a.1, changes);
             swap(&mut b.1, changes);
         }
-        Op::Return { value } => {
+        Op::Return(value) => {
             if let Some(value) = value {
                 swap(value, changes);
             }
