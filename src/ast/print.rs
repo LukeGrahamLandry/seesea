@@ -89,7 +89,7 @@ impl Expr {
                 left.print(depth + 1, f)?;
                 right.print(depth + 1, f)
             }
-            Expr::Unary { value, op } => {
+            Expr::Unary(op, value) => {
                 writeln!(f, "{:?}", op)?;
                 value.print(depth + 1, f)
             }
@@ -102,22 +102,35 @@ impl Expr {
 
                 Ok(())
             }
-            Expr::GetVar { name } => {
+            Expr::GetVar(name) => {
                 writeln!(f, "'{}'", name)
             }
-            Expr::Literal { value } => {
+            Expr::Literal(value) => {
                 writeln!(f, "{:?}", value)
             }
             Expr::Default(kind) => writeln!(f, "{:?}::default()", kind),
-            Expr::GetField { object, name } => {
+            Expr::GetField(object, name) => {
                 writeln!(f, "Get Field {}", name)?;
                 object.print(depth + 1, f)
             }
-            Expr::LooseCast { value, target } => {
+            Expr::LooseCast(value, target) => {
                 writeln!(f, "Cast to {:?}", target)?;
                 value.print(depth + 1, f)
             }
             Expr::SizeOfType(ty) => writeln!(f, "sizeof {:?}", ty),
+            Expr::DerefPtr(value) => {
+                writeln!(f, "Dereference:")?;
+                value.print(depth + 1, f)
+            }
+            Expr::AddressOf(value) => {
+                writeln!(f, "AddressOf:")?;
+                value.print(depth + 1, f)
+            }
+            Expr::Assign(left, right) => {
+                writeln!(f, "Assign:")?;
+                left.print(depth + 1, f)?;
+                right.print(depth + 1, f)
+            }
         }
     }
 }

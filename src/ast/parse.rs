@@ -2,10 +2,9 @@
 
 use crate::ast::{
     BinaryOp, CType, Expr, FuncSignature, Function, LiteralValue, MetaExpr, Module, Stmt,
-    StructSignature, UnaryOp, ValueType,
+    StructSignature, ValueType,
 };
 use crate::scanning::{Scanner, Token, TokenType};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 impl<'src> From<Scanner<'src>> for Module {
@@ -81,7 +80,6 @@ impl<'src> Parser<'src> {
         name
     }
 
-    // TODO: separate the signature cause i need to support forward declarations
     /// TYPE NAME() STMT
     fn parse_function(&mut self) {
         let returns = self.read_type().expect("expected function declaration");
@@ -247,18 +245,12 @@ impl<'src> Parser<'src> {
         let condition = self.parse_stmt();
         let condition = match condition {
             Stmt::Expression { expr } => expr,
-            Stmt::Nothing => Expr::Literal {
-                value: LiteralValue::IntNumber(1),
-            }
-            .boxed(self.scanner.prev()),
+            Stmt::Nothing => Expr::Literal(LiteralValue::IntNumber(1)).boxed(self.scanner.prev()),
             _ => self.error("For loop condition must be expr or nothing."),
         };
 
         let increment = if self.scanner.peek() == TokenType::RightParen {
-            Expr::Literal {
-                value: LiteralValue::IntNumber(0),
-            }
-            .debug(self.scanner.peek_n(0))
+            Expr::Literal(LiteralValue::IntNumber(0)).debug(self.scanner.peek_n(0))
         } else {
             self.parse_expr()
         };
@@ -280,7 +272,11 @@ impl<'src> Parser<'src> {
             TokenType::Plus => BinaryOp::Add,
             TokenType::Greater => BinaryOp::GreaterThan,
             TokenType::Less => BinaryOp::LessThan,
-            TokenType::Equal => BinaryOp::Assign,
+            TokenType::Equal => {
+                let op_token = self.scanner.advance();
+                let right = self.parse_expr();
+                return Expr::Assign(Box::new(left), Box::new(right)).debug(op_token);
+            }
             TokenType::Minus => BinaryOp::Subtract,
             TokenType::Star => BinaryOp::Multiply,
             TokenType::Slash => BinaryOp::Divide,
@@ -301,47 +297,37 @@ impl<'src> Parser<'src> {
 
     fn parse_unary(&mut self) -> MetaExpr {
         let token = self.scanner.peek_n(0);
-        let op = match self.scanner.peek() {
-            TokenType::Minus => Some(UnaryOp::Negate),
-            TokenType::Star => Some(UnaryOp::Deref),
-            TokenType::Ampersand => Some(UnaryOp::AddressOf),
-            TokenType::SizeOf => {
-                let so = self.expect(TokenType::SizeOf);
-                let t = self.expect(TokenType::LeftParen);
-                if let Some(ty) = self.read_type() {
-                    self.expect(TokenType::RightParen);
-                    return Expr::SizeOfType(ty).debug(token);
-                }
-                self.scanner.replace(t);
-                self.scanner.replace(so);
-
-                Some(UnaryOp::NoEvalSizeOf)
-            }
-            _ => None,
-        };
-
-        match op {
-            None => self.parse_primary(),
-            Some(UnaryOp::Negate) => {
+        match self.scanner.peek() {
+            TokenType::Minus => {
                 self.scanner.advance();
                 Expr::Binary {
-                    left: Expr::Literal {
-                        value: LiteralValue::IntNumber(0),
-                    }
-                    .boxed(token),
+                    left: Expr::Literal(LiteralValue::IntNumber(0)).boxed(token),
                     right: Box::new(self.parse_unary()),
                     op: BinaryOp::Subtract,
                 }
                 .debug(token)
             }
-            Some(op) => {
+            TokenType::Star => {
                 self.scanner.advance();
-                Expr::Unary {
-                    value: Box::new(self.parse_unary()),
-                    op,
-                }
-                .debug(token)
+                Expr::DerefPtr(Box::new(self.parse_unary())).debug(token)
             }
+            TokenType::Ampersand => {
+                self.scanner.advance();
+                Expr::AddressOf(Box::new(self.parse_unary())).debug(token)
+            }
+            TokenType::SizeOf => {
+                let so = self.expect(TokenType::SizeOf);
+                let t = self.expect(TokenType::LeftParen);
+                if let Some(ty) = self.read_type() {
+                    self.expect(TokenType::RightParen);
+                    Expr::SizeOfType(ty).debug(token)
+                } else {
+                    self.scanner.replace(t);
+                    self.scanner.replace(so);
+                    todo!()
+                }
+            }
+            _ => self.parse_primary(),
         }
     }
 
@@ -373,25 +359,13 @@ impl<'src> Parser<'src> {
                 TokenType::Period => {
                     self.expect(TokenType::Period);
                     let name = self.read_ident("Expected field name.");
-                    expr = Expr::GetField {
-                        object: Box::new(expr),
-                        name: name.into(),
-                    }
-                    .debug(token)
+                    expr = Expr::GetField(Box::new(expr), name.into()).debug(token)
                 }
                 TokenType::Arrow => {
                     self.expect(TokenType::Arrow);
-                    return Expr::Binary {
-                        left: Box::new(expr),
-                        right: Box::new(
-                            Expr::GetVar {
-                                name: self.read_ident("expect field name").into(),
-                            }
-                            .debug(token),
-                        ),
-                        op: BinaryOp::FollowPtr,
-                    }
-                    .debug(token);
+                    let name = self.scanner.consume(TokenType::Identifier);
+                    expr = Expr::DerefPtr(Box::new(expr)).debug(token);
+                    expr = Expr::GetField(Box::new(expr), name.lexeme.into()).debug(name);
                 }
                 _ => return expr,
             }
@@ -402,15 +376,9 @@ impl<'src> Parser<'src> {
     fn parse_basic(&mut self) -> MetaExpr {
         let token = self.scanner.next();
         match token.kind {
-            TokenType::DecimalInt(v) => Expr::Literal {
-                value: LiteralValue::IntNumber(v),
-            },
-            TokenType::DecimalFloat(v) => Expr::Literal {
-                value: LiteralValue::FloatNumber(v),
-            },
-            TokenType::Identifier => Expr::GetVar {
-                name: token.lexeme.into(),
-            },
+            TokenType::DecimalInt(v) => Expr::Literal(LiteralValue::IntNumber(v)),
+            TokenType::DecimalFloat(v) => Expr::Literal(LiteralValue::FloatNumber(v)),
+            TokenType::Identifier => Expr::GetVar(token.lexeme.into()),
             TokenType::LeftParen => match self.read_type() {
                 None => {
                     let expr = self.parse_expr();
@@ -420,17 +388,12 @@ impl<'src> Parser<'src> {
                 Some(target) => {
                     self.expect(TokenType::RightParen);
                     let expr = self.parse_expr();
-                    Expr::LooseCast {
-                        value: Box::new(expr),
-                        target,
-                    }
+                    Expr::LooseCast(Box::new(expr), target)
                 }
             },
-            TokenType::StringLiteral => Expr::Literal {
-                value: LiteralValue::StringBytes(
-                    token.lexeme[1..(token.lexeme.len() - 1)].to_string().into(),
-                ),
-            },
+            TokenType::StringLiteral => Expr::Literal(LiteralValue::StringBytes(
+                token.lexeme[1..(token.lexeme.len() - 1)].to_string().into(),
+            )),
             _ => self.err("Expected primary expr (number or var access)", token),
         }
         .debug(token)

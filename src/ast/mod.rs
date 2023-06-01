@@ -93,30 +93,20 @@ pub enum Expr {
         right: Box<MetaExpr>,
         op: BinaryOp,
     },
-    Unary {
-        value: Box<MetaExpr>,
-        op: UnaryOp,
-    },
+    Unary(UnaryOp, Box<MetaExpr>),
     Call {
         func: Box<MetaExpr>,
         args: Vec<MetaExpr>,
     },
-    GetField {
-        object: Box<MetaExpr>,
-        name: Rc<str>,
-    },
-    GetVar {
-        name: Rc<str>,
-    },
-    Literal {
-        value: LiteralValue,
-    },
+    GetField(Box<MetaExpr>, Rc<str>),
+    GetVar(Rc<str>),
+    Literal(LiteralValue),
     Default(CType),
-    LooseCast {
-        value: Box<MetaExpr>,
-        target: CType,
-    },
+    LooseCast(Box<MetaExpr>, CType),
     SizeOfType(CType),
+    DerefPtr(Box<MetaExpr>),
+    AddressOf(Box<MetaExpr>),
+    Assign(Box<MetaExpr>, /* = */ Box<MetaExpr>),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -126,27 +116,17 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Modulo,
-    Equal,
+    Equality,
     GreaterThan,
     LessThan,
     GreaterOrEqual,
     LessOrEqual,
-    FollowPtr,
-
-    /// This is a fancy special case but since pointer derefs and stuff can be on the left
-    /// this seems like a reasonable way to represent it. Not that much weirder than short circuiting bools.
-    Assign,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum UnaryOp {
     Negate,
     Not,
-    Deref,
-    AddressOf,
-
-    // Decide what type the operand would be and return its size but don't evaluate it.
-    NoEvalSizeOf,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -234,12 +214,6 @@ impl<Func: FuncRepr> EitherModule<Func> {
     }
 }
 
-impl From<LiteralValue> for Expr {
-    fn from(value: LiteralValue) -> Self {
-        Expr::Literal { value }
-    }
-}
-
 impl CType {
     pub fn int() -> CType {
         CType {
@@ -314,14 +288,31 @@ impl FuncRepr for Function {
     }
 }
 
+pub type OpDebugInfo = i64;
 pub struct MetaExpr {
     expr: Expr,
-    line: usize,
+    line: i64,
 }
 
 impl MetaExpr {
-    pub fn info(&self) -> usize {
+    pub fn info(&self) -> OpDebugInfo {
         self.line
+    }
+}
+
+impl Expr {
+    pub fn debug(self, token: Token) -> MetaExpr {
+        MetaExpr {
+            expr: self,
+            line: (token.line + 1) as i64,
+        }
+    }
+
+    pub fn boxed(self, token: Token) -> Box<MetaExpr> {
+        Box::new(MetaExpr {
+            expr: self,
+            line: (token.line + 1) as i64,
+        })
     }
 }
 
@@ -336,22 +327,6 @@ impl Deref for MetaExpr {
 impl AsRef<Expr> for MetaExpr {
     fn as_ref(&self) -> &Expr {
         self.deref()
-    }
-}
-
-impl Expr {
-    pub fn debug(self, token: Token) -> MetaExpr {
-        MetaExpr {
-            expr: self,
-            line: token.line + 1,
-        }
-    }
-
-    pub fn boxed(self, token: Token) -> Box<MetaExpr> {
-        Box::new(MetaExpr {
-            expr: self,
-            line: 0,
-        })
     }
 }
 

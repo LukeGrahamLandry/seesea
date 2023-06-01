@@ -80,16 +80,7 @@ fn walk_expr<'ast>(
             walk_expr(control, left, results);
             walk_expr(control, right, results);
         }
-        Expr::Unary { value, op } => {
-            if *op == UnaryOp::AddressOf {
-                if let Expr::GetVar { name } = value.as_ref().deref() {
-                    let variable = control
-                        .resolve_name(name)
-                        .unwrap_or_else(|| panic!("Cannot access undeclared variable {}", name));
-                    results.insert(variable);
-                }
-                // TODO: make sure address of more complex expressions doesn't need more work
-            }
+        Expr::Unary(op, value) => {
             walk_expr(control, value, results);
         }
         Expr::Call { func, args } => {
@@ -99,12 +90,28 @@ fn walk_expr<'ast>(
             }
         }
         Expr::GetVar { .. } | Expr::Literal { .. } | Expr::Default(_) => {}
-        Expr::GetField { object, .. } => {
+        Expr::GetField(object, _) => {
             walk_expr(control, object, results);
         }
-        Expr::LooseCast { value, .. } => {
+        Expr::LooseCast(value, _) => {
             walk_expr(control, value, results);
         }
         Expr::SizeOfType(_) => {}
+        Expr::DerefPtr(value) => {
+            walk_expr(control, value, results);
+        }
+        Expr::AddressOf(value) => {
+            if let Expr::GetVar(name) = value.as_ref().deref() {
+                let variable = control
+                    .resolve_name(name)
+                    .unwrap_or_else(|| panic!("Cannot access undeclared variable {}", name));
+                results.insert(variable);
+            }
+            // TODO: make sure address of more complex expressions doesn't need more work
+        }
+        Expr::Assign(place, value) => {
+            walk_expr(control, place, results);
+            walk_expr(control, value, results);
+        }
     }
 }

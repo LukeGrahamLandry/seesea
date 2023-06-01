@@ -1,5 +1,6 @@
 use crate::ast::{
-    BinaryOp, CType, EitherModule, FuncRepr, FuncSignature, LiteralValue, StructSignature,
+    BinaryOp, CType, EitherModule, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo,
+    StructSignature,
 };
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::{BTreeSet, HashMap};
@@ -7,7 +8,6 @@ use std::fmt::{Display, Formatter};
 use std::rc::Rc;
 
 mod allocs;
-mod debug;
 mod flow_stack;
 mod parse;
 mod print;
@@ -91,7 +91,7 @@ pub enum Op {
 #[derive(Clone)]
 pub struct Function {
     pub blocks: Vec<Option<Vec<Op>>>, // in the final codegen these will flatten out and labels will become offsets
-    pub blocks_debug_lines: Vec<Option<Vec<usize>>>, // in the final codegen these will flatten out and labels will become offsets
+    pub blocks_debug_lines: Vec<Option<Vec<OpDebugInfo>>>, // in the final codegen these will flatten out and labels will become offsets
     var_counter: usize,
     pub signature: FuncSignature,
     pub arg_registers: Vec<Ssa>,
@@ -146,7 +146,7 @@ impl Function {
         Label(self.blocks.len() - 1)
     }
 
-    pub fn push(&mut self, block: Label, op: Op, line: usize) {
+    pub fn push(&mut self, block: Label, op: Op, line: OpDebugInfo) {
         self.blocks[block.0].as_mut().unwrap().push(op);
         self.blocks_debug_lines[block.0]
             .as_mut()
@@ -156,10 +156,7 @@ impl Function {
 
     pub fn push_no_debug(&mut self, block: Label, op: Op) {
         self.blocks[block.0].as_mut().unwrap().push(op);
-        self.blocks_debug_lines[block.0]
-            .as_mut()
-            .unwrap()
-            .push(9999);
+        self.blocks_debug_lines[block.0].as_mut().unwrap().push(-1);
     }
 
     #[must_use]

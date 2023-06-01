@@ -67,7 +67,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             self.functions.insert(function.name.clone(), func);
         }
         for function in ir.functions.iter() {
-            println!("Compling {:?}", function.signature);
+            println!("Compiling {:?}", function.signature);
             self.emit_function(function);
         }
 
@@ -134,7 +134,6 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     }
 
     fn emit_ir_op(&mut self, op: &Op) {
-        println!("{}", self.func_get().func_ir.print(op));
         match op {
             Op::ConstValue { dest, value, kind } => {
                 let val: BasicValueEnum = match value {
@@ -186,12 +185,12 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 args,
                 return_value_dest,
             } => {
-                println!("{:?}", self.functions);
                 let function = *self
                     .functions
                     .get(func_name.as_ref())
                     .unwrap_or_else(|| panic!("Function not found {:?}.", func_name));
                 let args = self.collect_arg_values(args);
+
                 let return_value = self.builder.build_call(function, &args, "");
                 if let Some(dest) = return_value_dest {
                     // Not returning void
@@ -241,9 +240,14 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 let my_out_ty = self.func_get().func_ir.type_of(output);
                 let in_value = self.read_basic_value(input);
                 let out_type = self.reg_basic_type(output);
-                println!("{:?} Cast", kind);
-                println!("    IN: {:?} {:?} {:?}", input, my_in_ty, in_value);
-                println!("    OUT: {:?} {:?} {:?}", output, my_out_ty, out_type);
+                // println!("{:?} Cast", kind);
+                // println!(
+                //     "    IN: {:?} {:?} {:?}",
+                //     input,
+                //     my_in_ty,
+                //     in_value.get_type()
+                // );
+                // println!("    OUT: {:?} {:?} {:?}", output, my_out_ty, out_type);
                 match kind {
                     CastType::Bits => {
                         if my_in_ty == my_out_ty {

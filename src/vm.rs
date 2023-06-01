@@ -55,7 +55,7 @@ pub enum VmValue {
 #[derive(PartialEq, Clone, Debug)]
 struct Location {
     tick: usize,
-    line: usize,
+    line: i64,
     instruction: usize,
     block: Label,
     func_name: Rc<str>,
@@ -102,7 +102,7 @@ impl<'ir> Vm<'ir> {
             allocations: vec![],
             entry_location: Location {
                 tick: 0,
-                line: 0,
+                line: -1,
                 instruction: 0,
                 block: Label(0),
                 func_name: "Program_Start".into(),
@@ -154,15 +154,9 @@ impl<'ir> Vm<'ir> {
                     BinaryOp::Multiply => do_bin_math!(self, a, b, *),
                     BinaryOp::Divide => do_bin_math!(self, a, b, /),
                     BinaryOp::Modulo => do_bin_math!(self, a, b, %),
-                    BinaryOp::Equal => do_bin_cmp!(self, a, b, ==),
+                    BinaryOp::Equality => do_bin_cmp!(self, a, b, ==),
                     BinaryOp::GreaterOrEqual => do_bin_cmp!(self, a, b, >=),
                     BinaryOp::LessOrEqual => do_bin_cmp!(self, a, b, <=),
-                    BinaryOp::FollowPtr => {
-                        unreachable!()
-                    }
-                    BinaryOp::Assign => {
-                        unreachable!("IR must be in SSA form and have no BinaryOp::Assign")
-                    }
                 };
                 self.set(dest, result);
             }

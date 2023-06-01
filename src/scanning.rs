@@ -187,7 +187,7 @@ impl<'src> Scanner<'src> {
                 kind: TokenType::Eof,
                 lexeme: "",
                 index: self.index,
-                line: 88888,
+                line: 9999999,
             })
     }
 

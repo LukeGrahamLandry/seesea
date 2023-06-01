@@ -1,10 +1,11 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{BinaryOp, CType, Expr, LiteralValue, MetaExpr, Stmt, UnaryOp, ValueType};
+use crate::ast::{
+    BinaryOp, CType, Expr, LiteralValue, MetaExpr, OpDebugInfo, Stmt, UnaryOp, ValueType,
+};
 use crate::ir;
 use crate::ir::allocs::collect_stack_allocs;
-use crate::ir::debug::IrDebugInfo;
 use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame, Var};
 use crate::ir::{CastType, Label, Op, Ssa};
 use std::borrow::Borrow;
@@ -17,7 +18,6 @@ struct AstParser<'ast> {
     ir: ir::Module,
     func: Option<ir::Function>, // needs to become a stack if i allow parsing nested functions i guess?
     control: ControlFlowStack<'ast>,
-    debug: IrDebugInfo<'ast>,
     root_node: Option<&'ast Stmt>,
 
     /// variable -> register holding a pointer to that variable's value.
@@ -28,11 +28,11 @@ struct AstParser<'ast> {
 
 impl From<ast::Module> for ir::Module {
     fn from(value: ast::Module) -> Self {
-        parse_ast(&value).0
+        parse_ast(&value)
     }
 }
 
-pub fn parse_ast<'ast>(program: &'ast ast::Module) -> (ir::Module, IrDebugInfo<'ast>) {
+pub fn parse_ast<'ast>(program: &'ast ast::Module) -> ir::Module {
     let mut parser: AstParser<'ast> = AstParser::new(program);
 
     for func in program.forward_declarations.clone() {
@@ -46,10 +46,12 @@ pub fn parse_ast<'ast>(program: &'ast ast::Module) -> (ir::Module, IrDebugInfo<'
 
     assert!(parser.func.is_none());
     parser.ir.structs = program.structs.clone();
-    (parser.ir, parser.debug)
+    parser.ir
 }
 
-// TODO: can i make the special casing around memory addresses less annoying with an lvalue/rvalue abstraction?
+// TODO: all the casting stuff is annoying.
+//       maybe i should work out all the typing on the AST before you get here.
+//       that almost implies another IR that resolves LValues
 impl<'ast> AstParser<'ast> {
     fn new(ast: &ast::Module) -> AstParser {
         AstParser {
@@ -57,7 +59,6 @@ impl<'ast> AstParser<'ast> {
             ir: ir::Module::new(ast.name.clone()),
             func: None,
             control: Default::default(),
-            debug: Default::default(),
             root_node: None,
             stack_addresses: Default::default(),
             needs_stack_address: Default::default(),
@@ -246,7 +247,7 @@ impl<'ast> AstParser<'ast> {
         args: &'ast [MetaExpr],
     ) -> Option<Ssa> {
         let name = match func_expr.as_ref() {
-            Expr::GetVar { name } => name,
+            Expr::GetVar(name) => name,
             _ => todo!("Support function pointers. "),
         };
 
@@ -642,36 +643,11 @@ impl<'ast> AstParser<'ast> {
     #[must_use]
     fn emit_expr(&mut self, expr: &'ast MetaExpr, block: Label) -> Option<Ssa> {
         match expr.as_ref() {
-            Expr::Binary { left, op, right } => match *op {
-                BinaryOp::FollowPtr => {
-                    println!("{:?} {:?}", left, right);
-                    let name = match right.deref().as_ref() {
-                        Expr::GetVar { name } => name,
-                        _ => unreachable!("{:?}", right),
-                    };
-                    let struct_ptr = self.emit_expr(left, block).unwrap();
-                    let field =
-                        self.emit_get_field(expr.info(), Lvalue::DerefPtr(struct_ptr), name, block);
-                    match field {
-                        Lvalue::RegisterVar(_) => unreachable!(),
-                        Lvalue::DerefPtr(field_ptr) => {
-                            let register = self.make_ssa(self.type_of(field_ptr).deref_type());
-                            self.func_mut().push(
-                                block,
-                                Op::LoadFromPtr {
-                                    value_dest: register,
-                                    addr: field_ptr,
-                                },
-                                expr.info(),
-                            );
-                            Some(register)
-                        }
-                    }
-                }
-                BinaryOp::Assign => self.emit_assignment(expr, left, right, block),
-                _ => self.emit_simple_binary_op(expr, left, op, right, block),
-            },
-            Expr::Literal { value } => {
+            Expr::Assign(left, right) => self.emit_assignment(expr, left, right, block),
+            Expr::Binary { left, op, right } => {
+                self.emit_simple_binary_op(expr, left, op, right, block)
+            }
+            Expr::Literal(value) => {
                 let kind = match value {
                     LiteralValue::IntNumber { .. } => CType::int(),
                     LiteralValue::StringBytes { .. } => CType {
@@ -715,30 +691,28 @@ impl<'ast> AstParser<'ast> {
                 Some(register)
             }
             Expr::Call { func, args } => self.emit_function_call(block, func, args),
-            Expr::Unary { value, op } => match op {
-                UnaryOp::AddressOf => {
-                    let lvalue = self.parse_lvalue(value, block);
-                    Some(lvalue.get_addr())
-                }
-                UnaryOp::Deref => {
-                    let addr = self
-                        .emit_expr(value, block)
-                        .expect("Cannot dereference void.");
-                    // TODO: IntToPtr cast
-                    let register = self.make_ssa(self.type_of(addr).deref_type());
-                    self.func_mut().push(
-                        block,
-                        Op::LoadFromPtr {
-                            value_dest: register,
-                            addr,
-                        },
-                        expr.info(),
-                    );
-                    Some(register)
-                }
-                _ => todo!(),
-            },
-            Expr::GetField { .. } => {
+            Expr::AddressOf(value) => {
+                let lvalue = self.parse_lvalue(value, block);
+                Some(lvalue.get_addr())
+            }
+            Expr::DerefPtr(value) => {
+                let addr = self
+                    .emit_expr(value, block)
+                    .expect("Cannot dereference void.");
+                // TODO: IntToPtr cast
+                let register = self.make_ssa(self.type_of(addr).deref_type());
+                self.func_mut().push(
+                    block,
+                    Op::LoadFromPtr {
+                        value_dest: register,
+                        addr,
+                    },
+                    expr.info(),
+                );
+                Some(register)
+            }
+            Expr::Unary(op, value) => todo!(),
+            Expr::GetField(_, _) => {
                 let field_ptr = self.parse_lvalue(expr, block).get_addr();
                 let register = self.make_ssa(self.type_of(field_ptr).deref_type());
                 self.func_mut().push(
@@ -765,7 +739,7 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(dest)
             }
-            Expr::LooseCast { value, target } => {
+            Expr::LooseCast(value, target) => {
                 let input = self
                     .emit_expr(value, block)
                     .expect("Cannot cast from void value.");
@@ -915,7 +889,7 @@ impl<'ast> AstParser<'ast> {
     /// Get the location in memory that the expr refers to (don't dereference it to extract the value yet).
     fn parse_lvalue(&mut self, expr: &'ast Expr, block: Label) -> Lvalue<'ast> {
         match expr {
-            Expr::GetVar { name } => {
+            Expr::GetVar(name) => {
                 let this_variable = self
                     .control
                     .resolve_name(name)
@@ -934,26 +908,13 @@ impl<'ast> AstParser<'ast> {
                     Lvalue::RegisterVar(this_variable)
                 }
             }
-            Expr::Unary { value, op } => {
-                assert_eq!(*op, UnaryOp::Deref);
+            Expr::DerefPtr(value) => {
                 let addr = self.emit_expr(value, block).unwrap();
                 Lvalue::DerefPtr(addr)
             }
-            Expr::GetField { object, name } => {
+            Expr::GetField(object, name) => {
                 let s = self.parse_lvalue(object, block);
                 self.emit_get_field(object.info(), s, name, block)
-            }
-            Expr::Binary {
-                left,
-                right,
-                op: BinaryOp::FollowPtr,
-            } => {
-                let name = match right.as_ref().deref() {
-                    Expr::GetVar { name } => name,
-                    _ => unreachable!(),
-                };
-                let addr = self.emit_expr(left, block).unwrap();
-                self.emit_get_field(right.info(), Lvalue::DerefPtr(addr), name, block)
             }
             _ => unreachable!(),
         }
@@ -961,7 +922,7 @@ impl<'ast> AstParser<'ast> {
 
     fn emit_get_field(
         &mut self,
-        debug: usize,
+        debug: OpDebugInfo,
         struct_value: Lvalue<'ast>,
         field_name: &str,
         block: Label,

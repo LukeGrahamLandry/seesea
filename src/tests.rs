@@ -671,6 +671,7 @@ where
         .create_jit_execution_engine(OptimizationLevel::None)
         .unwrap();
     LlvmFuncGen::new(&module).compile_all(ir);
+
     let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
     action(func);
 }
