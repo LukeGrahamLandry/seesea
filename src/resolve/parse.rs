@@ -1,12 +1,11 @@
 use crate::ast::{
-    AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, LiteralValue, MetaExpr, Module, RawExpr,
+    AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, LiteralValue, MetaExpr, RawExpr,
     ValueType,
 };
 use crate::ir::CastType;
 use crate::resolve::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable, VariableRef};
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::rc::Rc;
 
 pub struct Resolver<'ast> {
@@ -96,7 +95,7 @@ impl<'ast> Resolver<'ast> {
                 AnyStmt::Block { body }
             }
             AnyStmt::Expression { expr } => AnyStmt::Expression {
-                expr: Box::new(self.parse_expr(expr)),
+                expr: self.parse_expr(expr),
             },
             AnyStmt::If {
                 condition,
@@ -104,7 +103,7 @@ impl<'ast> Resolver<'ast> {
                 else_body,
             } => {
                 // TODO: do i want a bool type that i force conditions to be? same for while.
-                let condition = Box::new(self.parse_expr(condition));
+                let condition = self.parse_expr(condition);
                 let then_body = Box::new(self.parse_stmt(then_body));
                 let else_body = Box::new(self.parse_stmt(else_body));
                 AnyStmt::If {
@@ -114,7 +113,7 @@ impl<'ast> Resolver<'ast> {
                 }
             }
             AnyStmt::While { condition, body } => {
-                let condition = Box::new(self.parse_expr(condition));
+                let condition = self.parse_expr(condition);
                 let body = Box::new(self.parse_stmt(body));
                 AnyStmt::While { condition, body }
             }
@@ -138,7 +137,7 @@ impl<'ast> Resolver<'ast> {
                 let value = self.implicit_cast(value, kind);
                 AnyStmt::DeclareVar {
                     name: name.clone(),
-                    value: Box::new(value),
+                    value,
                     kind: kind.clone(),
 
                     variable: Some(rc_var),
@@ -151,7 +150,7 @@ impl<'ast> Resolver<'ast> {
                         let value = self.parse_expr(value);
                         let returns = &self.func.signature.as_ref().unwrap().return_type;
                         assert!(!returns.is_raw_void());
-                        Some(Box::new(self.implicit_cast(value, returns)))
+                        Some(self.implicit_cast(value, returns))
                     }
                 };
 
@@ -317,6 +316,11 @@ impl<'ast> Resolver<'ast> {
             }
         };
 
+        if let Operation::Call { .. } = &new_expr {
+        } else {
+            assert!(!ty.is_raw_void());
+        }
+
         ResolvedExpr {
             ty,
             expr: new_expr,
@@ -398,7 +402,7 @@ impl<'ast> Resolver<'ast> {
         } else if input.is_raw_float() && output.is_raw_int() {
             CastType::FloatToUInt
         } else {
-            todo!("Cast from {:?} to {:?}", value.ty, target);
+            unreachable!("Cast from {:?} to {:?}", value.ty, target);
         };
         do_cast(kind, value, target)
     }

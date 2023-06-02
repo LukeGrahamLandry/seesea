@@ -150,7 +150,7 @@ impl<'src> Parser<'src> {
             } else {
                 let value = self.parse_expr();
                 self.expect(TokenType::Semicolon);
-                Some(Box::new(value))
+                Some(value)
             };
             return Stmt::Return { value };
         }
@@ -184,9 +184,7 @@ impl<'src> Parser<'src> {
         if !self.scanner.matches(TokenType::Semicolon) {
             self.error("Expected semicolon terminating expression statement.")
         }
-        Stmt::Expression {
-            expr: Box::new(expr),
-        }
+        Stmt::Expression { expr }
     }
 
     /// TYPE NAME = EXPR?;
@@ -204,7 +202,7 @@ impl<'src> Parser<'src> {
         Stmt::DeclareVar {
             name: name.into(),
             kind: kind.clone(),
-            value: Box::new(value),
+            value: value,
             variable: None,
         }
     }
@@ -222,7 +220,7 @@ impl<'src> Parser<'src> {
             Stmt::Block { body: vec![] }
         };
         Stmt::If {
-            condition: Box::new(condition),
+            condition,
             then_body: Box::new(if_true),
             else_body: Box::new(if_false),
         }
@@ -236,7 +234,7 @@ impl<'src> Parser<'src> {
         self.expect(TokenType::RightParen);
         let body = self.parse_stmt();
         Stmt::While {
-            condition: Box::new(condition),
+            condition,
             body: Box::new(body),
         }
     }
@@ -250,7 +248,7 @@ impl<'src> Parser<'src> {
         let condition = match condition {
             Stmt::Expression { expr } => expr,
             Stmt::Nothing => {
-                RawExpr::Literal(LiteralValue::IntNumber(1)).boxed(self.scanner.prev())
+                RawExpr::Literal(LiteralValue::IntNumber(1)).debug(self.scanner.prev())
             }
             _ => self.error("For loop condition must be expr or nothing."),
         };
@@ -265,7 +263,7 @@ impl<'src> Parser<'src> {
         Stmt::For {
             initializer: Box::new(initializer),
             condition,
-            increment: Box::new(increment),
+            increment,
             body: Box::new(body),
         }
     }

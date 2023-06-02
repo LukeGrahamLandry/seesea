@@ -15,10 +15,17 @@ pub mod parse;
 mod print;
 
 pub struct ResolvedExpr {
-    expr: Operation,
+    pub(crate) expr: Operation,
     pub(crate) ty: CType,
     line: OpDebugInfo,
 }
+
+// TODO:
+//      - What if new statement thing that has only goto and no loops?
+//        That would mean i would have less redundant ssa work but throwing away information feels wrong.
+//        I could just use the stack like clang but that feels less interesting
+//        and I think the ssa gives you a nice way to know the last time a variable could be used for register stuff.
+//      - Work on including files and have a system for not requiring header files.
 
 pub enum Operation {
     Binary {
@@ -46,7 +53,7 @@ pub enum Operation {
 #[derive(Debug)]
 pub enum FuncSource {
     Internal,
-    Pointer(Box<ResolvedExpr>),
+    // Pointer(Box<ResolvedExpr>),
 }
 
 #[derive(Debug, Eq, PartialEq)]

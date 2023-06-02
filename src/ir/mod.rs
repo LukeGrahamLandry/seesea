@@ -1,6 +1,4 @@
-use crate::ast::{
-    BinaryOp, CType, AnyModule, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo,
-};
+use crate::ast::{AnyModule, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo};
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
@@ -66,7 +64,9 @@ pub enum Op {
     },
 
     Call {
-        func_name: Rc<str>, // TODO: allow function pointers.
+        // TODO: allow function pointers.
+        //       instead of names, normal functions could have indexes into an array of signatures on the module
+        func_name: Rc<str>,
         args: Box<[Ssa]>,
         return_value_dest: Option<Ssa>,
     },

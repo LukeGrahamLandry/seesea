@@ -1,6 +1,4 @@
-use crate::ast::{
-    AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, Function, MetaExpr, Module, RawExpr,
-};
+use crate::ast::{AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, MetaExpr, RawExpr};
 use std::fmt::{Debug, Formatter};
 
 impl<Expr: TreePrint> Debug for AnyStmt<Expr> {

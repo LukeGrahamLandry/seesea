@@ -1,8 +1,7 @@
 use crate::ast::CType;
 use crate::ir::{Label, Op, Ssa};
-use crate::resolve::{LexScope, Var, Variable, VariableRef};
+use crate::resolve::{LexScope, Variable, VariableRef};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 /// Collects the list of Ssa nodes that are written to in the statement.
 /// This is used to generate Phi nodes when control flow diverges.
@@ -14,8 +13,6 @@ pub struct ControlFlowStack {
     /// Tracks which variables mutate in each IR block.
     flow: Vec<FlowStackFrame>,
 
-    // Tracked for an assertion that the Labels are only pushed once.
-    prev_blocks: HashSet<Label>,
     pub register_types: HashMap<Ssa, CType>,
 
     /// Lexical scopes that effect name resolution
@@ -23,6 +20,10 @@ pub struct ControlFlowStack {
     stack_allocated: Vec<HashSet<VariableRef>>,
     total_scope_count: usize,
     dead_scopes: HashSet<LexScope>,
+
+    // Tracked for assertions
+    prev_blocks: HashSet<Label>,
+    // prev_ssa: HashSet<Ssa>,
 }
 
 #[derive(Debug)]
@@ -31,6 +32,8 @@ pub struct FlowStackFrame {
     pub mutations: HashMap<VariableRef, Ssa>,
 }
 
+// this is doing redundant tracking of scopes that the resolver handles but I like being able to have the assertions.
+// that means it relies on the total_scope_count here being the same as in the resolver
 impl ControlFlowStack {
     pub fn push_flow_frame(&mut self, block: Label) {
         assert!(
@@ -51,13 +54,13 @@ impl ControlFlowStack {
     }
 
     pub fn set(&mut self, variable: VariableRef, new_register: Ssa) {
-        // @Speed
         assert!(
             !variable.needs_stack_alloc.get(),
             "{:?} is stack allocated. Can't set it's register.",
             variable
         );
-        // TODO: assert Ssa is unique? but that would mess with allocs.rs making up fake ones that it never read. that should be a special method self.fake_declare(Var). llvm emit checks anyway
+        // TODO: this check doesn't work with the way I'm doing nested scopes in branches
+        // assert!(self.prev_ssa.insert(new_register));
 
         match self.flow.last_mut() {
             None => {
@@ -84,11 +87,11 @@ impl ControlFlowStack {
                 // the variable was declared in a scope inside the flow frame, it doesn't exist anymore as we try to bubble up.
                 // TODO: make sure `if (1) long x = 10;` is not valid.
                 // dont care anymore because resolver handles it
-                // assert!(
-                //     self.is_out_of_scope(variable),
-                //     "{:?} register not found in control stack but is still in scope.",
-                //     variable
-                // );
+                assert!(
+                    self.is_out_of_scope(variable),
+                    "{:?} register not found in control stack but is still in scope.",
+                    variable
+                );
                 None
             }
             Some(ssa) => Some(ssa),
@@ -104,7 +107,7 @@ impl ControlFlowStack {
 
     pub fn set_stack_alloc(&mut self, variable: VariableRef, addr_register: Ssa) {
         // dont care any more because resolver handles it
-        // assert_eq!(variable.scope, self.current_scope());
+        assert_eq!(variable.scope, self.current_scope());
         assert!(self
             .stack_allocated
             .last_mut()
@@ -120,12 +123,13 @@ impl ControlFlowStack {
         assert!(no_scopes);
         self.total_scope_count = 0;
         self.prev_blocks.clear();
+        // self.prev_ssa.clear();
     }
 
     pub fn push_scope(&mut self) {
+        self.total_scope_count += 1;
         self.scopes.push(LexScope(self.total_scope_count));
         self.stack_allocated.push(HashSet::new());
-        self.total_scope_count += 1;
     }
 
     pub fn pop_scope(&mut self) {
@@ -136,10 +140,10 @@ impl ControlFlowStack {
             .expect("You should always be in a scope.");
         // dont care anymore because resolver handles it
         // @Speed
-        // assert!(
-        //     !stack_alloc.iter().any(|var| var.scope != old_scope),
-        //     "Popped scope contained a stack variable from a different scope."
-        // );
+        assert!(
+            !stack_alloc.iter().any(|var| var.scope != old_scope),
+            "Popped scope contained a stack variable from a different scope."
+        );
         self.dead_scopes.insert(old_scope);
     }
 
@@ -153,6 +157,9 @@ impl ControlFlowStack {
 }
 
 /// Checks that you don't try to patch a write because that doesn't make sense given the SSA format.
+// The situation is you have a loop and you need to parse the body to see if it modifies the condition variables
+// and then replace all those reads with phi nodes. So you need to be patching below where the phi nodes get created
+// so you know there can never be writes to them because it's single assignment.
 pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
     match op {
         Op::ConstValue { dest, .. } => {

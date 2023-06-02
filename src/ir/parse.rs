@@ -1,19 +1,17 @@
 //! AST -> IR
 
-use crate::ast;
 use crate::ast::{
     AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncSignature, LiteralValue, MetaExpr,
-    OpDebugInfo, RawExpr, ValueType,
+    OpDebugInfo, ValueType,
 };
 use crate::ir;
 use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame};
-use crate::ir::{CastType, Label, Op, Ssa};
+use crate::ir::{Label, Op, Ssa};
 use crate::resolve::parse::Resolver;
-use crate::resolve::{FuncSource, Operation, ResolvedExpr, Var, Variable, VariableRef};
+use crate::resolve::{FuncSource, Operation, ResolvedExpr, VariableRef};
 use std::borrow::Borrow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::mem;
-use std::rc::Rc;
 
 type AstStmt = AnyStmt<ResolvedExpr>;
 type AstFunction = AnyFunction<ResolvedExpr>;
@@ -78,6 +76,7 @@ impl<'ast> AstParser<'ast> {
         self.control.push_scope();
         for variable in input.arg_vars.as_ref().unwrap().iter() {
             let register = self.make_ssa(&variable.ty);
+            assert!(!variable.needs_stack_alloc.get());
             self.func_mut()
                 .set_debug(register, || format!("{}_arg", variable.name));
             self.control.set(variable.clone(), register);
@@ -117,12 +116,9 @@ impl<'ast> AstParser<'ast> {
                 let _ = self.emit_expr(expr, *block);
             }
             AstStmt::DeclareVar {
-                name,
-                value,
-                kind,
-                variable,
+                value, variable, ..
             } => {
-                assert_eq!(kind, &variable.as_ref().unwrap().ty);
+                assert_eq!(value.ty, variable.as_ref().unwrap().ty);
                 self.declare_variable(variable.as_ref().unwrap().clone(), value, *block)
             }
             AstStmt::Return { value } => match value {
@@ -130,9 +126,11 @@ impl<'ast> AstParser<'ast> {
                     self.func_mut().push_no_debug(*block, Op::Return(None));
                 }
                 Some(value) => {
-                    let mut result = self.emit_expr(value.as_ref(), *block);
+                    let result = self.emit_expr(value, *block);
                     if let Some(ssa) = result {
                         assert_eq!(self.type_of(ssa), self.func_mut().signature.return_type);
+                    } else {
+                        assert!(self.func_mut().signature.return_type.is_raw_void());
                     }
                     self.func_mut()
                         .push(*block, Op::Return(result), value.info());
@@ -160,6 +158,10 @@ impl<'ast> AstParser<'ast> {
     fn declare_variable(&mut self, variable: VariableRef, value: &'ast ResolvedExpr, block: Label) {
         if variable.ty.is_struct() {
             println!("Struct allocation for {:?}", variable);
+            assert!(matches!(
+                value.as_ref(),
+                Operation::Literal(LiteralValue::UninitStruct)
+            ));
             let ptr_register = self.func_mut().next_var();
             self.control.set_stack_alloc(variable.clone(), ptr_register);
             self.func_mut().push(
@@ -175,7 +177,7 @@ impl<'ast> AstParser<'ast> {
             return;
         }
 
-        let mut value_register = self
+        let value_register = self
             .emit_expr(value, block)
             .expect("Variable type cannot be void.");
 
@@ -226,7 +228,7 @@ impl<'ast> AstParser<'ast> {
         assert!(matches!(func_src, FuncSource::Internal));
         let mut arg_registers = vec![];
         for (i, arg) in args.iter().enumerate() {
-            let mut arg_ssa = self
+            let arg_ssa = self
                 .emit_expr(arg, block)
                 .expect("Passed function arg cannot be void.");
 
@@ -535,29 +537,29 @@ impl<'ast> AstParser<'ast> {
         self.emit_statement(body, &mut end_of_body_block);
         let mutated_in_body = self.control.pop_flow_frame();
 
-        // todo assert no overlap mutated_in_condition and mutated_in_body
+        // This maps [parent] to [condition]
+        let mut mut_condition = HashMap::new();
+        for (var, reg) in &mutated_in_condition.mutations {
+            mut_condition.insert(self.control.get(var).unwrap(), *reg);
+            // TODO: get if in scope
+        }
 
-        let changes = self.emit_phi_parent_or_single_branch(
+        // parent -> body
+        let original_or_mut_body = self.emit_phi_parent_or_single_branch(
             parent_block,
             end_of_body_block,
             setup_block,
             &mutated_in_body,
         );
 
-        // TODO: what happens if condition mutates but body doesn't run
         // Insert phi nodes in the setup for any mutations in the condition (to use either initial or mutated).
-        let condition_changes = self.emit_phi_parent_or_single_branch(
+        // parent -> condition
+        let orginal_or_mut_condition = self.emit_phi_parent_or_single_branch(
             parent_block,
             end_of_body_block,
             setup_block,
             &mutated_in_condition,
         );
-
-        // The condition always runs so mutations there don't need phi nodes in the exit
-        // but since we removed them from the flow stack, we need to put them back.
-        for (var, reg) in mutated_in_condition.mutations {
-            self.control.set(var, reg);
-        }
 
         let exit_block = self.func_mut().new_block();
 
@@ -581,8 +583,35 @@ impl<'ast> AstParser<'ast> {
             condition.info(),
         );
 
-        self.patch_below(condition_block, &condition_changes);
-        self.patch_below(condition_block, &changes);
+        // TODO: make sure this is all true with conditional (if stmt) mutations.
+
+        // The body always executes directly after the condition.
+        // So body reads any changes made in condition without caring if its in the first iteration of the loop.
+        // Later patches will re-run over the body but any overlaps with this will be ignored because already replaced.
+        println!("[parent] -> [condition]: {:?}", mut_condition);
+        self.patch_below(start_body_block, &mut_condition);
+
+        // Since you can only exit after running the condition (and not body),
+        // the rest of the program must read the changes made in the condition without phi nodes.
+        // But since we removed them from the flow stack, we need to put them back.
+        for (var, reg) in mutated_in_condition.mutations {
+            self.control.set(var, reg);
+        }
+
+        // If something mutates in the condition (but not the body), then effectively the conditions execute consecutively.
+        // The condition needs to read from the parent on the first iteration and itself on the rest.
+        println!(
+            "[parent] -> [parent or condition]: {:?}",
+            orginal_or_mut_condition
+        );
+        self.patch_below(condition_block, &orginal_or_mut_condition);
+
+        // The condition executes after either the parent or the body.
+        // So the condition needs to read from either depending if this is the first iteration of the loop.
+        // When something changes in both condition and body, the body's change takes priority for what gets read in the condition,
+        // and the condition can never read the change made in the condition (because the body will change it again first).
+        println!("[parent] -> [parent or body]: {:?}", original_or_mut_body);
+        self.patch_below(condition_block, &original_or_mut_body);
 
         *block = exit_block;
     }
@@ -671,7 +700,6 @@ impl<'ast> AstParser<'ast> {
                 let addr = self
                     .emit_expr(value, block)
                     .expect("Cannot dereference void.");
-                // TODO: IntToPtr cast
                 let register = self.make_ssa(self.type_of(addr).deref_type());
                 self.func_mut().push(
                     block,
@@ -729,10 +757,10 @@ impl<'ast> AstParser<'ast> {
         right: &'ast ResolvedExpr,
         block: Label,
     ) -> Option<Ssa> {
-        let mut a = self
+        let a = self
             .emit_expr(left, block)
             .expect("Binary operand cannot be void.");
-        let mut b = self
+        let b = self
             .emit_expr(right, block)
             .expect("Binary operand cannot be void.");
         assert_eq!(self.control.ssa_type(a), self.control.ssa_type(b));
@@ -758,10 +786,11 @@ impl<'ast> AstParser<'ast> {
         block: Label,
     ) -> Option<Ssa> {
         let target = self.parse_lvalue(lvalue, block);
-        let mut value_source = self
+        let value_source = self
             .emit_expr(rvalue, block)
             .expect("Can't assign to void.");
 
+        assert_eq!(lvalue.ty, rvalue.ty);
         assert_eq!(self.type_of(value_source), self.value_type(&target));
 
         match target {
@@ -785,7 +814,7 @@ impl<'ast> AstParser<'ast> {
     }
 
     fn type_of(&self, ssa: Ssa) -> CType {
-        self.control.ssa_type(ssa).clone()
+        self.control.ssa_type(ssa)
     }
 
     // Try to use this instead of directly calling next_var because it forces you to set the type of the register.

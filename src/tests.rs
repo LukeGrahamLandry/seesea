@@ -380,6 +380,7 @@ long main(){
 #[test]
 fn mutate_in_while_condition() {
     // this loop relies on mutation in the condition to terminate
+    // ie. condition sees condition's changes
     // language=c
     let src = "
 long main(){
@@ -400,14 +401,49 @@ fn false_loop_condition_mutates() {
     let src = "
 long main(){
     long y = 10;
-    while ((y = 1) > 5) {
-        y = 15;
+    long x = 0;
+    while ((y = 1 - x) > 5) {
+        x = 10;
+    }
+    return y + x;
+}
+    ";
+
+    no_args_run_main(src, 1);
+}
+
+#[test]
+fn body_sees_conditions_changes() {
+    // language=c
+    let src = "
+long main(){
+    long y = 0;
+    long z = 0;
+    while ((y = y + 1) < 5) {
+        z = z + y;
+    }
+    return y + z;
+}
+    ";
+    no_args_run_main(src, 15);
+}
+
+#[test]
+fn loop_condition_body_mutations_overlap() {
+    // When they overlap, it needs to prioritise the condition's change coming out of the loop because that's the only one that will run when it exits.
+    // Will need to revisit this when I add a break statement.
+    // language=c
+    let src = "
+long main(){
+    long y = 0;
+    while ((y = y + 1) < 10) {
+        y = y + 1;
     }
     return y;
 }
     ";
 
-    no_args_run_main(src, 1);
+    no_args_run_main(src, 11);
 }
 
 #[test]

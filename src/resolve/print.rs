@@ -1,5 +1,4 @@
 use crate::ast::print::TreePrint;
-use crate::ast::{AnyStmt, CType, FuncSignature, Function, MetaExpr, Module};
 use crate::resolve::{Operation, ResolvedExpr};
 use std::fmt::{Debug, Formatter};
 
@@ -27,9 +26,7 @@ impl TreePrint for Operation {
                 value.print(depth + 1, f)
             }
             Operation::Call {
-                func,
-                args,
-                signature,
+                args, signature, ..
             } => {
                 writeln!(f, "Function Call {:?}", signature)?;
                 for arg in args {

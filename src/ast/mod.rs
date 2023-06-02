@@ -1,4 +1,4 @@
-use crate::resolve::{Variable, VariableRef};
+use crate::resolve::VariableRef;
 use crate::scanning::Token;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -54,38 +54,37 @@ impl StructSignature {
     }
 }
 
-// @Speed the expressions here dont need to be boxed
 pub enum AnyStmt<Expr> {
     Block {
         body: Vec<AnyStmt<Expr>>,
     },
     Expression {
-        expr: Box<Expr>,
+        expr: Expr,
     },
     If {
-        condition: Box<Expr>,
+        condition: Expr,
         then_body: Box<AnyStmt<Expr>>,
         else_body: Box<AnyStmt<Expr>>,
     },
     // Does the backend need different handling for while/for/do_while or should I just transform the ast so all become DoWhile
     While {
-        condition: Box<Expr>,
+        condition: Expr,
         body: Box<AnyStmt<Expr>>,
     },
     For {
         initializer: Box<AnyStmt<Expr>>,
-        condition: Box<Expr>,
-        increment: Box<Expr>,
+        condition: Expr,
+        increment: Expr,
         body: Box<AnyStmt<Expr>>,
     },
     DeclareVar {
         name: Rc<str>,
-        value: Box<Expr>,
+        value: Expr,
         kind: CType,
         variable: Option<VariableRef>, // TODO clean this up
     },
     Return {
-        value: Option<Box<Expr>>,
+        value: Option<Expr>,
     },
     Nothing,
 }
