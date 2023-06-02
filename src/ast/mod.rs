@@ -261,6 +261,10 @@ impl CType {
         self.depth == 0 && matches!(self.ty, ValueType::Void)
     }
 
+    pub fn is_void_ptr(&self) -> bool {
+        self.depth > 0 && matches!(self.ty, ValueType::Void)
+    }
+
     pub fn is_raw_int(&self) -> bool {
         self.depth == 0 && matches!(self.ty, ValueType::U8 | ValueType::U32 | ValueType::U64)
     }
