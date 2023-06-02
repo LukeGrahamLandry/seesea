@@ -7,6 +7,7 @@ use std::mem::size_of;
 
 use crate::asm::llvm::LlvmFuncGen;
 use crate::ir::Op;
+
 use crate::scanning::Scanner;
 use crate::vm::{Vm, VmValue};
 use crate::{ast, ir};
@@ -520,7 +521,6 @@ double main(){
         let answer = unsafe { function.call() };
         assert!(answer.abs() < 0.000001);
     });
-    println!("{}", size_of::<Op>());
 }
 
 #[test]

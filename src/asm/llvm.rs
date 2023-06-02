@@ -221,11 +221,12 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             } => {
                 let struct_type = self.func_get().func_ir.type_of(object_addr).deref_type();
                 let s_ptr_value = self.read_ptr(object_addr);
+                // used to use i64 for the first index but that's wrong apparently https://github.com/TheDan64/inkwell/issues/213
                 let field_ptr_value = self.const_gep(
                     s_ptr_value,
                     struct_type,
                     &[
-                        self.context.i64_type().const_int(0, false),
+                        self.context.i32_type().const_int(0, false),
                         self.context
                             .i32_type()
                             .const_int(*field_index as u64, false),

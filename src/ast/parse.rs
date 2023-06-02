@@ -4,6 +4,7 @@ use crate::ast::{
     AnyStmt, BinaryOp, CType, FuncSignature, Function, LiteralValue, MetaExpr, Module, RawExpr,
     StructSignature, ValueType,
 };
+
 use crate::scanning::{Scanner, Token, TokenType};
 use std::rc::Rc;
 
@@ -378,7 +379,7 @@ impl<'src> Parser<'src> {
 
     /// NAME | NUMBER | (EXPR)
     fn parse_basic(&mut self) -> MetaExpr {
-        let token = self.scanner.next();
+        let token = self.scanner.take();
         match token.kind {
             TokenType::DecimalInt(v) => RawExpr::Literal(LiteralValue::IntNumber(v)),
             TokenType::DecimalFloat(v) => RawExpr::Literal(LiteralValue::FloatNumber(v)),
@@ -458,7 +459,7 @@ impl<'src> Parser<'src> {
 
     /// NAME
     fn read_ident(&mut self, msg: &str) -> String {
-        let token = self.scanner.next();
+        let token = self.scanner.take();
         if token.kind != TokenType::Identifier {
             self.err(msg, token);
         }
@@ -466,7 +467,7 @@ impl<'src> Parser<'src> {
     }
 
     fn expect(&mut self, kind: TokenType) -> Token<'src> {
-        let token = self.scanner.next();
+        let token = self.scanner.take();
         if token.kind != kind {
             self.err(&format!("Expected {:?}", kind), token);
         }
@@ -474,13 +475,21 @@ impl<'src> Parser<'src> {
     }
 
     fn err(&mut self, msg: &str, token: Token) -> ! {
-        let line = self.scanner.line_number(token);
-        panic!("Parse error on line {}: {}. {:?}", line + 1, msg, token);
+        panic!(
+            "Parse error on line {}: {}. {:?}",
+            token.line + 1,
+            msg,
+            token
+        );
     }
 
     fn error(&mut self, msg: &str) -> ! {
-        let token = self.scanner.next();
-        let line = self.scanner.line_number(token);
-        panic!("Parse error on line {}: {} . {:?}", line + 1, msg, token);
+        let token = self.scanner.take();
+        panic!(
+            "Parse error on line {}: {} . {:?}",
+            token.line + 1,
+            msg,
+            token
+        );
     }
 }

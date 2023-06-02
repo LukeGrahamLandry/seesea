@@ -142,6 +142,7 @@ pub struct Scanner<'src> {
     pub(crate) index: usize,
     pub(crate) name: String,
     prev: Option<Token<'src>>,
+    line: usize,
 }
 
 // TODO: It feels like this should be a real iterator but I worry that the way I want to write the
@@ -157,6 +158,7 @@ impl<'src> Scanner<'src> {
             index: 0,
             name,
             prev: None,
+            line: 0,
         };
         s.refresh();
         s
@@ -179,29 +181,45 @@ impl<'src> Scanner<'src> {
             .map(|token| {
                 self.index += 1;
                 let lexeme = self.lex.slice();
-                let mut t = Token {
+                let t = Token {
                     lexeme,
                     kind: token.unwrap(),
                     index: self.index,
-                    line: 0,
+                    line: 12345,
                 };
-                // TODO: @Speed
-                t.line = self.line_number(t);
                 t
             })
             .unwrap_or_else(|| Token {
                 kind: TokenType::Eof,
                 lexeme: "",
                 index: self.index,
-                line: 9999999,
+                line: 12345,
             })
     }
 
     #[must_use]
-    pub fn next(&mut self) -> Token<'src> {
-        let token = self.cache.pop_front().unwrap();
+    pub fn take(&mut self) -> Token<'src> {
+        let mut token = self.cache.pop_front().unwrap();
+        match self.prev {
+            None => {}
+            Some(prev) => {
+                // TODO: move this to lex_another
+                let start = prev.lexeme.as_ptr() as usize - self.src.as_ptr() as usize;
+                let end = token.lexeme.as_ptr() as usize - self.src.as_ptr() as usize;
+                // TODO: utf8?
+                let bytes = self.src.as_bytes();
+                assert!(end > start);
+                for i in start..end {
+                    if bytes[i] == b'\n' {
+                        self.line += 1;
+                    }
+                }
+                token.line = self.line;
+            }
+        }
+
         self.refresh();
-        self.prev = Some(token.clone());
+        self.prev = Some(token);
         token
     }
 
@@ -244,26 +262,11 @@ impl<'src> Scanner<'src> {
 
     pub fn consume(&mut self, ty: TokenType) -> Token<'src> {
         assert_eq!(self.peek(), ty);
-        self.next()
+        self.take()
     }
 
     pub fn advance(&mut self) -> Token<'src> {
-        self.next()
-    }
-
-    // This can be super slow because it's just used for error messages.
-    pub fn line_number(&self, token: Token) -> usize {
-        let mut line = 0;
-        let count = token.lexeme.as_ptr() as usize - self.src.as_ptr() as usize;
-        for (i, c) in self.src.chars().enumerate() {
-            if c == '\n' {
-                line += 1;
-            }
-            if i == count {
-                break;
-            }
-        }
-        line
+        self.take()
     }
 }
 
@@ -272,7 +275,7 @@ impl<'src> Debug for Scanner<'src> {
         writeln!(f, "=== Scanner at ===")?;
         let mut temp = Scanner::new(self.src, self.name.clone());
         while temp.has_next() {
-            write!(f, "{:?}, ", temp.next())?;
+            write!(f, "{:?}, ", temp.take())?;
         }
         writeln!(f, "\n========")
     }

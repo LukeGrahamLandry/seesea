@@ -6,6 +6,7 @@
 use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
 use crate::ir;
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
+
 use crate::macros::vm::{do_bin_cmp, do_bin_math};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};

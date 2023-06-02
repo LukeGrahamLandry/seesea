@@ -21,6 +21,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         struct_type: CType,
         ordered_indexes: &[IntValue<'ctx>],
     ) -> PointerValue<'ctx> {
+        // TODO: this is clearly not safe but idk why
         unsafe { struct_ptr.const_gep(self.llvm_type(struct_type), ordered_indexes) }
     }
 }
