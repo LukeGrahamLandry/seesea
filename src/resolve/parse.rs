@@ -1,6 +1,6 @@
 use crate::ast::{
-    AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, LiteralValue, MetaExpr, RawExpr,
-    ValueType,
+    AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncSignature, LiteralValue, MetaExpr,
+    RawExpr, ValueType,
 };
 use crate::ir::CastType;
 use crate::resolve::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable, VariableRef};
@@ -104,6 +104,7 @@ impl<'ast> Resolver<'ast> {
             } => {
                 // TODO: do i want a bool type that i force conditions to be? same for while.
                 let condition = self.parse_expr(condition);
+                assert!(condition.ty.is_raw_int());
                 let then_body = Box::new(self.parse_stmt(then_body));
                 let else_body = Box::new(self.parse_stmt(else_body));
                 AnyStmt::If {
@@ -144,11 +145,20 @@ impl<'ast> Resolver<'ast> {
                 }
             }
             AnyStmt::Return { value } => {
+                let returns = &self.func.signature.as_ref().unwrap().return_type;
                 let value = match value {
-                    None => None,
+                    None => {
+                        // TODO: You can fall through and have it return a default value but why.
+                        assert!(returns.is_raw_void());
+                        None
+                    }
                     Some(value) => {
                         let value = self.parse_expr(value);
                         let returns = &self.func.signature.as_ref().unwrap().return_type;
+                        // TODO: You're technically allowed an explicit return value from another void function but why.
+                        //       If I allow that I want to lift the call up into another statement so the return expr can still be None
+                        //       and the ir emit doesnt need to type check the signature.
+                        //       returning a value from a void function isn't even an error either for some reason (warning tho).
                         assert!(!returns.is_raw_void());
                         Some(self.implicit_cast(value, returns))
                     }
@@ -169,6 +179,7 @@ impl<'ast> Resolver<'ast> {
 
                 let mut target_ptr_type = None;
 
+                // TODO: comparisons on floats output ints/bools not floats
                 let target = if left.ty.is_ptr() {
                     target_ptr_type = Some(left.ty.clone());
                     CType::int()
@@ -183,8 +194,18 @@ impl<'ast> Resolver<'ast> {
 
                 let left = self.implicit_cast(left, &target);
                 let right = self.implicit_cast(right, &target);
+
+                // Float comparisons don't output floats!
+                let output = match op {
+                    BinaryOp::LessOrEqual
+                    | BinaryOp::GreaterOrEqual
+                    | BinaryOp::GreaterThan
+                    | BinaryOp::LessThan => CType::int(),
+                    _ => target,
+                };
+
                 let mut result = ResolvedExpr {
-                    ty: target,
+                    ty: output,
                     expr: Operation::Binary {
                         left: Box::new(left),
                         right: Box::new(right),
@@ -244,7 +265,10 @@ impl<'ast> Resolver<'ast> {
                 let object = self.parse_expr(object);
                 let struct_name = match &object.ty.ty {
                     ValueType::Struct(name) => name.as_ref(),
-                    _ => unreachable!(),
+                    _ => unreachable!(
+                        "line {}. access field {} on non-struct {:?}",
+                        object.line, field_name, object
+                    ),
                 };
                 let struct_def = self.raw_ast.get_struct(struct_name).unwrap();
                 let field_index = struct_def.field_index(field_name);
@@ -350,6 +374,7 @@ impl<'ast> Resolver<'ast> {
         );
     }
 
+    // TODO: warnings for non-equal types?
     fn implicit_cast(&self, value: ResolvedExpr, target: &CType) -> ResolvedExpr {
         if &value.ty == target {
             return value;

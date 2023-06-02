@@ -108,13 +108,9 @@ impl ControlFlowStack {
     pub fn set_stack_alloc(&mut self, variable: VariableRef, addr_register: Ssa) {
         // dont care any more because resolver handles it
         assert_eq!(variable.scope, self.current_scope());
-        assert!(self
-            .stack_allocated
-            .last_mut()
-            .unwrap()
-            .insert(variable.clone()));
         self.register_types
             .insert(addr_register, variable.ty.ref_type());
+        assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
     }
 
     pub fn clear(&mut self) {

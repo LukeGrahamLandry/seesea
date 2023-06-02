@@ -56,7 +56,7 @@ pub enum FuncSource {
     // Pointer(Box<ResolvedExpr>),
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct Variable {
     pub(crate) name: Rc<str>,
     pub(crate) scope: LexScope,

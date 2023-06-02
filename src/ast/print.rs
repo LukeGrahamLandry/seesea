@@ -32,9 +32,19 @@ impl<Expr: TreePrint> AnyStmt<Expr> {
                 expr.print(depth + 1, f)
             }
             AnyStmt::DeclareVar {
-                name, value, kind, ..
+                name,
+                value,
+                kind,
+                variable,
             } => {
-                writeln!(f, "{:?} '{}' = ", kind, name)?;
+                match variable {
+                    None => {
+                        writeln!(f, "Declare {:?} '{}'", kind, name)?;
+                    }
+                    Some(var) => {
+                        writeln!(f, "Declare {:?}", var)?;
+                    }
+                }
                 value.print(depth + 1, f)
             }
             AnyStmt::Return { value } => match value {

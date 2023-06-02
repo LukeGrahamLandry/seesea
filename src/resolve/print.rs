@@ -1,5 +1,5 @@
 use crate::ast::print::TreePrint;
-use crate::resolve::{Operation, ResolvedExpr};
+use crate::resolve::{Operation, ResolvedExpr, Variable};
 use std::fmt::{Debug, Formatter};
 
 impl Debug for Operation {
@@ -36,7 +36,7 @@ impl TreePrint for Operation {
                 Ok(())
             }
             Operation::GetVar(name) => {
-                writeln!(f, "'{:?}'", name)
+                writeln!(f, "{:?}", name)
             }
             Operation::Literal(value) => {
                 writeln!(f, "{:?}", value)
@@ -68,8 +68,20 @@ impl TreePrint for Operation {
 
 impl TreePrint for ResolvedExpr {
     fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result {
-        // TODO: fix this, it spams a bunch of types at you
-        print!("{:?}", self.ty);
+        for _ in 0..depth {
+            f.write_str("    ")?;
+        }
+        writeln!(f, "{:?}", self.ty)?;
         self.expr.print(depth, f)
+    }
+}
+
+impl Debug for Variable {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        if self.needs_stack_alloc.get() {
+            write!(f, "sVar({}, {})", self.name, self.scope.0)
+        } else {
+            write!(f, "rVar({}, {})", self.name, self.scope.0)
+        }
     }
 }

@@ -232,7 +232,11 @@ impl CType {
 
     #[must_use]
     pub fn deref_type(&self) -> CType {
-        assert!(self.depth > 0, "Tried to dereference non-pointer type.");
+        assert!(
+            self.depth > 0,
+            "Tried to dereference non-pointer type {:?}.",
+            self
+        );
         let mut other = self.clone();
         other.depth -= 1;
         other
@@ -253,6 +257,7 @@ impl CType {
         self.depth == 0 && matches!(self.ty, ValueType::Struct(_))
     }
 
+    /// Does this type fit in a register (ie. is not a struct)
     pub fn is_basic(&self) -> bool {
         self.depth > 0 || !matches!(self.ty, ValueType::Struct(_))
     }
