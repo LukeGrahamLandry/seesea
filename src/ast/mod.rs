@@ -302,12 +302,6 @@ pub struct MetaExpr {
     line: i64,
 }
 
-impl MetaExpr {
-    pub fn info(&self) -> OpDebugInfo {
-        self.line
-    }
-}
-
 impl RawExpr {
     pub fn debug(self, token: Token) -> MetaExpr {
         MetaExpr {
@@ -321,6 +315,12 @@ impl RawExpr {
             expr: self,
             line: (token.line + 1) as i64,
         })
+    }
+}
+
+impl MetaExpr {
+    pub fn info(&self) -> OpDebugInfo {
+        self.line
     }
 }
 

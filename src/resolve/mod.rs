@@ -1,29 +1,24 @@
-//! The resolution pass handles
+//! The resolution pass handles many things...
 //!     - deciding types for each expression (including implicit casts).
 //!     - deciding which scope variables belong to and whether they need a stable stack address.
+//!     - replacing implicit default values of variable declarations with literals.
 
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, OpDebugInfo, UnaryOp};
 use crate::ir::CastType;
-use crate::resolve::parse::LexScope;
 use std::cell::Cell;
+use std::fmt::{Debug, Formatter};
+use std::ops::Deref;
 use std::rc::Rc;
 
-pub mod allocs;
-mod parse;
+pub mod parse;
 
 pub struct ResolvedExpr {
     expr: Operation,
-    ty: CType,
+    pub(crate) ty: CType,
     line: OpDebugInfo,
 }
 
-pub struct Variable {
-    name: Rc<str>,
-    scope: LexScope,
-    ty: CType,
-    needs_stack_alloc: Cell<bool>,
-}
-
+#[derive(Debug)]
 pub enum Operation {
     Binary {
         left: Box<ResolvedExpr>,
@@ -47,7 +42,56 @@ pub enum Operation {
     Assign(Box<ResolvedExpr>, /* = */ Box<ResolvedExpr>),
 }
 
+#[derive(Debug)]
 pub enum FuncSource {
     Internal,
     Pointer(Box<ResolvedExpr>),
+}
+
+#[derive(Debug)]
+pub struct Variable {
+    name: Rc<str>,
+    scope: LexScope,
+    ty: CType,
+    needs_stack_alloc: Cell<bool>,
+}
+
+/// Uniquely identifies a lexical scope. These DO NOT correspond to depth of nesting (they are never reused).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct LexScope(pub usize);
+
+/// Uniquely identifies a variable declaration in the source code by noting which block it came from.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct Var<'ast>(pub &'ast str, pub LexScope);
+
+impl Variable {
+    pub fn as_var(&self) -> Var {
+        Var(self.name.as_ref(), self.scope)
+    }
+}
+
+impl ResolvedExpr {
+    pub fn info(&self) -> OpDebugInfo {
+        self.line
+    }
+}
+
+impl Deref for ResolvedExpr {
+    type Target = Operation;
+
+    fn deref(&self) -> &Self::Target {
+        &self.expr
+    }
+}
+
+impl AsRef<Operation> for ResolvedExpr {
+    fn as_ref(&self) -> &Operation {
+        self.deref()
+    }
+}
+
+impl Debug for ResolvedExpr {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        self.expr.fmt(f)
+    }
 }

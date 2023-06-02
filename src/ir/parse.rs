@@ -1,21 +1,29 @@
 //! AST -> IR
 
 use crate::ast;
-use crate::ast::{BinaryOp, CType, LiteralValue, MetaExpr, OpDebugInfo, RawExpr, Stmt, ValueType};
+use crate::ast::{
+    AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncSignature, LiteralValue, MetaExpr,
+    OpDebugInfo, RawExpr, Stmt, ValueType,
+};
 use crate::ir;
-use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame, Var};
+use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame};
 use crate::ir::{CastType, Label, Op, Ssa};
-use crate::resolve::allocs::collect_stack_allocs;
+use crate::resolve::parse::Resolver;
+use crate::resolve::{FuncSource, Operation, ResolvedExpr, Var};
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::mem;
 
+type AstStmt = AnyStmt<ResolvedExpr>;
+type AstFunction = AnyFunction<ResolvedExpr>;
+type AstModule = AnyModule<AstFunction>;
+
 struct AstParser<'ast> {
-    ast: &'ast ast::Module,
+    ast: &'ast AstModule,
     ir: ir::Module,
     func: Option<ir::Function>, // needs to become a stack if i allow parsing nested functions i guess?
     control: ControlFlowStack<'ast>,
-    root_node: Option<&'ast Stmt>,
+    root_node: Option<&'ast AstStmt>,
 
     /// variable -> register holding a pointer to that variable's value.
     stack_addresses: HashMap<Var<'ast>, Ssa>,
@@ -23,13 +31,15 @@ struct AstParser<'ast> {
     needs_stack_address: HashSet<Var<'ast>>,
 }
 
-impl From<ast::Module> for ir::Module {
-    fn from(value: ast::Module) -> Self {
-        parse_ast(&value)
+impl From<AnyModule<AnyFunction<MetaExpr>>> for ir::Module {
+    fn from(value: AnyModule<AnyFunction<MetaExpr>>) -> Self {
+        let mut resolver = Resolver::new(&value);
+        resolver.all();
+        parse_ast(&resolver.resolved)
     }
 }
 
-pub fn parse_ast<'ast>(program: &'ast ast::Module) -> ir::Module {
+pub fn parse_ast<'ast>(program: &'ast AstModule) -> ir::Module {
     let mut parser: AstParser<'ast> = AstParser::new(program);
 
     for func in program.forward_declarations.clone() {
@@ -46,12 +56,8 @@ pub fn parse_ast<'ast>(program: &'ast ast::Module) -> ir::Module {
     parser.ir
 }
 
-// TODO: all the casting stuff is annoying.
-//       maybe i should work out all the typing on the AST before you get here.
-//       that almost implies another IR that resolves LValues
-//       Maybe everything should be generic over the Expr type
 impl<'ast> AstParser<'ast> {
-    fn new(ast: &ast::Module) -> AstParser {
+    fn new(ast: &'ast AstModule) -> AstParser {
         AstParser {
             ast,
             ir: ir::Module::new(ast.name.clone()),
@@ -63,7 +69,7 @@ impl<'ast> AstParser<'ast> {
         }
     }
 
-    fn parse_function(&mut self, input: &'ast ast::Function) {
+    fn parse_function(&mut self, input: &'ast AstFunction) {
         // TODO: separate these out into an Option
         assert!(
             self.func.is_none()
@@ -90,7 +96,6 @@ impl<'ast> AstParser<'ast> {
         }
         self.control.push_scope();
         self.root_node = Some(&input.body);
-        collect_stack_allocs(&input.body, &mut self.needs_stack_address);
         self.emit_statement(&input.body, &mut entry);
         self.control.pop_scope();
         self.control.pop_scope();
@@ -110,9 +115,9 @@ impl<'ast> AstParser<'ast> {
         println!("------------");
     }
 
-    fn emit_statement(&mut self, stmt: &'ast Stmt, block: &mut Label) {
+    fn emit_statement(&mut self, stmt: &'ast AstStmt, block: &mut Label) {
         match stmt {
-            Stmt::Block { body, .. } => {
+            AstStmt::Block { body, .. } => {
                 // Lexical blocks in the source don't directly correspond to the IR blocks used for control flow.
                 // Rather, they affect the variable name resolution stack.
                 self.control.push_scope();
@@ -121,43 +126,39 @@ impl<'ast> AstParser<'ast> {
                 }
                 self.control.pop_scope();
             }
-            Stmt::Expression { expr } => {
+            AstStmt::Expression { expr } => {
                 let _ = self.emit_expr(expr, *block);
             }
-            Stmt::DeclareVar { name, value, kind } => {
+            AstStmt::DeclareVar { name, value, kind } => {
                 self.declare_variable(name, value, kind, *block)
             }
-            Stmt::Return { value } => match value {
+            AstStmt::Return { value } => match value {
                 None => {
                     self.func_mut().push_no_debug(*block, Op::Return(None));
                 }
                 Some(value) => {
                     let mut result = self.emit_expr(value.as_ref(), *block);
                     if let Some(ssa) = result {
-                        let found_type = self.type_of(ssa);
-                        let expected_type = self.func_mut().signature.return_type.clone();
-                        if found_type != expected_type {
-                            result = Some(self.emit_cast(ssa, expected_type, *block));
-                        }
+                        assert_eq!(self.type_of(ssa), self.func_mut().signature.return_type);
                     }
                     self.func_mut()
                         .push(*block, Op::Return(result), value.info());
                 }
             },
-            Stmt::If {
+            AstStmt::If {
                 condition,
                 then_body,
                 else_body,
             } => {
                 self.emit_if_stmt(block, condition, then_body, else_body);
             }
-            Stmt::While { condition, body } => {
+            AstStmt::While { condition, body } => {
                 self.emit_while_loop(block, condition, body);
             }
-            Stmt::For { .. } => {
+            AstStmt::For { .. } => {
                 todo!()
             }
-            Stmt::Nothing => {
+            AstStmt::Nothing => {
                 // TODO: make sure its fine if this is the only statement in a block we want to jump to
             }
         }
@@ -166,17 +167,13 @@ impl<'ast> AstParser<'ast> {
     fn declare_variable(
         &mut self,
         name: &'ast str,
-        value: &'ast MetaExpr,
+        value: &'ast ResolvedExpr,
         kind: &CType,
         block: Label,
     ) {
         let variable = Var(name, self.control.current_scope());
 
         if kind.is_struct() {
-            match value.as_ref() {
-                RawExpr::Default(ty) => assert_eq!(ty, kind),
-                _ => todo!("Struct that is not init to default."),
-            }
             println!("Struct allocation for {:?}", variable);
             let ptr_register = self.func_mut().next_var();
             self.control.set_stack_alloc(variable, kind, ptr_register);
@@ -197,9 +194,7 @@ impl<'ast> AstParser<'ast> {
             .emit_expr(value, block)
             .expect("Variable type cannot be void.");
 
-        if self.type_of(value_register) != *kind {
-            value_register = self.emit_cast(value_register, kind.clone(), block);
-        }
+        assert_eq!(self.type_of(value_register), *kind);
 
         if self.needs_stack_address.contains(&variable) {
             println!("Stack allocation for {:?}", variable);
@@ -237,19 +232,12 @@ impl<'ast> AstParser<'ast> {
     fn emit_function_call(
         &mut self,
         block: Label,
-        func_expr: &'ast MetaExpr,
-        args: &'ast [MetaExpr],
+        signature: &'ast FuncSignature,
+        func_src: &'ast FuncSource,
+        args: &'ast [ResolvedExpr],
+        debug: OpDebugInfo,
     ) -> Option<Ssa> {
-        let name = match func_expr.as_ref() {
-            RawExpr::GetVar(name) => name,
-            _ => todo!("Support function pointers. "),
-        };
-
-        let signature = &self
-            .ast
-            .get_func_signature(name)
-            .unwrap_or_else(|| panic!("Call undeclared function {}", name));
-
+        assert!(matches!(func_src, FuncSource::Internal));
         let mut arg_registers = vec![];
         for (i, arg) in args.iter().enumerate() {
             let mut arg_ssa = self
@@ -258,10 +246,7 @@ impl<'ast> AstParser<'ast> {
 
             let found = self.control.ssa_type(arg_ssa);
             if i < signature.param_types.len() {
-                let expected = signature.param_types[i].clone();
-                if expected != found {
-                    arg_ssa = self.emit_cast(arg_ssa, expected, block);
-                }
+                assert_eq!(signature.param_types[i], found);
             } else {
                 assert!(
                     signature.has_var_args,
@@ -283,11 +268,11 @@ impl<'ast> AstParser<'ast> {
             Op::Call {
                 // TODO: directly reference the func def node since we know we'll already have it from headers
                 //       but then does the IR need the lifetime of the ast?
-                func_name: name.clone(),
+                func_name: signature.name.clone(),
                 args: arg_registers.into(),
                 return_value_dest,
             },
-            func_expr.info(),
+            debug,
         );
         return_value_dest
     }
@@ -298,9 +283,9 @@ impl<'ast> AstParser<'ast> {
     fn emit_if_stmt(
         &mut self,
         block: &mut Label,
-        condition_expr: &'ast MetaExpr,
-        then_body: &'ast Stmt,
-        else_body: &'ast Stmt,
+        condition_expr: &'ast ResolvedExpr,
+        then_body: &'ast AstStmt,
+        else_body: &'ast AstStmt,
     ) {
         let parent_block = *block;
         // TODO: type check that this is an int llvm can use for conditions
@@ -369,7 +354,7 @@ impl<'ast> AstParser<'ast> {
     // TODO: this should return a struct
     fn parse_branch(
         &mut self,
-        branch_body: &'ast Stmt,
+        branch_body: &'ast AstStmt,
     ) -> (Label, Label, FlowStackFrame<'ast>, bool) {
         let branch_block = self.func_mut().new_block();
         self.control.push_flow_frame(branch_block);
@@ -542,7 +527,12 @@ impl<'ast> AstParser<'ast> {
     // parent > setup > condition
     //                           body_block > end_of_body_block <setup
     //                           exit_block
-    fn emit_while_loop(&mut self, block: &mut Label, condition: &'ast MetaExpr, body: &'ast Stmt) {
+    fn emit_while_loop(
+        &mut self,
+        block: &mut Label,
+        condition: &'ast ResolvedExpr,
+        body: &'ast AstStmt,
+    ) {
         let parent_block = *block;
         let setup_block = self.func_mut().new_block();
         let condition_block = self.func_mut().new_block();
@@ -635,13 +625,13 @@ impl<'ast> AstParser<'ast> {
     }
 
     #[must_use]
-    fn emit_expr(&mut self, expr: &'ast MetaExpr, block: Label) -> Option<Ssa> {
-        match expr.as_ref() {
-            RawExpr::Assign(left, right) => self.emit_assignment(expr, left, right, block),
-            RawExpr::Binary { left, op, right } => {
+    fn emit_expr(&mut self, expr: &'ast ResolvedExpr, block: Label) -> Option<Ssa> {
+        let result = match expr.as_ref() {
+            Operation::Assign(left, right) => self.emit_assignment(expr, left, right, block),
+            Operation::Binary { left, op, right } => {
                 self.emit_simple_binary_op(expr, left, op, right, block)
             }
-            RawExpr::Literal(value) => {
+            Operation::Literal(value) => {
                 let kind = match value {
                     LiteralValue::IntNumber { .. } => CType::int(),
                     LiteralValue::StringBytes { .. } => CType {
@@ -664,7 +654,7 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(dest)
             }
-            RawExpr::GetVar { .. } => {
+            Operation::GetVar { .. } => {
                 let lvalue = self.parse_lvalue(expr, block);
 
                 let register = match lvalue {
@@ -684,12 +674,16 @@ impl<'ast> AstParser<'ast> {
 
                 Some(register)
             }
-            RawExpr::Call { func, args } => self.emit_function_call(block, func, args),
-            RawExpr::AddressOf(value) => {
+            Operation::Call {
+                signature,
+                func,
+                args,
+            } => self.emit_function_call(block, signature, func, args, expr.info()),
+            Operation::AddressOf(value) => {
                 let lvalue = self.parse_lvalue(value, block);
                 Some(lvalue.get_addr())
             }
-            RawExpr::DerefPtr(value) => {
+            Operation::DerefPtr(value) => {
                 let addr = self
                     .emit_expr(value, block)
                     .expect("Cannot dereference void.");
@@ -705,8 +699,8 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(register)
             }
-            RawExpr::Unary(_, _) => todo!(),
-            RawExpr::GetField(_, _) => {
+            Operation::Unary(_, _) => todo!(),
+            Operation::GetField(_, _) => {
                 let field_ptr = self.parse_lvalue(expr, block).get_addr();
                 let register = self.make_ssa(self.type_of(field_ptr).deref_type());
                 self.func_mut().push(
@@ -719,52 +713,36 @@ impl<'ast> AstParser<'ast> {
                 );
                 Some(register)
             }
-            RawExpr::Default(kind) => {
-                assert!(!kind.is_struct());
-                let dest = self.make_ssa(kind);
-                self.func_mut().push(
-                    block,
-                    Op::ConstValue {
-                        dest,
-                        value: LiteralValue::IntNumber(0),
-                        kind: kind.clone(),
-                    },
-                    expr.info(),
-                );
-                Some(dest)
-            }
-            RawExpr::LooseCast(value, target) => {
+            Operation::Cast(value, target, cast) => {
                 let input = self
                     .emit_expr(value, block)
                     .expect("Cannot cast from void value.");
-                let output = self.emit_cast(input, target, block);
+                let output = self.make_ssa(target.borrow());
+
+                self.func_mut().push_no_debug(
+                    block,
+                    Op::Cast {
+                        input,
+                        output,
+                        kind: *cast,
+                    },
+                );
                 Some(output)
             }
-            RawExpr::SizeOfType(ty) => {
-                let dest = self.make_ssa(CType::int());
-                self.func_mut()
-                    .set_debug(dest, || "sizeof_result".to_string());
-                let size = self.ast.size_of(ty);
-                self.func_mut().push(
-                    block,
-                    Op::ConstValue {
-                        dest,
-                        value: LiteralValue::IntNumber(size as u64),
-                        kind: CType::int(),
-                    },
-                    expr.info(),
-                );
-                Some(dest)
-            }
+        };
+        match &result {
+            None => assert!(expr.ty.is_raw_void()),
+            Some(value) => assert_eq!(self.type_of(*value), expr.ty),
         }
+        result
     }
 
     fn emit_simple_binary_op(
         &mut self,
-        outer: &'ast MetaExpr,
-        left: &'ast MetaExpr,
+        outer: &'ast ResolvedExpr,
+        left: &'ast ResolvedExpr,
         op: &'ast BinaryOp,
-        right: &'ast MetaExpr,
+        right: &'ast ResolvedExpr,
         block: Label,
     ) -> Option<Ssa> {
         let mut a = self
@@ -773,37 +751,8 @@ impl<'ast> AstParser<'ast> {
         let mut b = self
             .emit_expr(right, block)
             .expect("Binary operand cannot be void.");
-
-        let mut target_ptr_type = None;
-        let result_type = {
-            let ty_a = self.control.ssa_type(a);
-            let ty_b = self.control.ssa_type(b);
-            if ty_a != ty_b {
-                // TODO: actually think about the priority list
-                if ty_a.is_ptr() {
-                    a = self.emit_cast(a, &CType::int(), block);
-                    b = self.emit_cast(b, &CType::int(), block);
-                    target_ptr_type = Some(ty_a);
-                    CType::int()
-                } else if ty_b.is_ptr() {
-                    a = self.emit_cast(a, &CType::int(), block);
-                    b = self.emit_cast(b, &CType::int(), block);
-                    target_ptr_type = Some(ty_b);
-                    CType::int()
-                } else if self.ast.size_of(&ty_a) > self.ast.size_of(&ty_b) {
-                    b = self.emit_cast(b, &ty_a, block);
-                    ty_a
-                } else {
-                    a = self.emit_cast(a, &ty_b, block);
-                    ty_b
-                }
-            } else {
-                ty_a
-            }
-        };
-
-        // TODO: compares always output bools (ints) even if input is floats.
-        let dest = self.make_ssa(result_type);
+        assert_eq!(self.control.ssa_type(a), self.control.ssa_type(b));
+        let dest = self.make_ssa(&outer.ty);
         self.func_mut().push(
             block,
             Op::Binary {
@@ -814,17 +763,14 @@ impl<'ast> AstParser<'ast> {
             },
             outer.info(),
         );
-        match target_ptr_type {
-            None => Some(dest),
-            Some(ty) => Some(self.emit_cast(dest, &ty, block)),
-        }
+        Some(dest)
     }
 
     fn emit_assignment(
         &mut self,
-        outer: &'ast MetaExpr,
-        lvalue: &'ast MetaExpr,
-        rvalue: &'ast MetaExpr,
+        outer: &'ast ResolvedExpr,
+        lvalue: &'ast ResolvedExpr,
+        rvalue: &'ast ResolvedExpr,
         block: Label,
     ) -> Option<Ssa> {
         let target = self.parse_lvalue(lvalue, block);
@@ -832,9 +778,7 @@ impl<'ast> AstParser<'ast> {
             .emit_expr(rvalue, block)
             .expect("Can't assign to void.");
 
-        if self.type_of(value_source) != self.value_type(&target) {
-            value_source = self.emit_cast(value_source, self.value_type(&target), block);
-        }
+        assert_eq!(self.type_of(value_source), self.value_type(&target));
 
         match target {
             Lvalue::RegisterVar(this_variable) => {
@@ -881,13 +825,10 @@ impl<'ast> AstParser<'ast> {
     }
 
     /// Get the location in memory that the expr refers to (don't dereference it to extract the value yet).
-    fn parse_lvalue(&mut self, expr: &'ast RawExpr, block: Label) -> Lvalue<'ast> {
+    fn parse_lvalue(&mut self, expr: &'ast Operation, block: Label) -> Lvalue<'ast> {
         match expr {
-            RawExpr::GetVar(name) => {
-                let this_variable = self
-                    .control
-                    .resolve_name(name)
-                    .unwrap_or_else(|| panic!("Undeclared variable {:?}", name));
+            Operation::GetVar(name) => {
+                let this_variable = name.as_var();
                 if self.control.is_stack_alloc(this_variable) {
                     let addr = *self
                         .stack_addresses
@@ -902,13 +843,13 @@ impl<'ast> AstParser<'ast> {
                     Lvalue::RegisterVar(this_variable)
                 }
             }
-            RawExpr::DerefPtr(value) => {
+            Operation::DerefPtr(value) => {
                 let addr = self.emit_expr(value, block).unwrap();
                 Lvalue::DerefPtr(addr)
             }
-            RawExpr::GetField(object, name) => {
+            Operation::GetField(object, index) => {
                 let s = self.parse_lvalue(object, block);
-                self.emit_get_field(object.info(), s, name, block)
+                self.emit_get_field(object.info(), s, *index, block)
             }
             _ => unreachable!(),
         }
@@ -918,7 +859,7 @@ impl<'ast> AstParser<'ast> {
         &mut self,
         debug: OpDebugInfo,
         struct_value: Lvalue<'ast>,
-        field_name: &str,
+        field_index: usize,
         block: Label,
     ) -> Lvalue<'ast> {
         let the_struct = struct_value.get_addr();
@@ -926,13 +867,13 @@ impl<'ast> AstParser<'ast> {
         assert_eq!(ty.depth, 1);
         if let ValueType::Struct(struct_name) = ty.ty {
             let struct_def = self.ast.get_struct(struct_name).unwrap();
-            let field_addr_dest = self.make_ssa(struct_def.field_type(field_name).ref_type());
+            let field_addr_dest = self.make_ssa(struct_def.fields[field_index].1.ref_type());
             self.func_mut().push(
                 block,
                 Op::GetFieldAddr {
                     dest: field_addr_dest,
                     object_addr: the_struct,
-                    field_index: struct_def.field_index(field_name),
+                    field_index,
                 },
                 debug,
             );
@@ -940,62 +881,9 @@ impl<'ast> AstParser<'ast> {
         } else {
             panic!(
                 "Tried to access field {} on non-struct {:?}",
-                field_name, struct_value
+                field_index, struct_value
             )
         }
-    }
-
-    fn decide_loose_cast(&self, input: impl Borrow<CType>, output: impl Borrow<CType>) -> CastType {
-        let input = input.borrow();
-        let output = output.borrow();
-        if input == output || input.is_ptr() && output.is_ptr() {
-            CastType::Bits
-        } else if input.is_raw_float() && output.is_raw_float() {
-            if input.ty == ValueType::F32 {
-                CastType::FloatUp
-            } else {
-                CastType::FloatDown
-            }
-        } else if input.is_raw_int() && output.is_raw_int() {
-            if self.ast.size_of(input) < self.ast.size_of(output) {
-                CastType::UnsignedIntUp
-            } else {
-                CastType::IntDown
-            }
-        } else if input.is_raw_int() && output.is_raw_float() {
-            CastType::UIntToFloat
-        } else if input.is_raw_float() && output.is_raw_int() {
-            CastType::FloatToUInt
-        } else if input.is_ptr() && output.is_raw_int() {
-            CastType::PtrToInt
-        } else if input.is_raw_int() && output.is_ptr() {
-            CastType::IntToPtr
-        } else {
-            assert_eq!(
-                self.ast.size_of(input),
-                self.ast.size_of(output),
-                "Bit cast needs equal sizes. {:?} != {:?}",
-                input,
-                output
-            );
-            CastType::Bits
-        }
-    }
-
-    fn emit_cast(&mut self, input: Ssa, target: impl Borrow<CType>, block: Label) -> Ssa {
-        let output = self.make_ssa(target.borrow());
-        let kind = self.decide_loose_cast(self.type_of(input), target);
-
-        self.func_mut().push_no_debug(
-            block,
-            Op::Cast {
-                input,
-                output,
-                kind,
-            },
-        );
-
-        output
     }
 }
 

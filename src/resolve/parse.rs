@@ -2,15 +2,15 @@ use crate::ast::{
     AnyFunction, AnyModule, AnyStmt, CType, LiteralValue, MetaExpr, Module, RawExpr, ValueType,
 };
 use crate::ir::CastType;
-use crate::resolve::{FuncSource, Operation, ResolvedExpr, Variable};
+use crate::resolve::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::rc::Rc;
 
-struct Resolver<'ast> {
+pub struct Resolver<'ast> {
     raw_ast: &'ast AnyModule<AnyFunction<MetaExpr>>,
-    resolved: AnyModule<AnyFunction<ResolvedExpr>>,
+    pub resolved: AnyModule<AnyFunction<ResolvedExpr>>,
     func: FuncCtx<'ast>,
     scope_count: usize,
 }
@@ -21,18 +21,10 @@ struct FuncCtx<'ast> {
     scopes: Vec<LexScope>,
 }
 
-/// Uniquely identifies a lexical scope. These DO NOT correspond to depth of nesting (they are never reused).
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct LexScope(pub(crate) usize);
-
-/// Uniquely identifies a variable declaration in the source code by noting which block it came from.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Var<'ast>(pub &'ast str, pub LexScope);
-
 // There's so many Box::new here, is that measurably slower?
 // Would be cool to have an arena type thing where they all just go in a byte array because I know they have the same lifetime.
 impl<'ast> Resolver<'ast> {
-    fn new(raw_ast: &'ast AnyModule<AnyFunction<MetaExpr>>) -> Self {
+    pub fn new(raw_ast: &'ast AnyModule<AnyFunction<MetaExpr>>) -> Self {
         let resolved = AnyModule {
             functions: vec![],
             structs: raw_ast.structs.clone(),
@@ -50,7 +42,7 @@ impl<'ast> Resolver<'ast> {
         }
     }
 
-    fn all(&mut self) {
+    pub fn all(&mut self) {
         for func in &self.raw_ast.functions {
             self.parse_function(func);
         }
@@ -61,8 +53,28 @@ impl<'ast> Resolver<'ast> {
             variables: Default::default(),
             scopes: vec![],
         };
+        self.push_scope();
+        let the_args = raw_func
+            .signature
+            .param_types
+            .iter()
+            .zip(raw_func.signature.param_names.iter());
+        self.push_scope();
+        for (kind, name) in the_args {
+            let scope = *self.func.scopes.last().unwrap();
+            let var = Var(name.as_ref(), scope);
+            let variable = Variable {
+                name: name.clone(),
+                scope,
+                ty: kind.clone(),
+                needs_stack_alloc: Cell::new(false),
+            };
+            self.func.variables.insert(var, Rc::new(variable));
+        }
         // TODO push scope with arguments
         let body = self.parse_stmt(&raw_func.body);
+        self.pop_scope();
+        self.pop_scope();
         self.resolved.functions.push(AnyFunction {
             body,
             signature: raw_func.signature.clone(),

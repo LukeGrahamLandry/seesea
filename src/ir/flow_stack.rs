@@ -1,5 +1,6 @@
 use crate::ast::CType;
 use crate::ir::{Label, Op, Ssa};
+use crate::resolve::{LexScope, Var};
 use std::collections::{HashMap, HashSet};
 
 /// Collects the list of Ssa nodes that are written to in the statement.
@@ -29,14 +30,6 @@ pub struct FlowStackFrame<'ast> {
     pub block: Label,
     pub mutations: HashMap<Var<'ast>, Ssa>,
 }
-
-/// Uniquely identifies a lexical scope. These DO NOT correspond to depth of nesting (they are never reused).
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct LexScope(pub(crate) usize);
-
-/// Uniquely identifies a variable declaration in the source code by noting which block it came from.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub struct Var<'ast>(pub &'ast str, pub LexScope);
 
 impl<'ast> ControlFlowStack<'ast> {
     pub fn push_flow_frame(&mut self, block: Label) {
