@@ -1,3 +1,4 @@
+use crate::resolve::{Variable, VariableRef};
 use crate::scanning::Token;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ pub type Function = AnyFunction<MetaExpr>;
 pub struct AnyFunction<Expr> {
     pub body: AnyStmt<Expr>,
     pub signature: FuncSignature,
+    pub arg_vars: Option<Vec<VariableRef>>,
 }
 
 #[derive(Clone, Hash, Eq, PartialEq)]
@@ -83,6 +85,7 @@ pub enum AnyStmt<Expr> {
         name: Rc<str>,
         value: Box<Expr>,
         kind: CType,
+        variable: Option<VariableRef>, // TODO clean this up
     },
     Return {
         value: Option<Box<Expr>>,

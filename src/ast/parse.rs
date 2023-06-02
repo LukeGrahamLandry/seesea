@@ -117,7 +117,11 @@ impl<'src> Parser<'src> {
             self.program.forward_declarations.push(signature);
         } else {
             let body = self.parse_stmt();
-            self.program.functions.push(Function { body, signature });
+            self.program.functions.push(Function {
+                body,
+                signature,
+                arg_vars: None,
+            });
         }
     }
 
@@ -199,6 +203,7 @@ impl<'src> Parser<'src> {
             name: name.into(),
             kind: kind.clone(),
             value: Box::new(value),
+            variable: None,
         }
     }
 

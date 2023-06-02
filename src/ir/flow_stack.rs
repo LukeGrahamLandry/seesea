@@ -1,7 +1,8 @@
 use crate::ast::CType;
 use crate::ir::{Label, Op, Ssa};
-use crate::resolve::{LexScope, Var};
+use crate::resolve::{LexScope, Var, Variable, VariableRef};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// Collects the list of Ssa nodes that are written to in the statement.
 /// This is used to generate Phi nodes when control flow diverges.
@@ -9,29 +10,28 @@ use std::collections::{HashMap, HashSet};
 /// The spans over which you need to track branches are not always the same as the lexical scopes used for variable declaration.
 /// For example a single statement if would be its own basic block in the IR but would not have a lexical scope.
 #[derive(Default, Debug)]
-pub struct ControlFlowStack<'ast> {
+pub struct ControlFlowStack {
     /// Tracks which variables mutate in each IR block.
-    flow: Vec<FlowStackFrame<'ast>>,
+    flow: Vec<FlowStackFrame>,
 
     // Tracked for an assertion that the Labels are only pushed once.
     prev_blocks: HashSet<Label>,
     pub register_types: HashMap<Ssa, CType>,
-    stack_var_types: HashMap<Var<'ast>, CType>,
 
     /// Lexical scopes that effect name resolution
     scopes: Vec<LexScope>,
-    stack_allocated: Vec<HashSet<Var<'ast>>>,
+    stack_allocated: Vec<HashSet<VariableRef>>,
     total_scope_count: usize,
     dead_scopes: HashSet<LexScope>,
 }
 
 #[derive(Debug)]
-pub struct FlowStackFrame<'ast> {
+pub struct FlowStackFrame {
     pub block: Label,
-    pub mutations: HashMap<Var<'ast>, Ssa>,
+    pub mutations: HashMap<VariableRef, Ssa>,
 }
 
-impl<'ast> ControlFlowStack<'ast> {
+impl ControlFlowStack {
     pub fn push_flow_frame(&mut self, block: Label) {
         assert!(
             self.prev_blocks.insert(block),
@@ -46,14 +46,14 @@ impl<'ast> ControlFlowStack<'ast> {
 
     // You need to use this to update other variables and emit phi nodes
     #[must_use]
-    pub fn pop_flow_frame(&mut self) -> FlowStackFrame<'ast> {
+    pub fn pop_flow_frame(&mut self) -> FlowStackFrame {
         self.flow.pop().expect("Can't pop empty ControlFlowStack")
     }
 
-    pub fn set(&mut self, variable: Var<'ast>, new_register: Ssa) {
+    pub fn set(&mut self, variable: VariableRef, new_register: Ssa) {
         // @Speed
         assert!(
-            !self.is_stack_alloc(variable),
+            !variable.needs_stack_alloc.get(),
             "{:?} is stack allocated. Can't set it's register.",
             variable
         );
@@ -69,16 +69,16 @@ impl<'ast> ControlFlowStack<'ast> {
         }
     }
 
-    pub fn get(&self, variable: Var<'ast>) -> Option<Ssa> {
+    pub fn get(&self, variable: &VariableRef) -> Option<Ssa> {
         for frame in self.flow.iter().rev() {
-            if let Some(register) = frame.mutations.get(&variable) {
+            if let Some(register) = frame.mutations.get(variable) {
                 return Some(*register);
             }
         }
         None
     }
 
-    pub fn get_if_in_scope(&self, variable: Var<'ast>) -> Option<Ssa> {
+    pub fn get_if_in_scope(&self, variable: &VariableRef) -> Option<Ssa> {
         match self.get(variable) {
             None => {
                 // the variable was declared in a scope inside the flow frame, it doesn't exist anymore as we try to bubble up.
@@ -101,35 +101,15 @@ impl<'ast> ControlFlowStack<'ast> {
             .clone()
     }
 
-    pub fn var_type(&self, var: Var<'ast>) -> CType {
-        let ssa = self.get(var);
-        match ssa {
-            None => {
-                assert!(self.is_stack_alloc(var)); // @Speed
-                self.stack_var_types
-                    .get(&var)
-                    .expect("Can't type check unused variable.")
-                    .clone()
-            }
-            Some(ssa) => self.ssa_type(ssa),
-        }
-    }
-
-    pub fn set_stack_alloc(&mut self, variable: Var<'ast>, value_ty: &CType, addr_register: Ssa) {
-        assert_eq!(variable.1, self.current_scope());
-        assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
-        self.stack_var_types.insert(variable, value_ty.clone());
+    pub fn set_stack_alloc(&mut self, variable: VariableRef, addr_register: Ssa) {
+        assert_eq!(variable.scope, self.current_scope());
+        assert!(self
+            .stack_allocated
+            .last_mut()
+            .unwrap()
+            .insert(variable.clone()));
         self.register_types
-            .insert(addr_register, value_ty.ref_type());
-    }
-
-    pub fn is_stack_alloc(&self, variable: Var<'ast>) -> bool {
-        for scope in self.stack_allocated.iter().rev() {
-            if scope.contains(&variable) {
-                return true;
-            }
-        }
-        false
+            .insert(addr_register, variable.ty.ref_type());
     }
 
     pub fn clear(&mut self) {
@@ -154,31 +134,18 @@ impl<'ast> ControlFlowStack<'ast> {
             .expect("You should always be in a scope.");
         // @Speed
         assert!(
-            !stack_alloc.iter().any(|var| var.1 != old_scope),
+            !stack_alloc.iter().any(|var| var.scope != old_scope),
             "Popped scope contained a stack variable from a different scope."
         );
         self.dead_scopes.insert(old_scope);
     }
 
-    pub fn is_out_of_scope(&self, variable: Var<'ast>) -> bool {
-        self.dead_scopes.contains(&variable.1)
+    pub fn is_out_of_scope(&self, variable: &Variable) -> bool {
+        self.dead_scopes.contains(&variable.scope)
     }
 
     pub fn current_scope(&self) -> LexScope {
         *self.scopes.last().unwrap()
-    }
-
-    pub fn resolve_name(&self, name: &'ast str) -> Option<Var<'ast>> {
-        for (i, scope) in self.scopes.iter().enumerate().rev() {
-            let var = Var(name, *scope);
-            if self.get(var).is_some() {
-                return Some(var);
-            }
-            if self.stack_allocated[i].contains(&var) {
-                return Some(var);
-            }
-        }
-        None
     }
 }
 

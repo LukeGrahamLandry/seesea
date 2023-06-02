@@ -9,10 +9,11 @@ use crate::ir;
 use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame};
 use crate::ir::{CastType, Label, Op, Ssa};
 use crate::resolve::parse::Resolver;
-use crate::resolve::{FuncSource, Operation, ResolvedExpr, Var};
+use crate::resolve::{FuncSource, Operation, ResolvedExpr, Var, Variable, VariableRef};
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::rc::Rc;
 
 type AstStmt = AnyStmt<ResolvedExpr>;
 type AstFunction = AnyFunction<ResolvedExpr>;
@@ -22,13 +23,11 @@ struct AstParser<'ast> {
     ast: &'ast AstModule,
     ir: ir::Module,
     func: Option<ir::Function>, // needs to become a stack if i allow parsing nested functions i guess?
-    control: ControlFlowStack<'ast>,
+    control: ControlFlowStack,
     root_node: Option<&'ast AstStmt>,
 
     /// variable -> register holding a pointer to that variable's value.
-    stack_addresses: HashMap<Var<'ast>, Ssa>,
-    /// Collections of which variables require a stable stack address.
-    needs_stack_address: HashSet<Var<'ast>>,
+    stack_addresses: HashMap<VariableRef, Ssa>,
 }
 
 impl From<AnyModule<AnyFunction<MetaExpr>>> for ir::Module {
@@ -65,33 +64,22 @@ impl<'ast> AstParser<'ast> {
             control: Default::default(),
             root_node: None,
             stack_addresses: Default::default(),
-            needs_stack_address: Default::default(),
         }
     }
 
     fn parse_function(&mut self, input: &'ast AstFunction) {
         // TODO: separate these out into an Option
-        assert!(
-            self.func.is_none()
-                && self.needs_stack_address.is_empty()
-                && self.stack_addresses.is_empty()
-        );
+        assert!(self.func.is_none() && self.stack_addresses.is_empty());
         self.func = Some(ir::Function::new(input.signature.clone()));
         let mut entry = self.func_mut().new_block();
         self.control.push_flow_frame(entry);
 
         self.control.push_scope();
-        let arguments = input
-            .signature
-            .param_types
-            .iter()
-            .zip(input.signature.param_names.iter());
-        for (ty, name) in arguments {
-            let variable = Var(name.as_ref(), self.control.current_scope());
-            let register = self.make_ssa(ty);
+        for variable in input.arg_vars.as_ref().unwrap().iter() {
+            let register = self.make_ssa(&variable.ty);
             self.func_mut()
-                .set_debug(register, || format!("{}_arg", name));
-            self.control.set(variable, register);
+                .set_debug(register, || format!("{}_arg", variable.name));
+            self.control.set(variable.clone(), register);
             self.func_mut().arg_registers.push(register);
         }
         self.control.push_scope();
@@ -109,8 +97,6 @@ impl<'ast> AstParser<'ast> {
         let _ = self.control.pop_flow_frame();
         self.control.clear();
         self.stack_addresses.clear();
-        self.needs_stack_address.clear();
-        assert_eq!(self.stack_addresses.len(), self.needs_stack_address.len());
 
         println!("------------");
     }
@@ -129,8 +115,14 @@ impl<'ast> AstParser<'ast> {
             AstStmt::Expression { expr } => {
                 let _ = self.emit_expr(expr, *block);
             }
-            AstStmt::DeclareVar { name, value, kind } => {
-                self.declare_variable(name, value, kind, *block)
+            AstStmt::DeclareVar {
+                name,
+                value,
+                kind,
+                variable,
+            } => {
+                assert_eq!(kind, &variable.as_ref().unwrap().ty);
+                self.declare_variable(variable.as_ref().unwrap().clone(), value, *block)
             }
             AstStmt::Return { value } => match value {
                 None => {
@@ -164,24 +156,16 @@ impl<'ast> AstParser<'ast> {
         }
     }
 
-    fn declare_variable(
-        &mut self,
-        name: &'ast str,
-        value: &'ast ResolvedExpr,
-        kind: &CType,
-        block: Label,
-    ) {
-        let variable = Var(name, self.control.current_scope());
-
-        if kind.is_struct() {
+    fn declare_variable(&mut self, variable: VariableRef, value: &'ast ResolvedExpr, block: Label) {
+        if variable.ty.is_struct() {
             println!("Struct allocation for {:?}", variable);
             let ptr_register = self.func_mut().next_var();
-            self.control.set_stack_alloc(variable, kind, ptr_register);
+            self.control.set_stack_alloc(variable.clone(), ptr_register);
             self.func_mut().push(
                 block,
                 Op::StackAlloc {
                     dest: ptr_register,
-                    ty: kind.clone(),
+                    ty: variable.ty.clone(),
                     count: 1,
                 },
                 value.info(),
@@ -194,19 +178,19 @@ impl<'ast> AstParser<'ast> {
             .emit_expr(value, block)
             .expect("Variable type cannot be void.");
 
-        assert_eq!(self.type_of(value_register), *kind);
+        assert_eq!(self.type_of(value_register), variable.ty);
 
-        if self.needs_stack_address.contains(&variable) {
+        if variable.needs_stack_alloc.get() {
             println!("Stack allocation for {:?}", variable);
             // Somebody wants to take the address of this variable later,
             // so we need to make sure it gets allocated on the stack and not kept in a register.
             let ptr_register = self.func_mut().next_var();
-            self.control.set_stack_alloc(variable, kind, ptr_register);
+            self.control.set_stack_alloc(variable.clone(), ptr_register);
             self.func_mut().push(
                 block,
                 Op::StackAlloc {
                     dest: ptr_register,
-                    ty: kind.clone(),
+                    ty: variable.ty.clone(),
                     count: 1,
                 },
                 value.info(),
@@ -223,9 +207,10 @@ impl<'ast> AstParser<'ast> {
         } else {
             println!("No stack allocation for {:?}", variable);
             // Nobody cares where this goes so it can stay a register if the backend wants.
-            self.control.set(variable, value_register);
-            self.func_mut()
-                .set_debug(value_register, || format!("{}_{}", name, variable.1 .0));
+            self.control.set(variable.clone(), value_register);
+            self.func_mut().set_debug(value_register, || {
+                format!("{}_{}", variable.name, variable.scope.0)
+            });
         }
     }
 
@@ -352,10 +337,7 @@ impl<'ast> AstParser<'ast> {
     }
 
     // TODO: this should return a struct
-    fn parse_branch(
-        &mut self,
-        branch_body: &'ast AstStmt,
-    ) -> (Label, Label, FlowStackFrame<'ast>, bool) {
+    fn parse_branch(&mut self, branch_body: &'ast AstStmt) -> (Label, Label, FlowStackFrame, bool) {
         let branch_block = self.func_mut().new_block();
         self.control.push_flow_frame(branch_block);
 
@@ -380,7 +362,7 @@ impl<'ast> AstParser<'ast> {
         other_block: Label,
         next_block: Label,
         branch_returns: bool,
-        mutated_in_other_branch: &FlowStackFrame<'ast>,
+        mutated_in_other_branch: &FlowStackFrame,
     ) {
         if branch_returns {
             // This block always returns, so we don't need to emit phi nodes that considers it (even if the variable was mutated in both branches).
@@ -406,12 +388,12 @@ impl<'ast> AstParser<'ast> {
         parent_block: Label,
         branch_block: Label,
         new_block: Label,
-        mutated_in_branch: &FlowStackFrame<'ast>,
+        mutated_in_branch: &FlowStackFrame,
     ) -> HashMap<Ssa, Ssa> {
         // TODO: assert that self.control is looking at the parent_block?
         let mut moved_registers = vec![];
         for (variable, branch_register) in &mutated_in_branch.mutations {
-            let parent_register = match self.control.get_if_in_scope(*variable) {
+            let parent_register = match self.control.get_if_in_scope(variable) {
                 None => continue,
                 Some(ssa) => ssa,
             };
@@ -437,9 +419,9 @@ impl<'ast> AstParser<'ast> {
 
         // Now that we've updated everything, throw away the registers from before the branching.
         for (variable, register) in moved_registers {
-            let old_register = self.control.get(*variable).unwrap();
+            let old_register = self.control.get(variable).unwrap();
             original_to_phi.insert(old_register, register);
-            self.control.set(*variable, register);
+            self.control.set(variable.clone(), register);
         }
 
         original_to_phi
@@ -448,15 +430,15 @@ impl<'ast> AstParser<'ast> {
     // Assumes you could have come from either if_true or if_false
     fn emit_phi(
         &mut self,
-        (if_true, mutated_in_then): (Label, FlowStackFrame<'ast>),
-        (if_false, mut mutated_in_else): (Label, FlowStackFrame<'ast>),
+        (if_true, mutated_in_then): (Label, FlowStackFrame),
+        (if_false, mut mutated_in_else): (Label, FlowStackFrame),
         block: Label,
     ) {
         let mut moved_registers = vec![];
         // We have the set of Vars whose register changed in one of the branches.
         // Now that we've rejoined, future code in this block needs to access different registers depending how it got here.
         for (variable, then_register) in mutated_in_then.mutations {
-            let original_register = match self.control.get_if_in_scope(variable) {
+            let original_register = match self.control.get_if_in_scope(&variable) {
                 None => continue,
                 Some(ssa) => ssa,
             };
@@ -479,7 +461,7 @@ impl<'ast> AstParser<'ast> {
                 },
             );
 
-            moved_registers.push((variable, new_register));
+            moved_registers.push((variable.clone(), new_register));
 
             self.set_phi_debug(new_register, original_register, other_register);
         }
@@ -489,7 +471,7 @@ impl<'ast> AstParser<'ast> {
             // So we know any remaining will be using the original register as the true branch.
             assert!(!moved_registers.iter().any(|check| check.0 == variable));
 
-            let original_register = match self.control.get_if_in_scope(variable) {
+            let original_register = match self.control.get_if_in_scope(&variable) {
                 None => continue,
                 Some(ssa) => ssa,
             };
@@ -658,7 +640,7 @@ impl<'ast> AstParser<'ast> {
                 let lvalue = self.parse_lvalue(expr, block);
 
                 let register = match lvalue {
-                    Lvalue::RegisterVar(var) => self.control.get(var).unwrap(),
+                    Lvalue::RegisterVar(var) => self.control.get(&var).unwrap(),
                     Lvalue::DerefPtr(addr) => {
                         let value_type = self.type_of(addr);
                         assert!(value_type.is_basic()); // TODO
@@ -783,7 +765,7 @@ impl<'ast> AstParser<'ast> {
         match target {
             Lvalue::RegisterVar(this_variable) => {
                 self.func_mut().set_debug(value_source, || {
-                    format!("{}_{}", this_variable.0, this_variable.1 .0)
+                    format!("{}_{}", this_variable.name, this_variable.scope.0)
                 });
                 self.control.set(this_variable, value_source);
             }
@@ -819,28 +801,28 @@ impl<'ast> AstParser<'ast> {
     /// The type of thing that is stored in the Lvalue (so really the Lvalue is a pointer to this)
     fn value_type(&self, value: &Lvalue) -> CType {
         match value {
-            Lvalue::RegisterVar(var) => self.type_of(self.control.get(*var).unwrap()),
+            Lvalue::RegisterVar(var) => self.type_of(self.control.get(var).unwrap()),
             Lvalue::DerefPtr(addr) => self.type_of(*addr).deref_type(),
         }
     }
 
     /// Get the location in memory that the expr refers to (don't dereference it to extract the value yet).
-    fn parse_lvalue(&mut self, expr: &'ast Operation, block: Label) -> Lvalue<'ast> {
+    fn parse_lvalue(&mut self, expr: &'ast Operation, block: Label) -> Lvalue {
         match expr {
             Operation::GetVar(name) => {
-                let this_variable = name.as_var();
-                if self.control.is_stack_alloc(this_variable) {
+                let this_variable = name;
+                println!("{:?} {:?}", this_variable, name);
+                if this_variable.needs_stack_alloc.get() {
                     let addr = *self
                         .stack_addresses
-                        .get(&this_variable)
+                        .get(this_variable)
                         .expect("Expected stack variable.");
                     let addr_type = self.control.ssa_type(addr);
-                    let var_type = self.control.var_type(this_variable);
-                    assert!(addr_type.is_pointer_to(var_type));
+                    assert!(addr_type.is_pointer_to(&this_variable.ty));
                     Lvalue::DerefPtr(addr)
                 } else {
                     self.control.get(this_variable).unwrap();
-                    Lvalue::RegisterVar(this_variable)
+                    Lvalue::RegisterVar(this_variable.clone())
                 }
             }
             Operation::DerefPtr(value) => {
@@ -858,10 +840,10 @@ impl<'ast> AstParser<'ast> {
     fn emit_get_field(
         &mut self,
         debug: OpDebugInfo,
-        struct_value: Lvalue<'ast>,
+        struct_value: Lvalue,
         field_index: usize,
         block: Label,
-    ) -> Lvalue<'ast> {
+    ) -> Lvalue {
         let the_struct = struct_value.get_addr();
         let ty = self.type_of(the_struct);
         assert_eq!(ty.depth, 1);
@@ -889,12 +871,12 @@ impl<'ast> AstParser<'ast> {
 
 /// A location in memory.
 #[derive(Debug)]
-enum Lvalue<'ast> {
-    RegisterVar(Var<'ast>), // value
-    DerefPtr(Ssa),          // addr
+enum Lvalue {
+    RegisterVar(VariableRef), // value
+    DerefPtr(Ssa),            // addr
 }
 
-impl<'ast> Lvalue<'ast> {
+impl Lvalue {
     fn get_addr(&self) -> Ssa {
         match self {
             Lvalue::RegisterVar(_) => unreachable!("Cannot get address of temporary value"),

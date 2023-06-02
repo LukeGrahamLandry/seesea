@@ -31,7 +31,9 @@ impl Stmt {
                 writeln!(f, "Expr: ")?;
                 expr.print(depth + 1, f)
             }
-            Stmt::DeclareVar { name, value, kind } => {
+            Stmt::DeclareVar {
+                name, value, kind, ..
+            } => {
                 writeln!(f, "{:?} '{}' = ", kind, name)?;
                 value.print(depth + 1, f)
             }

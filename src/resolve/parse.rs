@@ -2,7 +2,7 @@ use crate::ast::{
     AnyFunction, AnyModule, AnyStmt, CType, LiteralValue, MetaExpr, Module, RawExpr, ValueType,
 };
 use crate::ir::CastType;
-use crate::resolve::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable};
+use crate::resolve::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable, VariableRef};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -12,13 +12,13 @@ pub struct Resolver<'ast> {
     raw_ast: &'ast AnyModule<AnyFunction<MetaExpr>>,
     pub resolved: AnyModule<AnyFunction<ResolvedExpr>>,
     func: FuncCtx<'ast>,
-    scope_count: usize,
 }
 
 #[derive(Default)]
 struct FuncCtx<'ast> {
-    variables: HashMap<Var<'ast>, Rc<Variable>>,
+    variables: HashMap<Var<'ast>, VariableRef>,
     scopes: Vec<LexScope>,
+    scope_count: usize,
 }
 
 // There's so many Box::new here, is that measurably slower?
@@ -38,7 +38,6 @@ impl<'ast> Resolver<'ast> {
             raw_ast,
             resolved,
             func: Default::default(),
-            scope_count: 0,
         }
     }
 
@@ -52,6 +51,7 @@ impl<'ast> Resolver<'ast> {
         self.func = FuncCtx {
             variables: Default::default(),
             scopes: vec![],
+            scope_count: 0,
         };
         self.push_scope();
         let the_args = raw_func
@@ -60,6 +60,7 @@ impl<'ast> Resolver<'ast> {
             .iter()
             .zip(raw_func.signature.param_names.iter());
         self.push_scope();
+        let mut arg_vars = vec![];
         for (kind, name) in the_args {
             let scope = *self.func.scopes.last().unwrap();
             let var = Var(name.as_ref(), scope);
@@ -69,7 +70,9 @@ impl<'ast> Resolver<'ast> {
                 ty: kind.clone(),
                 needs_stack_alloc: Cell::new(false),
             };
-            self.func.variables.insert(var, Rc::new(variable));
+            let var_ref = Rc::new(variable);
+            arg_vars.push(var_ref.clone());
+            self.func.variables.insert(var, var_ref);
         }
         // TODO push scope with arguments
         let body = self.parse_stmt(&raw_func.body);
@@ -78,6 +81,7 @@ impl<'ast> Resolver<'ast> {
         self.resolved.functions.push(AnyFunction {
             body,
             signature: raw_func.signature.clone(),
+            arg_vars: Some(arg_vars),
         })
     }
 
@@ -115,7 +119,9 @@ impl<'ast> Resolver<'ast> {
             AnyStmt::For { .. } => {
                 todo!()
             }
-            AnyStmt::DeclareVar { name, value, kind } => {
+            AnyStmt::DeclareVar {
+                name, value, kind, ..
+            } => {
                 let scope = *self.func.scopes.last().unwrap();
                 let var = Var(name.as_ref(), scope);
                 let variable = Variable {
@@ -124,13 +130,16 @@ impl<'ast> Resolver<'ast> {
                     ty: kind.clone(),
                     needs_stack_alloc: Cell::new(false),
                 };
-                self.func.variables.insert(var, Rc::new(variable));
+                let rc_var = Rc::new(variable);
+                self.func.variables.insert(var, rc_var.clone());
                 let value = self.parse_expr(value);
                 let value = self.implicit_cast(value, kind);
                 AnyStmt::DeclareVar {
                     name: name.clone(),
                     value: Box::new(value),
                     kind: kind.clone(),
+
+                    variable: Some(rc_var),
                 }
             }
             AnyStmt::Return { value } => AnyStmt::Return {
@@ -283,7 +292,7 @@ impl<'ast> Resolver<'ast> {
         }
     }
 
-    pub fn resolve_name(&self, name: &'ast str) -> Rc<Variable> {
+    pub fn resolve_name(&self, name: &'ast str) -> VariableRef {
         for scope in self.func.scopes.iter().rev() {
             let var = Var(name, *scope);
             if let Some(variable) = self.func.variables.get(&var) {
@@ -294,8 +303,8 @@ impl<'ast> Resolver<'ast> {
     }
 
     fn push_scope(&mut self) {
-        self.scope_count += 1;
-        self.func.scopes.push(LexScope(self.scope_count));
+        self.func.scope_count += 1;
+        self.func.scopes.push(LexScope(self.func.scope_count));
     }
 
     fn pop_scope(&mut self) {
