@@ -1,7 +1,9 @@
-use crate::ast::{AnyFunction, AnyStmt, CType, FuncSignature, Function, Module, RawExpr, Stmt};
+use crate::ast::{
+    AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, Function, MetaExpr, Module, RawExpr,
+};
 use std::fmt::{Debug, Formatter};
 
-impl Debug for Stmt {
+impl<Expr: TreePrint> Debug for AnyStmt<Expr> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         self.print(0, f)
     }
@@ -13,38 +15,38 @@ impl Debug for RawExpr {
     }
 }
 
-impl Stmt {
+impl<Expr: TreePrint> AnyStmt<Expr> {
     fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result {
         for _ in 0..depth {
             f.write_str("    ")?;
         }
         write!(f, "({}) ", depth)?;
         match self {
-            Stmt::Block { body, .. } => {
+            AnyStmt::Block { body, .. } => {
                 writeln!(f, "Block: ")?;
                 for stmt in body {
                     stmt.print(depth + 1, f)?;
                 }
                 Ok(())
             }
-            Stmt::Expression { expr } => {
+            AnyStmt::Expression { expr } => {
                 writeln!(f, "Expr: ")?;
                 expr.print(depth + 1, f)
             }
-            Stmt::DeclareVar {
+            AnyStmt::DeclareVar {
                 name, value, kind, ..
             } => {
                 writeln!(f, "{:?} '{}' = ", kind, name)?;
                 value.print(depth + 1, f)
             }
-            Stmt::Return { value } => match value {
+            AnyStmt::Return { value } => match value {
                 None => writeln!(f, "Return;"),
                 Some(value) => {
                     writeln!(f, "Return: ")?;
                     value.print(depth + 1, f)
                 }
             },
-            Stmt::If {
+            AnyStmt::If {
                 condition,
                 then_body,
                 else_body,
@@ -54,12 +56,12 @@ impl Stmt {
                 then_body.print(depth + 1, f)?;
                 else_body.print(depth + 1, f)
             }
-            Stmt::While { condition, body } => {
+            AnyStmt::While { condition, body } => {
                 writeln!(f, "While: ")?;
                 condition.print(depth + 1, f)?;
                 body.print(depth + 1, f)
             }
-            Stmt::For {
+            AnyStmt::For {
                 initializer,
                 condition,
                 increment,
@@ -71,14 +73,14 @@ impl Stmt {
                 increment.print(depth + 1, f)?;
                 body.print(depth + 1, f)
             }
-            Stmt::Nothing => {
+            AnyStmt::Nothing => {
                 writeln!(f, "Nothing")
             }
         }
     }
 }
 
-impl RawExpr {
+impl TreePrint for RawExpr {
     fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result {
         for _ in 0..depth {
             f.write_str("    ")?;
@@ -137,14 +139,20 @@ impl RawExpr {
     }
 }
 
-impl Debug for Function {
+impl TreePrint for MetaExpr {
+    fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result {
+        self.expr.print(depth, f)
+    }
+}
+
+impl<Expr: TreePrint> Debug for AnyFunction<Expr> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         writeln!(f, "{:?}", self.signature)?;
         self.body.print(1, f)
     }
 }
 
-impl Debug for Module {
+impl<Expr: TreePrint> Debug for AnyModule<AnyFunction<Expr>> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         writeln!(f, "=== AST: {} ===", self.name)?;
         for func in &self.functions {
@@ -175,4 +183,8 @@ impl Debug for FuncSignature {
         }
         write!(f, ") -> {:?}", self.return_type)
     }
+}
+
+pub trait TreePrint {
+    fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result;
 }

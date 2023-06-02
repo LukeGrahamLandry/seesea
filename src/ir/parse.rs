@@ -3,7 +3,7 @@
 use crate::ast;
 use crate::ast::{
     AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncSignature, LiteralValue, MetaExpr,
-    OpDebugInfo, RawExpr, Stmt, ValueType,
+    OpDebugInfo, RawExpr, ValueType,
 };
 use crate::ir;
 use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame};
@@ -39,6 +39,7 @@ impl From<AnyModule<AnyFunction<MetaExpr>>> for ir::Module {
 }
 
 pub fn parse_ast<'ast>(program: &'ast AstModule) -> ir::Module {
+    // println!("{:?}", program);  this spams a bunch of types at you
     let mut parser: AstParser<'ast> = AstParser::new(program);
 
     for func in program.forward_declarations.clone() {
@@ -621,6 +622,7 @@ impl<'ast> AstParser<'ast> {
                         depth: 1,
                     },
                     LiteralValue::FloatNumber { .. } => CType::direct(ValueType::F64),
+                    LiteralValue::UninitStruct => unreachable!(),
                 };
 
                 let dest = self.make_ssa(&kind);
@@ -833,7 +835,7 @@ impl<'ast> AstParser<'ast> {
                 let s = self.parse_lvalue(object, block);
                 self.emit_get_field(object.info(), s, *index, block)
             }
-            _ => unreachable!(),
+            _ => unreachable!("parse lvalue {:?}", expr),
         }
     }
 

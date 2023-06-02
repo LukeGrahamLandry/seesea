@@ -12,6 +12,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 pub mod parse;
+mod print;
 
 pub struct ResolvedExpr {
     expr: Operation,
@@ -19,7 +20,6 @@ pub struct ResolvedExpr {
     line: OpDebugInfo,
 }
 
-#[derive(Debug)]
 pub enum Operation {
     Binary {
         left: Box<ResolvedExpr>,
@@ -95,8 +95,8 @@ impl Debug for ResolvedExpr {
 
 impl Hash for Variable {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Not including the Cell because that can mutate (even tho it really shouldn't after resolving stage)
         self.scope.hash(state);
-        self.needs_stack_alloc.get().hash(state);
         self.ty.hash(state);
         self.name.hash(state);
     }

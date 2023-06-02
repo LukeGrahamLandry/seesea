@@ -1,11 +1,13 @@
 //! TOKENS -> AST
 
 use crate::ast::{
-    BinaryOp, CType, FuncSignature, Function, LiteralValue, MetaExpr, Module, RawExpr, Stmt,
+    AnyStmt, BinaryOp, CType, FuncSignature, Function, LiteralValue, MetaExpr, Module, RawExpr,
     StructSignature, ValueType,
 };
 use crate::scanning::{Scanner, Token, TokenType};
 use std::rc::Rc;
+
+pub type Stmt = AnyStmt<MetaExpr>;
 
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {

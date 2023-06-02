@@ -1,5 +1,6 @@
 use crate::ast::{
-    AnyFunction, AnyModule, AnyStmt, CType, LiteralValue, MetaExpr, Module, RawExpr, ValueType,
+    AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, LiteralValue, MetaExpr, Module, RawExpr,
+    ValueType,
 };
 use crate::ir::CastType;
 use crate::resolve::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable, VariableRef};
@@ -19,6 +20,7 @@ struct FuncCtx<'ast> {
     variables: HashMap<Var<'ast>, VariableRef>,
     scopes: Vec<LexScope>,
     scope_count: usize,
+    signature: Option<&'ast FuncSignature>,
 }
 
 // There's so many Box::new here, is that measurably slower?
@@ -52,6 +54,7 @@ impl<'ast> Resolver<'ast> {
             variables: Default::default(),
             scopes: vec![],
             scope_count: 0,
+            signature: Some(&raw_func.signature),
         };
         self.push_scope();
         let the_args = raw_func
@@ -74,7 +77,6 @@ impl<'ast> Resolver<'ast> {
             arg_vars.push(var_ref.clone());
             self.func.variables.insert(var, var_ref);
         }
-        // TODO push scope with arguments
         let body = self.parse_stmt(&raw_func.body);
         self.pop_scope();
         self.pop_scope();
@@ -128,7 +130,7 @@ impl<'ast> Resolver<'ast> {
                     name: name.clone(),
                     scope,
                     ty: kind.clone(),
-                    needs_stack_alloc: Cell::new(false),
+                    needs_stack_alloc: Cell::new(kind.is_struct()),
                 };
                 let rc_var = Rc::new(variable);
                 self.func.variables.insert(var, rc_var.clone());
@@ -142,9 +144,19 @@ impl<'ast> Resolver<'ast> {
                     variable: Some(rc_var),
                 }
             }
-            AnyStmt::Return { value } => AnyStmt::Return {
-                value: value.as_ref().map(|val| Box::new(self.parse_expr(val))),
-            },
+            AnyStmt::Return { value } => {
+                let value = match value {
+                    None => None,
+                    Some(value) => {
+                        let value = self.parse_expr(value);
+                        let returns = &self.func.signature.as_ref().unwrap().return_type;
+                        assert!(!returns.is_raw_void());
+                        Some(Box::new(self.implicit_cast(value, returns)))
+                    }
+                };
+
+                AnyStmt::Return { value }
+            }
             AnyStmt::Nothing => AnyStmt::Nothing,
         }
     }
@@ -156,7 +168,13 @@ impl<'ast> Resolver<'ast> {
                 let left = self.parse_expr(left);
                 let right = self.parse_expr(right);
 
-                let target = if left.ty.is_ptr() || right.ty.is_ptr() {
+                let mut target_ptr_type = None;
+
+                let target = if left.ty.is_ptr() {
+                    target_ptr_type = Some(left.ty.clone());
+                    CType::int()
+                } else if right.ty.is_ptr() {
+                    target_ptr_type = Some(right.ty.clone());
                     CType::int()
                 } else if priority(&right.ty) > priority(&left.ty) {
                     right.ty.clone()
@@ -166,14 +184,21 @@ impl<'ast> Resolver<'ast> {
 
                 let left = self.implicit_cast(left, &target);
                 let right = self.implicit_cast(right, &target);
-                (
-                    target,
-                    Operation::Binary {
+                let mut result = ResolvedExpr {
+                    ty: target,
+                    expr: Operation::Binary {
                         left: Box::new(left),
                         right: Box::new(right),
                         op: *op,
                     },
-                )
+                    line: expr.info(),
+                };
+
+                if let Some(target_ptr_type) = target_ptr_type {
+                    result = self.implicit_cast(result, &target_ptr_type);
+                }
+
+                (result.ty, result.expr)
             }
             RawExpr::Unary(op, value) => {
                 let value = self.parse_expr(value);
@@ -216,15 +241,15 @@ impl<'ast> Resolver<'ast> {
                     },
                 )
             }
-            RawExpr::GetField(object, name) => {
+            RawExpr::GetField(object, field_name) => {
                 let object = self.parse_expr(object);
-                let name = match &object.ty.ty {
+                let struct_name = match &object.ty.ty {
                     ValueType::Struct(name) => name.as_ref(),
                     _ => unreachable!(),
                 };
-                let struct_def = self.raw_ast.get_struct(name).unwrap();
-                let field_index = struct_def.field_index(name);
-                let field_ty = struct_def.field_type(name);
+                let struct_def = self.raw_ast.get_struct(struct_name).unwrap();
+                let field_index = struct_def.field_index(field_name);
+                let field_ty = struct_def.field_type(field_name);
                 (
                     field_ty.clone(),
                     Operation::GetField(Box::new(object), field_index),
@@ -239,24 +264,31 @@ impl<'ast> Resolver<'ast> {
                     LiteralValue::IntNumber(_) => CType::direct(ValueType::U64),
                     LiteralValue::FloatNumber(_) => CType::direct(ValueType::F64),
                     LiteralValue::StringBytes(_) => CType::direct(ValueType::U8).ref_type(),
+                    LiteralValue::UninitStruct => unreachable!(),
                 };
                 (ty, Operation::Literal(value.clone()))
             }
             RawExpr::Default(ty) => {
-                if ty.is_struct() {
-                    todo!()
+                let lit = if ty.is_struct() {
+                    LiteralValue::UninitStruct
                 } else {
-                    let zero = ResolvedExpr {
-                        expr: Operation::Literal(LiteralValue::IntNumber(0)),
-                        ty: ty.clone(),
-                        line: expr.info(),
-                    };
-                    let value = self.implicit_cast(zero, ty);
-                    (value.ty, value.expr)
-                }
+                    LiteralValue::IntNumber(0)
+                };
+                let zero = ResolvedExpr {
+                    expr: Operation::Literal(lit),
+                    ty: ty.clone(),
+                    line: expr.info(),
+                };
+                let value = self.implicit_cast(zero, ty);
+                (value.ty, value.expr)
             }
-            RawExpr::LooseCast(_, _) => {
-                todo!()
+            RawExpr::LooseCast(value, target) => {
+                let value = self.parse_expr(value);
+                let kind = self.decide_loose_cast(&value.ty, target);
+                (
+                    target.clone(),
+                    Operation::Cast(Box::new(value), target.clone(), kind),
+                )
             }
             RawExpr::SizeOfType(ty) => {
                 let s = self.raw_ast.size_of(ty) as u64;
@@ -264,7 +296,7 @@ impl<'ast> Resolver<'ast> {
             }
             RawExpr::DerefPtr(ptr) => {
                 let ptr = self.parse_expr(ptr);
-                (ptr.ty.deref_type(), Operation::AddressOf(Box::new(ptr)))
+                (ptr.ty.deref_type(), Operation::DerefPtr(Box::new(ptr)))
             }
             RawExpr::AddressOf(value) => {
                 let value = self.parse_expr(value);
@@ -321,9 +353,9 @@ impl<'ast> Resolver<'ast> {
 
         // Void pointers can be used as any pointer type.
         let void_ptr = (target.is_void_ptr() && value.ty.is_ptr())
-            || (value.ty.is_ptr() && target.is_void_ptr());
+            || (target.is_ptr() && value.ty.is_void_ptr());
         if void_ptr {
-            // TODO: Does c have rules about levels of indirection.
+            // TODO: Does c have rules about levels of indirection?
             if value.ty.depth != target.depth {
                 println!(
                     "Warning: implicit cast from {:?} to {:?}",
@@ -332,7 +364,78 @@ impl<'ast> Resolver<'ast> {
             }
             return do_cast(CastType::Bits, value, target);
         }
-        todo!()
+
+        if value.ty.is_ptr() && target.is_raw_int() {
+            // cast to usize
+            let addr_number = do_cast(CastType::PtrToInt, value, &CType::int());
+            // then make the type you wanted
+            return self.implicit_cast(addr_number, target);
+        }
+
+        if value.ty.is_raw_int() && target.is_ptr() {
+            // cast to usize
+            let addr_number = self.implicit_cast(value, &CType::int());
+            // then to pointer
+            return do_cast(CastType::IntToPtr, addr_number, target);
+        }
+
+        let input = &value.ty;
+        let output = target;
+        let kind = if input.is_raw_float() && output.is_raw_float() {
+            if input.ty == ValueType::F32 {
+                CastType::FloatUp
+            } else {
+                CastType::FloatDown
+            }
+        } else if input.is_raw_int() && output.is_raw_int() {
+            if self.raw_ast.size_of(input) < self.raw_ast.size_of(output) {
+                CastType::UnsignedIntUp
+            } else {
+                CastType::IntDown
+            }
+        } else if input.is_raw_int() && output.is_raw_float() {
+            CastType::UIntToFloat
+        } else if input.is_raw_float() && output.is_raw_int() {
+            CastType::FloatToUInt
+        } else {
+            todo!("Cast from {:?} to {:?}", value.ty, target);
+        };
+        do_cast(kind, value, target)
+    }
+
+    fn decide_loose_cast(&self, input: &CType, output: &CType) -> CastType {
+        if input == output || input.is_ptr() && output.is_ptr() {
+            CastType::Bits
+        } else if input.is_raw_float() && output.is_raw_float() {
+            if input.ty == ValueType::F32 {
+                CastType::FloatUp
+            } else {
+                CastType::FloatDown
+            }
+        } else if input.is_raw_int() && output.is_raw_int() {
+            if self.raw_ast.size_of(input) < self.raw_ast.size_of(output) {
+                CastType::UnsignedIntUp
+            } else {
+                CastType::IntDown
+            }
+        } else if input.is_raw_int() && output.is_raw_float() {
+            CastType::UIntToFloat
+        } else if input.is_raw_float() && output.is_raw_int() {
+            CastType::FloatToUInt
+        } else if input.is_ptr() && output.is_raw_int() {
+            CastType::PtrToInt
+        } else if input.is_raw_int() && output.is_ptr() {
+            CastType::IntToPtr
+        } else {
+            assert_eq!(
+                self.raw_ast.size_of(input),
+                self.raw_ast.size_of(output),
+                "Bit cast needs equal sizes. {:?} != {:?}",
+                input,
+                output
+            );
+            CastType::Bits
+        }
     }
 }
 

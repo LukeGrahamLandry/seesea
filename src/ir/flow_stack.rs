@@ -83,11 +83,12 @@ impl ControlFlowStack {
             None => {
                 // the variable was declared in a scope inside the flow frame, it doesn't exist anymore as we try to bubble up.
                 // TODO: make sure `if (1) long x = 10;` is not valid.
-                assert!(
-                    self.is_out_of_scope(variable),
-                    "{:?} register not found in control stack but is still in scope.",
-                    variable
-                );
+                // dont care anymore because resolver handles it
+                // assert!(
+                //     self.is_out_of_scope(variable),
+                //     "{:?} register not found in control stack but is still in scope.",
+                //     variable
+                // );
                 None
             }
             Some(ssa) => Some(ssa),
@@ -102,7 +103,8 @@ impl ControlFlowStack {
     }
 
     pub fn set_stack_alloc(&mut self, variable: VariableRef, addr_register: Ssa) {
-        assert_eq!(variable.scope, self.current_scope());
+        // dont care any more because resolver handles it
+        // assert_eq!(variable.scope, self.current_scope());
         assert!(self
             .stack_allocated
             .last_mut()
@@ -132,11 +134,12 @@ impl ControlFlowStack {
             .stack_allocated
             .pop()
             .expect("You should always be in a scope.");
+        // dont care anymore because resolver handles it
         // @Speed
-        assert!(
-            !stack_alloc.iter().any(|var| var.scope != old_scope),
-            "Popped scope contained a stack variable from a different scope."
-        );
+        // assert!(
+        //     !stack_alloc.iter().any(|var| var.scope != old_scope),
+        //     "Popped scope contained a stack variable from a different scope."
+        // );
         self.dead_scopes.insert(old_scope);
     }
 

@@ -153,6 +153,9 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                         self.builder.build_store(ptr, string);
                         ptr.into()
                     }
+                    LiteralValue::UninitStruct => {
+                        todo!()
+                    }
                 };
                 self.set(dest, val);
             }

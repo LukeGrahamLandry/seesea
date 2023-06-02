@@ -8,7 +8,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 mod parse;
-mod print;
+pub mod print;
 
 pub struct AnyModule<Func: FuncRepr> {
     // Order matters (for not needing forward declarations)
@@ -53,9 +53,6 @@ impl StructSignature {
         self.fields.iter().position(|f| f.0 == name).unwrap()
     }
 }
-
-// TODO: this is prep for having a different "resolved" form of the ast that goes into the ir parser with exact types.
-pub type Stmt = AnyStmt<MetaExpr>;
 
 // @Speed the expressions here dont need to be boxed
 pub enum AnyStmt<Expr> {
@@ -140,6 +137,7 @@ pub enum LiteralValue {
     IntNumber(u64),
     FloatNumber(f64),
     StringBytes(Rc<str>),
+    UninitStruct,
 }
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
