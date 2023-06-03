@@ -4,6 +4,7 @@ use crate::ast::{
 };
 use crate::ir::CastType;
 
+use crate::log;
 use crate::resolve::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable, VariableRef};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -387,9 +388,10 @@ impl<'ast> Resolver<'ast> {
         if void_ptr {
             // TODO: Does c have rules about levels of indirection?
             if value.ty.depth != target.depth {
-                println!(
+                log!(
                     "Warning: implicit cast from {:?} to {:?}",
-                    value.ty, target.ty
+                    value.ty,
+                    target.ty
                 );
             }
             return do_cast(CastType::Bits, value, target);

@@ -5,6 +5,7 @@ use crate::ast::{
     StructSignature, ValueType,
 };
 
+use crate::log;
 use crate::scanning::{Scanner, Token, TokenType};
 use std::rc::Rc;
 
@@ -453,7 +454,7 @@ impl<'src> Parser<'src> {
         while self.scanner.matches(TokenType::Star) {
             ty = ty.ref_type();
         }
-        println!("found type {:?} next: {:?}", ty, self.scanner.peek());
+        log!("found type {:?} next: {:?}", ty, self.scanner.peek());
         Some(ty)
     }
 

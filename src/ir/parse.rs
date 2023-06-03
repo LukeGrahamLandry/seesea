@@ -4,9 +4,9 @@ use crate::ast::{
     AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncSignature, LiteralValue, MetaExpr,
     OpDebugInfo, ValueType,
 };
-use crate::ir;
 use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame};
 use crate::ir::{Label, Op, Ssa};
+use crate::{ir, log};
 
 use crate::resolve::parse::Resolver;
 use crate::resolve::{FuncSource, Operation, ResolvedExpr, VariableRef};
@@ -37,7 +37,7 @@ impl From<AnyModule<AnyFunction<MetaExpr>>> for ir::Module {
 }
 
 pub fn parse_ast<'ast>(program: &'ast AstModule) -> ir::Module {
-    println!("{:?}", program);
+    log!("{:?}", program);
     let mut parser: AstParser<'ast> = AstParser::new(program);
 
     for func in program.forward_declarations.clone() {
@@ -89,14 +89,14 @@ impl<'ast> AstParser<'ast> {
         let mut empty = HashMap::new();
         mem::swap(&mut self.control.register_types, &mut empty);
         self.func_mut().register_types = empty;
-        println!("{:?}", self.func_mut());
+        log!("{:?}", self.func_mut());
         self.func_mut().finish();
         self.ir.functions.push(self.func.take().unwrap());
         let _ = self.control.pop_flow_frame();
         self.control.clear();
         self.stack_addresses.clear();
 
-        println!("------------");
+        log!("------------");
     }
 
     fn emit_statement(&mut self, stmt: &'ast AstStmt, block: &mut Label) {
@@ -550,7 +550,7 @@ impl<'ast> AstParser<'ast> {
         // The body always executes directly after the condition.
         // So body reads any changes made in condition without caring if its in the first iteration of the loop.
         // Later patches will re-run over the body but any overlaps with this will be ignored because already replaced.
-        println!("[parent] -> [condition]: {:?}", mut_condition);
+        log!("[parent] -> [condition]: {:?}", mut_condition);
         self.patch_below(start_body_block, &mut_condition);
 
         // Since you can only exit after running the condition (and not body),
@@ -562,7 +562,7 @@ impl<'ast> AstParser<'ast> {
 
         // If something mutates in the condition (but not the body), then effectively the conditions execute consecutively.
         // The condition needs to read from the parent on the first iteration and itself on the rest.
-        println!(
+        log!(
             "[parent] -> [parent or condition]: {:?}",
             orginal_or_mut_condition
         );
@@ -572,7 +572,7 @@ impl<'ast> AstParser<'ast> {
         // So the condition needs to read from either depending if this is the first iteration of the loop.
         // When something changes in both condition and body, the body's change takes priority for what gets read in the condition,
         // and the condition can never read the change made in the condition (because the body will change it again first).
-        println!("[parent] -> [parent or body]: {:?}", original_or_mut_body);
+        log!("[parent] -> [parent or body]: {:?}", original_or_mut_body);
         self.patch_below(condition_block, &original_or_mut_body);
 
         *block = exit_block;

@@ -245,7 +245,7 @@ impl<'src> Scanner<'src> {
 
     /// If the next token matches ty, consume it and return true.
     pub fn matches(&mut self, ty: TokenType) -> bool {
-        // println!(
+        // log!(
         //     "{:?}, {:?} {:?} {:?}",
         //     ty,
         //     self.peek(),

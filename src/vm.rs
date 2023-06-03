@@ -4,8 +4,8 @@
 #![allow(unused)]
 
 use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
-use crate::ir;
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
+use crate::{ir, log};
 
 use crate::macros::vm::{do_bin_cmp, do_bin_math};
 use std::collections::{HashMap, HashSet};
@@ -89,7 +89,7 @@ impl<'ir> Vm<'ir> {
     }
 
     pub fn eval(module: &Module, function_name: &str, args: &[VmValue]) -> VmResult {
-        println!("Start VM Eval.");
+        log!("Start VM Eval.");
         let mut vm = Vm::new(module);
         vm.tick_limit = Some(250); // TODO: move limit into tests file
         let func = module.get_func(function_name).expect("Function not found");
@@ -133,7 +133,7 @@ impl<'ir> Vm<'ir> {
         }
         self.tick += 1;
 
-        println!(
+        log!(
             "[{:?}] ip = {}; {} (frame = {})",
             self.get_frame().block,
             self.get_frame().ip,
@@ -144,7 +144,7 @@ impl<'ir> Vm<'ir> {
             .as_ref()
             .unwrap();
         let op = ops[self.get_frame().ip].clone();
-        println!("Op: {}", self.get_frame().function.print(&op));
+        log!("Op: {}", self.get_frame().function.print(&op));
         match op {
             Op::Binary { dest, a, b, kind } => {
                 let result = match kind {
@@ -189,7 +189,7 @@ impl<'ir> Vm<'ir> {
             }
             Op::Return(value) => {
                 let result = value.map(|v| self.get(v));
-                println!("--- ret {:?}", result);
+                log!("--- ret {:?}", result);
                 for addr in self.get_frame().allocations.clone() {
                     self.heap.free(addr, self.trace());
                 }
@@ -248,7 +248,7 @@ impl<'ir> Vm<'ir> {
                 self.mut_frame()
                     .registers
                     .insert(dest, VmValue::Pointer(addr));
-                println!("--- Stack {:?} = {:?} ZEROED", addr, ty);
+                log!("--- Stack {:?} = {:?} ZEROED", addr, ty);
             }
             Op::LoadFromPtr { value_dest, addr } => {
                 let addr = self.get(addr);
@@ -259,7 +259,7 @@ impl<'ir> Vm<'ir> {
                     .get(&value_dest)
                     .unwrap();
                 let value = self.heap.as_ref(addr.to_ptr(), self.module.size_of(ty));
-                println!("--- {:?} = *{:?}", value_dest, addr);
+                log!("--- {:?} = *{:?}", value_dest, addr);
                 let value = VmValue::from_bytes(value, ty, self.module);
                 self.set(value_dest, value);
             }
@@ -276,7 +276,7 @@ impl<'ir> Vm<'ir> {
                 let dest_bytes = self.heap.as_mut(addr.to_ptr(), self.module.size_of(ty));
                 assert_eq!(dest_bytes.len(), source_bytes.len());
                 dest_bytes.copy_from_slice(&source_bytes);
-                println!("--- *{:?} = {:?}", addr, value);
+                log!("--- *{:?} = {:?}", addr, value);
             }
             Op::GetFieldAddr {
                 dest,
@@ -298,7 +298,7 @@ impl<'ir> Vm<'ir> {
 
                 let mut result = self.get(object_addr).to_ptr();
                 result.offset += offset as u32;
-                println!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
+                log!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
                 self.set(dest, VmValue::Pointer(result));
             }
             Op::ConstValue { dest, value, .. } => {
@@ -389,7 +389,7 @@ impl<'ir> Vm<'ir> {
         self.mut_frame().last_block = Some(self.get_frame().block);
         self.mut_frame().block = target;
         self.mut_frame().ip = 0;
-        println!(
+        log!(
             "--- Jump from {:?} to {:?}",
             self.get_frame().last_block.unwrap(),
             self.get_frame().block
@@ -398,7 +398,7 @@ impl<'ir> Vm<'ir> {
 
     fn set(&mut self, register: Ssa, value: VmValue) {
         self.mut_frame().registers.insert(register, value);
-        println!("--- {:?} = {:?}", register, value);
+        log!("--- {:?} = {:?}", register, value);
     }
 
     pub fn get(&self, register: Ssa) -> VmValue {
@@ -425,7 +425,7 @@ impl<'ir> Vm<'ir> {
                 VmValue::F64(angle.sin())
             }
             "printf" => {
-                println!("Called printf {:?}", args);
+                log!("Called printf {:?}", args);
                 VmValue::U64(0)
             }
             "malloc" => {
@@ -448,7 +448,7 @@ impl<'ir> Vm<'ir> {
                 VmValue::Uninit
             }
             "print_vm_stack_trace" => {
-                println!("{:?}", self.trace());
+                log!("{:?}", self.trace());
                 VmValue::Uninit
             }
             _ => {
@@ -694,7 +694,7 @@ impl DebugAlloc {
                 .iter()
                 .filter(|(_, alloc)| alloc.free_at.is_none())
                 .map(|(_, alloc)| {
-                    println!("Memory leak {}", alloc.debug());
+                    log!("Memory leak {}", alloc.debug());
                 })
                 .count(),
             0

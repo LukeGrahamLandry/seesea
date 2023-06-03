@@ -1,16 +1,17 @@
+use std::fs::File;
+use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::thread::sleep;
+use std::time::Duration;
+
 use inkwell::context::Context;
 use inkwell::execution_engine::{JitFunction, UnsafeFunctionPointer};
 use inkwell::OptimizationLevel;
-use std::fs::File;
-use std::io::Write;
-use std::mem::size_of;
 
 use crate::asm::llvm::LlvmFuncGen;
-use crate::ir::Op;
-
 use crate::scanning::Scanner;
 use crate::vm::{Vm, VmValue};
-use crate::{ast, ir};
+use crate::{ast, ir, log};
 
 #[test]
 fn src_to_ast_to_ir() {
@@ -247,7 +248,7 @@ long fib(long n){
     llvm_run::<Func, _>(&ir, "fib", |fib| {
         for (args, answer) in cases {
             let result = unsafe { fib.call(args[0]) };
-            println!("args: {:?}. result: {}", args, result);
+            log!("args: {:?}. result: {}", args, result);
             assert_eq!(result, answer);
         }
     });
@@ -701,36 +702,60 @@ where
     A: FnOnce(JitFunction<F>),
 {
     assert!(ir.get_func(func_name).is_some(), "Function not found.");
-    let context = Context::create();
-    let module = context.create_module(&ir.name);
-    let execution_engine = module
-        .create_jit_execution_engine(OptimizationLevel::None)
-        .unwrap();
-    LlvmFuncGen::new(&module).compile_all(ir);
+    // let context = unsafe {
+    //     if CTX.is_none() {
+    //         CTX = Some(Mutex::new(Context::create()));
+    //     }
+    //
+    //     CTX.as_mut().unwrap()
+    // };
 
-    let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
-    action(func);
-}
+    let action = |context: &Context| {
+        let module = context.create_module(&ir.name);
+        let execution_engine = module
+            .create_jit_execution_engine(OptimizationLevel::None)
+            .unwrap();
+        LlvmFuncGen::new(&module).compile_all(ir);
 
-#[allow(unused)]
-fn llvm_compile(ir: &ir::Module, filename: &str) {
-    assert!(ir.get_func("main").is_some(), "Function 'main' not found.");
-    let context = Context::create();
-    let module = context.create_module(&ir.name);
-    LlvmFuncGen::new(&module).compile_all(ir);
-    let mut file = File::create(format!("target/{}.ll", filename)).unwrap();
-    file.write_all(module.to_string().as_bytes()).unwrap();
-    // cd target
-    // llc -filetype=obj struct_field_addr.ll && /usr/bin/clang struct_field_addr.o -o struct_field_addr && ./struct_field_addr
-    // llc -filetype=obj printf_test.ll && /usr/bin/clang printf_test.o -o printf_test && ./printf_test
+        let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
+        action(func);
+    };
+    unsafe { Context::get_global(action) }
+
+    // sleep(Duration::from_millis(2000));
+    // unsafe {
+    //     match &mut CTX {
+    //         None => {
+    //             CTX = Some(Mutex::new(vec![context]));
+    //         }
+    //         Some(ctx) => {
+    //             ctx.get_mut().unwrap().push(context);
+    //         }
+    //     }
+    // }
 }
+//
+// static mut CTX: Option<Mutex<Context>> = None;
+
+// #[allow(unused)]
+// fn llvm_compile(ir: &ir::Module, filename: &str) {
+//     assert!(ir.get_func("main").is_some(), "Function 'main' not found.");
+//     let context = Context::create();
+//     let module = context.create_module(&ir.name);
+//     LlvmFuncGen::new(&module).compile_all(ir);
+//     let mut file = File::create(format!("target/{}.ll", filename)).unwrap();
+//     file.write_all(module.to_string().as_bytes()).unwrap();
+//     // cd target
+//     // llc -filetype=obj struct_field_addr.ll && /usr/bin/clang struct_field_addr.o -o struct_field_addr && ./struct_field_addr
+//     // llc -filetype=obj printf_test.ll && /usr/bin/clang printf_test.o -o printf_test && ./printf_test
+// }
 
 fn compile_module(src: &str) -> ir::Module {
-    println!("{}", src);
+    log!("{}", src);
     let scan = Scanner::new(src, "test_code".into());
-    println!("{:?}", scan);
+    log!("{:?}", scan);
     let ast = ast::Module::from(scan);
-    println!("{:?}", ast);
+    log!("{:?}", ast);
     ir::Module::from(ast)
 }
 

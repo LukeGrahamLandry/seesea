@@ -16,9 +16,9 @@ use inkwell::values::{
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
-use crate::ir;
 use crate::ir::{CastType, Function, Label, Op, Ssa};
 use crate::macros::llvm::emit_bin_op;
+use crate::{ir, log};
 
 pub struct LlvmFuncGen<'ctx: 'module, 'module> {
     pub(crate) context: ContextRef<'ctx>,
@@ -67,17 +67,17 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             self.functions.insert(function.name.clone(), func);
         }
         for function in ir.functions.iter() {
-            println!("Compiling {:?}", function.signature);
+            log!("Compiling {:?}", function.signature);
             self.emit_function(function);
         }
 
-        println!("=== LLVM IR ====");
-        println!("{}", self.module.to_string());
-        println!("=========");
+        log!("=== LLVM IR ====");
+        log!("{}", self.module.to_string());
+        log!("=========");
 
         match self.module.verify() {
             Ok(_) => {}
-            Err(e) => println!("Failed llvm verify! \n{}.", e),
+            Err(e) => log!("Failed llvm verify! \n{}.", e),
         }
     }
 
@@ -244,19 +244,19 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 let my_out_ty = self.func_get().func_ir.type_of(output);
                 let in_value = self.read_basic_value(input);
                 let out_type = self.reg_basic_type(output);
-                // println!("{:?} Cast", kind);
-                // println!(
+                // log!("{:?} Cast", kind);
+                // log!(
                 //     "    IN: {:?} {:?} {:?}",
                 //     input,
                 //     my_in_ty,
                 //     in_value.get_type()
                 // );
-                // println!("    OUT: {:?} {:?} {:?}", output, my_out_ty, out_type);
+                // log!("    OUT: {:?} {:?} {:?}", output, my_out_ty, out_type);
                 match kind {
                     CastType::Bits => {
                         if my_in_ty == my_out_ty {
                             self.set(output, in_value);
-                            println!("CastType::Bits where input type == output type which is weird but fine I guess");
+                            log!("CastType::Bits where input type == output type which is weird but fine I guess");
                             return;
                         }
                         assert!(
