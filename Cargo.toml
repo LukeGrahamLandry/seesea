@@ -10,3 +10,5 @@ logos = "0.13.0"
 
 # Safe LLVM bindings (typed API for emitting LLVM IR)
 inkwell = { version = "0.2.0", features = ["llvm16-0"] }
+
+llvm-sys = "160.1.0"

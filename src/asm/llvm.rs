@@ -2,6 +2,8 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::ffi::{CStr, CString};
+use std::num::NonZeroU8;
 use std::rc::Rc;
 
 use inkwell::basic_block::BasicBlock;
