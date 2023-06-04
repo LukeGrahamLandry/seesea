@@ -3,13 +3,13 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_uint, CStr, CString};
-use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::num::NonZeroU8;
 use std::rc::Rc;
 
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_sys::core::*;
+use llvm_sys::debuginfo::LLVMDIBuilderCreateGlobalVariableExpression;
 use llvm_sys::prelude::*;
 use llvm_sys::{LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind, LLVMValueKind};
 
@@ -17,23 +17,23 @@ use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir::{CastType, Function, Label, Op, Ssa};
 use crate::{ir, log};
 
-pub struct RawLlvmFuncGen<'ctx: 'ir, 'ir> {
-    pub(crate) context: &'ctx mut TheContext,
-    pub(crate) builder: LLVMBuilderRef,
+pub struct RawLlvmFuncGen<'ir> {
+    ctx: LLVMContextRef,
+    module: LLVMModuleRef,
+    builder: LLVMBuilderRef,
     functions: HashMap<Rc<str>, LLVMValueRef>,
     function_types: HashMap<Rc<str>, LLVMTypeRef>,
-    func: Option<FuncContext<'ctx, 'ir>>,
+    func: Option<FuncContext<'ir>>,
     ir: Option<&'ir ir::Module>,
     llvm_structs: HashMap<Rc<str>, LLVMTypeRef>,
 }
 
 /// Plain old data that holds the state that must be reset for each function.
-struct FuncContext<'ctx: 'ir, 'ir> {
+struct FuncContext<'ir> {
     local_registers: HashMap<Ssa, LLVMValueRef>,
     blocks: Vec<Option<LLVMBasicBlockRef>>,
     func_ir: &'ir Function,
     phi_nodes: HashMap<LLVMValueRef, Vec<(Label, Ssa)>>,
-    _p: PhantomData<&'ctx TheContext>,
 }
 
 pub struct TheContext {
@@ -41,11 +41,14 @@ pub struct TheContext {
     pub module: LLVMModuleRef,
 }
 
-impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
-    pub unsafe fn new(context: &'ctx mut TheContext) -> RawLlvmFuncGen<'ctx, 'ir> {
+impl<'ir> RawLlvmFuncGen<'ir> {
+    /// # Safety
+    /// You must not release the context or the module until after dropping the RawLlvmFuncGen.
+    pub unsafe fn new(context: &mut TheContext) -> RawLlvmFuncGen<'ir> {
         RawLlvmFuncGen {
+            ctx: context.context,
+            module: context.module,
             builder: LLVMCreateBuilderInContext(context.context),
-            context,
             functions: Default::default(),
             function_types: Default::default(),
             func: None,
@@ -55,6 +58,8 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
     }
 
     /// To access the results, use an execution engine created on the LLVM Module.
+    /// # Safety
+    /// You must not release the context or the module until after dropping the RawLlvmFuncGen.
     pub unsafe fn compile_all(&mut self, ir: &'ir ir::Module) {
         self.ir = Some(ir);
         for struct_def in &ir.structs {
@@ -64,7 +69,7 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
             }
 
             let name = null_terminate(&struct_def.name);
-            let llvm_struct = LLVMStructCreateNamed(self.context.context, name.as_ptr());
+            let llvm_struct = LLVMStructCreateNamed(self.ctx, name.as_ptr());
             LLVMStructSetBody(
                 llvm_struct,
                 field_types.as_mut_ptr(),
@@ -83,18 +88,19 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
         }
 
         log!("=== LLVM IR ====");
-        let ir_str = LLVMPrintModuleToString(self.context.module);
+        let ir_str = LLVMPrintModuleToString(self.module);
         log!("{}", CStr::from_ptr(ir_str).to_str().unwrap());
         LLVMDisposeMessage(ir_str);
         log!("=========");
 
-        let mut msg = MaybeUninit::uninit().as_mut_ptr();
+        let mut msg = MaybeUninit::uninit();
         let failed = LLVMVerifyModule(
-            self.context.module,
+            self.module,
             LLVMVerifierFailureAction::LLVMPrintMessageAction,
-            &mut msg,
+            msg.as_mut_ptr(),
         );
         if failed != 0 {
+            let msg = msg.assume_init();
             log!(
                 "Failed llvm verify! \n{}.",
                 CStr::from_ptr(msg).to_str().unwrap()
@@ -112,9 +118,9 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
     }
 
     unsafe fn emit_function_definition(&mut self, function: &FuncSignature) -> LLVMValueRef {
-        let function_type = self.get_func_type(&function);
+        let function_type = self.get_func_type(function);
         let name = null_terminate(&function.name);
-        let function_value = LLVMAddFunction(self.context.module, name.as_ptr(), function_type);
+        let function_value = LLVMAddFunction(self.module, name.as_ptr(), function_type);
         self.functions.insert(function.name.clone(), function_value);
         self.function_types
             .insert(function.name.clone(), function_type);
@@ -190,7 +196,7 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
                             LLVMBool::from(false),
                         );
                         let byte_array_type = LLVMArrayType(
-                            LLVMInt8TypeInContext(self.context.context),
+                            LLVMInt8TypeInContext(self.ctx),
                             (value.len() + 1) as c_uint,
                         );
                         let str_ptr =
@@ -292,13 +298,9 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
                 let llvm_struct_type = self.llvm_type(struct_type);
                 let s_ptr_value = self.get_value(object_addr);
                 let mut index_values = vec![
+                    LLVMConstInt(LLVMInt32TypeInContext(self.ctx), 0, LLVMBool::from(false)),
                     LLVMConstInt(
-                        LLVMInt32TypeInContext(self.context.context),
-                        0,
-                        LLVMBool::from(false),
-                    ),
-                    LLVMConstInt(
-                        LLVMInt32TypeInContext(self.context.context),
+                        LLVMInt32TypeInContext(self.ctx),
                         *field_index as u64,
                         LLVMBool::from(false),
                     ),
@@ -327,8 +329,8 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
                     CastType::Bits => {
                         if my_in_ty == my_out_ty {
                             self.set(output, in_value);
-                            log!("CastType::Bits where input type == output type which is weird but fine I guess");
-                            return;
+                            // Could return instead of panicking here but lets give you a chance to reconsider your life choices.
+                            panic!("CastType::Bits where input type == output type which is weird but fine I guess");
                         }
                         assert!(
                             my_in_ty.is_ptr() && my_out_ty.is_ptr(),
@@ -370,10 +372,10 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
             .param_types
             .iter()
             .cloned()
-            .map(|ty| self.llvm_type(ty).into())
+            .map(|ty| self.llvm_type(ty))
             .collect();
         let returns = if signature.return_type.is_raw_void() {
-            LLVMVoidTypeInContext(self.context.context)
+            LLVMVoidTypeInContext(self.ctx)
         } else {
             self.llvm_type(&signature.return_type)
         };
@@ -387,7 +389,7 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
     }
 
     fn get_value(&self, ssa: &Ssa) -> LLVMValueRef {
-        *self.func_get().local_registers.get(&ssa).unwrap()
+        *self.func_get().local_registers.get(ssa).unwrap()
     }
 
     unsafe fn get_type(&self, ssa: &Ssa) -> LLVMTypeRef {
@@ -475,16 +477,16 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
     pub(crate) unsafe fn llvm_type(&self, ty: impl Borrow<CType>) -> LLVMTypeRef {
         let ty = ty.borrow();
         let mut result = match &ty.ty {
-            ValueType::U64 => LLVMInt64TypeInContext(self.context.context),
+            ValueType::U64 => LLVMInt64TypeInContext(self.ctx),
             ValueType::Struct(name) => *self.llvm_structs.get(name).unwrap(),
-            ValueType::U8 => LLVMInt8TypeInContext(self.context.context),
-            ValueType::U32 => LLVMInt32TypeInContext(self.context.context),
-            ValueType::F32 => LLVMFloatTypeInContext(self.context.context),
-            ValueType::F64 => LLVMDoubleTypeInContext(self.context.context),
+            ValueType::U8 => LLVMInt8TypeInContext(self.ctx),
+            ValueType::U32 => LLVMInt32TypeInContext(self.ctx),
+            ValueType::F32 => LLVMFloatTypeInContext(self.ctx),
+            ValueType::F64 => LLVMDoubleTypeInContext(self.ctx),
             ValueType::Void => {
                 assert_ne!(ty.depth, 0, "void type is a special case.");
                 // Using i8 as an untyped pointer.
-                LLVMInt8TypeInContext(self.context.context)
+                LLVMInt8TypeInContext(self.ctx)
             }
         };
 
@@ -494,11 +496,11 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
         result
     }
 
-    fn func_get(&self) -> &FuncContext<'ctx, 'ir> {
+    fn func_get(&self) -> &FuncContext<'ir> {
         self.func.as_ref().unwrap()
     }
 
-    fn func_mut(&mut self) -> &mut FuncContext<'ctx, 'ir> {
+    fn func_mut(&mut self) -> &mut FuncContext<'ir> {
         self.func.as_mut().unwrap()
     }
 
@@ -507,14 +509,21 @@ impl<'ctx: 'ir, 'ir> RawLlvmFuncGen<'ctx, 'ir> {
     }
 }
 
-impl<'ctx: 'module, 'module> FuncContext<'ctx, 'module> {
-    fn new(ir: &'module Function) -> FuncContext<'ctx, 'module> {
+impl<'ir> Drop for RawLlvmFuncGen<'ir> {
+    fn drop(&mut self) {
+        unsafe {
+            LLVMDisposeBuilder(self.builder);
+        }
+    }
+}
+
+impl<'module> FuncContext<'module> {
+    fn new(ir: &'module Function) -> FuncContext<'module> {
         FuncContext {
             local_registers: Default::default(),
             blocks: vec![],
             func_ir: ir,
             phi_nodes: HashMap::new(),
-            _p: Default::default(),
         }
     }
 }

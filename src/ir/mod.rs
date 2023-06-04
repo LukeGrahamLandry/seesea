@@ -93,6 +93,7 @@ pub struct Function {
     pub arg_registers: Vec<Ssa>,
     pub debug_register_names: Vec<Option<String>>,
     pub register_types: HashMap<Ssa, CType>,
+    pub required_stack_bytes: usize,
 }
 
 pub type Module = AnyModule<Function>;
@@ -132,6 +133,7 @@ impl Function {
             arg_registers: vec![],
             debug_register_names: vec![],
             register_types: Default::default(),
+            required_stack_bytes: 0,
         }
     }
 
@@ -164,6 +166,8 @@ impl Function {
 
     /// This taking a closure makes the api uglier but means it won't do the
     /// the heap allocations etc if the flag is off (even if i make the flag a runtime thing instead of a const).
+    // TODO: this should take more meaningful metadata so I can do things like print name without scope suffix if its unambiguous
+    //       and let the backends generate some standard debug info format.
     fn set_debug<S: Into<String>>(&mut self, ssa: Ssa, get_name: impl FnOnce() -> S) {
         if KEEP_IR_DEBUG_NAMES {
             self.debug_register_names[ssa.0] = Some(get_name().into());
@@ -253,6 +257,10 @@ impl Function {
             self.var_counter,
             "All registers must know their type."
         );
+
+        for ty in self.register_types.values() {
+            assert!(!ty.is_struct());
+        }
     }
 
     pub fn entry_point(&self) -> Label {

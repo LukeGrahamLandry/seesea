@@ -102,7 +102,8 @@ impl Debug for ResolvedExpr {
 
 impl Hash for Variable {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Not including the Cell because that can mutate (even tho it really shouldn't after resolving stage)
+        // Not including the Cell because that can mutate (even tho it really shouldn't after resolving stage).
+        // TODO: that makes the derived Eq impl wrong!
         self.scope.hash(state);
         self.ty.hash(state);
         self.name.hash(state);

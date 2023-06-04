@@ -28,7 +28,7 @@ impl TreePrint for Operation {
             Operation::Call {
                 args, signature, ..
             } => {
-                writeln!(f, "Function Call {:?}", signature)?;
+                writeln!(f, "Call {:?}", signature)?;
                 for arg in args {
                     arg.print(depth + 1, f)?;
                 }

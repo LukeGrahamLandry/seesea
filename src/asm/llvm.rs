@@ -2,8 +2,6 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::ffi::{CStr, CString};
-use std::num::NonZeroU8;
 use std::rc::Rc;
 
 use inkwell::basic_block::BasicBlock;
@@ -34,6 +32,7 @@ pub struct LlvmFuncGen<'ctx: 'module, 'module> {
 /// Plain old data that holds the state that must be reset for each function.
 struct FuncContext<'ctx: 'module, 'module> {
     local_registers: HashMap<Ssa, AnyValueEnum<'ctx>>,
+    // These being Options is a bit awkward but means I can remove empty blocks before it reaches the backend and keep Labels being correct indexes into the array.
     blocks: Vec<Option<BasicBlock<'ctx>>>,
     func_ir: &'module Function,
     phi_nodes: HashMap<PhiValue<'ctx>, Vec<(Label, Ssa)>>,
@@ -79,7 +78,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
 
         match self.module.verify() {
             Ok(_) => {}
-            Err(e) => log!("Failed llvm verify! \n{}.", e),
+            Err(_e) => log!("Failed llvm verify! \n{}.", _e),
         }
     }
 

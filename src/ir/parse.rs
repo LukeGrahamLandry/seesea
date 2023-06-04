@@ -175,6 +175,7 @@ impl<'ast> AstParser<'ast> {
             // so we need to make sure it gets allocated on the stack and not kept in a register.
             let ptr_register = self.func_mut().next_var();
             self.control.set_stack_alloc(variable.clone(), ptr_register);
+            self.func_mut().required_stack_bytes += self.ir.size_of(&value.ty);
             self.func_mut().push(
                 block,
                 Op::StackAlloc {
@@ -546,6 +547,7 @@ impl<'ast> AstParser<'ast> {
         );
 
         // TODO: make sure this is all true with conditional (if stmt) mutations.
+        // TODO: resolve these precedence rules into one hashmap so i can do the patches in one pass.
 
         // The body always executes directly after the condition.
         // So body reads any changes made in condition without caring if its in the first iteration of the loop.
@@ -691,7 +693,7 @@ impl<'ast> AstParser<'ast> {
             }
             Operation::Cast(value, target, cast) => {
                 let input = self.emit_expr(value, block);
-                let output = self.make_ssa(target.borrow());
+                let output = self.make_ssa(target);
 
                 self.func_mut().push_no_debug(
                     block,

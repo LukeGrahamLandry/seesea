@@ -203,7 +203,7 @@ impl<'src> Scanner<'src> {
         match self.prev {
             None => {}
             Some(prev) => {
-                // TODO: move this to lex_another
+                // TODO: move this to lex_another because this is wrong if you use replace
                 let start = prev.lexeme.as_ptr() as usize - self.src.as_ptr() as usize;
                 let end = token.lexeme.as_ptr() as usize - self.src.as_ptr() as usize;
                 // TODO: utf8?
