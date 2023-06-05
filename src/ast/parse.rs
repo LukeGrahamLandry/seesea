@@ -13,7 +13,7 @@ pub type Stmt = AnyStmt<MetaExpr>;
 
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {
-        let name = scanner.name.clone();
+        let name = scanner.name.clone().into();
         let mut parser = Parser {
             scanner,
             program: Module::new(name),

@@ -750,6 +750,10 @@ impl<'ast> AstParser<'ast> {
 
         match target {
             Lvalue::RegisterVar(this_variable) => {
+                // TODO: instead of directly setting it to value_source, have it copy into a new ssa
+                //       so i can have a clear separation between temporary ones that i know will be cleared
+                //       at the end of the statement so its easier to do asm stuff without doing more
+                //       meaningful live-ness analysis.
                 self.func_mut().set_debug(value_source, || {
                     format!("{}_{}", this_variable.name, this_variable.scope.0)
                 });

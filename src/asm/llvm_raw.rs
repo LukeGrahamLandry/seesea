@@ -9,7 +9,6 @@ use std::rc::Rc;
 
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_sys::core::*;
-use llvm_sys::debuginfo::LLVMDIBuilderCreateGlobalVariableExpression;
 use llvm_sys::prelude::*;
 use llvm_sys::{LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind, LLVMValueKind};
 

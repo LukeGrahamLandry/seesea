@@ -1,6 +1,10 @@
+use std::arch::{asm, global_asm};
 use std::ffi::CStr;
-use std::mem;
+use std::fs::File;
+use std::io::Write;
 use std::mem::MaybeUninit;
+use std::time::Duration;
+use std::{fs, mem, thread};
 
 use inkwell::context::Context;
 use inkwell::execution_engine::UnsafeFunctionPointer;
@@ -17,6 +21,7 @@ use crate::asm::aarch64::build_asm;
 use crate::asm::aarch64_out::TextAsm;
 use crate::asm::llvm::LlvmFuncGen;
 use crate::asm::llvm_raw::{null_terminate, RawLlvmFuncGen, TheContext};
+use crate::ir::Module;
 use crate::scanning::Scanner;
 use crate::vm::{Vm, VmValue};
 use crate::{ast, ir, log};
@@ -34,6 +39,7 @@ long main(){
 }
     ",
         15,
+        "src_to_ast_to_ir",
     );
 }
 
@@ -54,6 +60,7 @@ long main(){
 }
     ",
         10,
+        "if_statement",
     );
 }
 
@@ -75,8 +82,8 @@ long main(){
     ";
     let less = src.replace("COND", "y < x");
     let greater = src.replace("COND", "y > x");
-    no_args_run_main(&less, 5);
-    no_args_run_main(&greater, 1);
+    no_args_run_main(&less, 5, "if_statement_with_mutation");
+    no_args_run_main(&greater, 1, "if_statement_with_mutation");
 }
 
 #[test]
@@ -108,6 +115,7 @@ long main(){
 }
     ",
         30,
+        "scopes",
     );
 }
 
@@ -124,11 +132,11 @@ long max(long a, long b){
 }
     ";
     let cases = [([155, 20].as_slice(), 155), ([15, 200].as_slice(), 200)];
-    let ir = compile_module(src);
+    let ir = compile_module(src, "function_args");
 
     vm_run_cases(&ir, "max", &cases);
     type Func = unsafe extern "C" fn(u64, u64) -> u64;
-    llvm_run::<Func, _>(&ir, "max", |max| {
+    compile_and_run::<Func, _>(&ir, "max", |max| {
         for (args, answer) in cases {
             assert_eq!(unsafe { max(args[0], args[1]) }, answer);
         }
@@ -138,7 +146,7 @@ long max(long a, long b){
     // It just casts the bits and does an unsigned comparison.
     // So negative numbers are highest because the sign bit is set.
     type EvilFunc = unsafe extern "C" fn(i64, i64) -> i64;
-    llvm_run::<EvilFunc, _>(&ir, "max", |max| {
+    compile_and_run::<EvilFunc, _>(&ir, "max", |max| {
         let answer = unsafe { max(-10, 9999) };
         assert_eq!(answer, -10);
     });
@@ -166,11 +174,11 @@ long main(long a){
 }
     ";
 
-    let ir = compile_module(src);
+    let ir = compile_module(src, "nested_ifs");
     let vm_result = Vm::eval_int_args(&ir, "main", &[5]).to_int();
     assert_eq!(vm_result, 17);
     type Func = unsafe extern "C" fn(u64) -> u64;
-    llvm_run::<Func, _>(&ir, "main", |func| {
+    compile_and_run::<Func, _>(&ir, "main", |func| {
         assert_eq!(unsafe { func(5) }, 17);
     });
 }
@@ -197,10 +205,13 @@ long main(long a){
     return x;
 }
     ";
-    let ir = compile_module(src);
+    let ir = compile_module(
+        src,
+        "dont_emit_phi_nodes_referencing_blocks_that_jump_instead_of_falling_through",
+    );
     assert_eq!(Vm::eval_int_args(&ir, "main", &[5]).to_int(), 999);
     type Func = unsafe extern "C" fn(u64) -> u64;
-    llvm_run::<Func, _>(&ir, "main", |func| {
+    compile_and_run::<Func, _>(&ir, "main", |func| {
         assert_eq!(unsafe { func(5) }, 999);
     });
 }
@@ -221,7 +232,7 @@ long tri_max(long a, long b, long c){
 }
     ";
 
-    let ir = compile_module(src);
+    let ir = compile_module(src, "function_calls");
     let cases = [
         ([1u64, 2u64, 4u64].as_slice(), 4u64),
         ([10u64, 20u64, 5u64].as_slice(), 20u64),
@@ -229,7 +240,7 @@ long tri_max(long a, long b, long c){
 
     vm_run_cases(&ir, "tri_max", &cases);
     type Func = unsafe extern "C" fn(u64, u64, u64) -> u64;
-    llvm_run::<Func, _>(&ir, "tri_max", |tri_max| {
+    compile_and_run::<Func, _>(&ir, "tri_max", |tri_max| {
         for (args, answer) in cases {
             let result = unsafe { tri_max(args[0], args[1], args[2]) };
             assert_eq!(result, answer);
@@ -249,11 +260,11 @@ long fib(long n){
 
     // 1 1 2 3 5 8
     let cases = [([5u64].as_slice(), 8u64)];
-    let ir = compile_module(src);
+    let ir = compile_module(src, "recursion");
 
     vm_run_cases(&ir, "fib", &cases);
     type Func = unsafe extern "C" fn(u64) -> u64;
-    llvm_run::<Func, _>(&ir, "fib", |fib| {
+    compile_and_run::<Func, _>(&ir, "fib", |fib| {
         for (args, answer) in cases {
             let result = unsafe { fib(args[0]) };
             log!("args: {:?}. result: {}", args, result);
@@ -275,10 +286,10 @@ long main(long a){
 }
     ";
 
-    let ir = compile_module(src);
+    let ir = compile_module(src, "pointers");
     assert_eq!(Vm::eval_int_args(&ir, "main", &[10]).to_int(), 25);
     type Func = unsafe extern "C" fn(u64) -> u64;
-    llvm_run::<Func, _>(&ir, "main", |func| assert_eq!(unsafe { func(10) }, 25));
+    compile_and_run::<Func, _>(&ir, "main", |func| assert_eq!(unsafe { func(10) }, 25));
 }
 
 #[test]
@@ -297,7 +308,7 @@ long main(){
     return x;
 }
     ";
-    no_args_run_main(src, 0);
+    no_args_run_main(src, 0, "if_statement_with_mutation_in_else");
 }
 
 #[test]
@@ -313,7 +324,7 @@ long main(){
     return 0;
 }
     ";
-    no_args_run_main(src, 0);
+    no_args_run_main(src, 0, "declare_in_else");
 }
 
 #[test]
@@ -328,7 +339,7 @@ long main(){
     return x;
 }
     ";
-    no_args_run_main(src, 10);
+    no_args_run_main(src, 10, "while_loop");
 }
 
 #[test]
@@ -350,7 +361,7 @@ long main(){
     return x;
 }
     ";
-    no_args_run_main(src, 9);
+    no_args_run_main(src, 9, "nested_while_loop_var");
 }
 
 #[test]
@@ -365,7 +376,7 @@ long main(){
     return x;
 }
     ";
-    no_args_run_main(src, 6);
+    no_args_run_main(src, 6, "mutate_in_if_condition");
 }
 
 #[test]
@@ -384,7 +395,7 @@ long main(){
     return x + y;
 }
     ";
-    no_args_run_main(src, 7);
+    no_args_run_main(src, 7, "mutate_in_nested_if_condition");
 }
 
 #[test]
@@ -402,7 +413,7 @@ long main(){
     return y + z;
 }
     ";
-    no_args_run_main(src, 9);
+    no_args_run_main(src, 9, "mutate_in_while_condition");
 }
 
 #[test]
@@ -419,7 +430,7 @@ long main(){
 }
     ";
 
-    no_args_run_main(src, 1);
+    no_args_run_main(src, 1, "false_loop_condition_mutates");
 }
 
 #[test]
@@ -435,7 +446,7 @@ long main(){
     return y + z;
 }
     ";
-    no_args_run_main(src, 15);
+    no_args_run_main(src, 15, "body_sees_conditions_changes");
 }
 
 #[test]
@@ -453,7 +464,7 @@ long main(){
 }
     ";
 
-    no_args_run_main(src, 11);
+    no_args_run_main(src, 11, "loop_condition_body_mutations_overlap");
 }
 
 #[test]
@@ -475,7 +486,7 @@ long main(){
     return x + z.a;
 }
     ";
-    no_args_run_main(src, 15);
+    no_args_run_main(src, 15, "struct_defs");
 }
 
 #[test]
@@ -496,7 +507,7 @@ long main(){
     return z.a + z.b;
 }
     ";
-    no_args_run_main(src, 5);
+    no_args_run_main(src, 5, "struct_field_addr");
 }
 
 #[test]
@@ -511,7 +522,7 @@ long main(){
 }
     "#;
     // TODO: how to capture results from printf in jit execution engine? can probably define a function on it.
-    no_args_run_main(src, 0);
+    no_args_run_main(src, 0, "printf_variadic_args");
 }
 
 #[test]
@@ -523,10 +534,10 @@ double main(){
     return r;
 }
     ";
-    let ir = compile_module(src);
+    let ir = compile_module(src, "math_dot_h_sin");
     assert!(Vm::eval_int_args(&ir, "main", &[]).to_float().abs() < 0.000001);
     type Func = unsafe extern "C" fn() -> f64;
-    llvm_run::<Func, _>(&ir, "main", |function| {
+    compile_and_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function() };
         assert!(answer.abs() < 0.000001);
     });
@@ -543,10 +554,10 @@ long main(long start){
     char c = a + 0;
     return c;
 }";
-    let ir = compile_module(src);
+    let ir = compile_module(src, "int_cast");
     type Func = unsafe extern "C" fn(u64) -> u64;
     assert_eq!(Vm::eval(&ir, "main", &[VmValue::U64(5)]).to_int(), 54);
-    llvm_run::<Func, _>(&ir, "main", |function| {
+    compile_and_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function(5) };
         assert_eq!(answer, 54);
     });
@@ -564,10 +575,10 @@ long main(double a){
     }
 }
     ";
-    let ir = compile_module(src);
+    let ir = compile_module(src, "float_compare");
     assert_eq!(Vm::eval(&ir, "main", &[VmValue::F64(0.1)]).to_int(), 2);
     type Func = unsafe extern "C" fn(f64) -> u64;
-    llvm_run::<Func, _>(&ir, "main", |function| {
+    compile_and_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function(0.1) };
         assert_eq!(answer, 2);
     });
@@ -582,7 +593,7 @@ long main(){
 }
     ";
 
-    no_args_run_main(src, 1);
+    no_args_run_main(src, 1, "mul_div");
 }
 
 #[test]
@@ -607,7 +618,7 @@ long main()
 }
     ";
 
-    no_args_run_main(src, 1);
+    no_args_run_main(src, 1, "allocation");
 }
 
 #[test]
@@ -629,7 +640,7 @@ long main()
 }
     ";
 
-    no_args_run_main(src, 3);
+    no_args_run_main(src, 3, "ptr_math");
 }
 
 #[test]
@@ -649,7 +660,7 @@ long main(){
     return z.a + (*zz).b;
 }
     ";
-    no_args_run_main(src, 15);
+    no_args_run_main(src, 15, "ptr_to_struct");
 }
 
 #[test]
@@ -668,7 +679,7 @@ long main(){
     return z.b;
 }
     ";
-    no_args_run_main(src, 5);
+    no_args_run_main(src, 5, "typedef");
 }
 
 #[test]
@@ -680,14 +691,14 @@ long main(){
 }
     ";
     let src = &[include_str!("../tests/array_list.c"), src].join("");
-    no_args_run_main(src, 0);
+    no_args_run_main(src, 0, "array_list");
 }
 
-fn no_args_run_main(src: &str, expected: u64) {
-    let ir = compile_module(src);
+fn no_args_run_main(src: &str, expected: u64, name: &str) {
+    let ir = compile_module(src, name);
     assert_eq!(Vm::eval_int_args(&ir, "main", &[]).to_int(), expected);
     type Func = unsafe extern "C" fn() -> u64;
-    llvm_run::<Func, _>(&ir, "main", |function| {
+    compile_and_run::<Func, _>(&ir, "main", |function| {
         let answer = unsafe { function() };
         assert_eq!(answer, expected);
     });
@@ -703,15 +714,12 @@ fn vm_run_cases(ir: &ir::Module, func_name: &str, cases: &[(&[u64], u64)]) {
 // The caller MUST specify the right signature for F.
 // TODO: is there a way I can reflect on the signature since I know what it should be from the ir? maybe make this a macro?
 // F needs to be an unsafe extern "C" fn (?) -> ?
-fn llvm_run<F, A>(ir: &ir::Module, func_name: &str, action: A)
+fn compile_and_run<F, A>(ir: &ir::Module, func_name: &str, action: A)
 where
     F: UnsafeFunctionPointer,
     A: FnOnce(F),
 {
     llvm_run_raw_sys(ir, func_name, action);
-    log!("==== Direct Aarch64 =====");
-    log!("{}", build_asm::<TextAsm>(ir).text);
-    log!("============");
 }
 
 #[allow(unused)]
@@ -759,10 +767,11 @@ where
 
         action(function_ptr);
 
-        LLVMDisposeExecutionEngine(execution_engine);
+        // @Leak: Something fucks up the state of the context such that dropping it causes unpredictable memory related crashes.
+        // LLVMDisposeExecutionEngine(execution_engine);
         // Doing this causes a SIGSEGV. The execution engine owns the module.
         // LLVMDisposeModule(module);
-        LLVMContextDispose(context);
+        // LLVMContextDispose(context);
     }
 }
 
@@ -787,9 +796,9 @@ where
     unsafe { Context::get_global(use_llvm) }
 }
 
-fn compile_module(src: &str) -> ir::Module {
+fn compile_module(src: &str, name: &str) -> ir::Module {
     log!("{}", src);
-    let scan = Scanner::new(src, "test_code".into());
+    let scan = Scanner::new(src, name.into());
     log!("{:?}", scan);
     let ast = ast::Module::from(scan);
     log!("{:?}", ast);

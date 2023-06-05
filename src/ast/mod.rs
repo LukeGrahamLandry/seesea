@@ -14,7 +14,7 @@ pub struct AnyModule<Func: FuncRepr> {
     // Order matters (for not needing forward declarations)
     pub functions: Vec<Func>,
     pub structs: Vec<StructSignature>,
-    pub name: String,
+    pub name: Rc<str>,
     pub forward_declarations: Vec<FuncSignature>,
     pub type_defs: HashMap<Rc<str>, CType>,
 }
@@ -158,7 +158,7 @@ pub struct CType {
 }
 
 impl<Func: FuncRepr> AnyModule<Func> {
-    pub fn new(name: String) -> Self {
+    pub fn new(name: Rc<str>) -> Self {
         Self {
             functions: vec![],
             structs: vec![],

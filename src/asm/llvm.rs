@@ -38,6 +38,7 @@ struct FuncContext<'ctx: 'module, 'module> {
     phi_nodes: HashMap<PhiValue<'ctx>, Vec<(Label, Ssa)>>,
 }
 
+/// TODO: get rid of this module and stop depending on inkwell now that i can use llvm-sys directly
 impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
     pub fn new(module: &'module Module<'ctx>) -> LlvmFuncGen<'ctx, 'module> {
         LlvmFuncGen {

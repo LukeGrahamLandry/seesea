@@ -1,6 +1,6 @@
 use crate::asm::aarch64_out::{AsmOp, EmitAarch64, RegKind, Register};
-use crate::ast::{BinaryOp, LiteralValue, ValueType};
-use crate::ir::{Function, Label, Module, Op, Ssa};
+use crate::ast::{BinaryOp, FuncSignature, LiteralValue, ValueType};
+use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 struct Aarch64Builder<'ir, Emitter: EmitAarch64> {
@@ -12,6 +12,7 @@ struct Aarch64Builder<'ir, Emitter: EmitAarch64> {
     ssa_offsets: HashMap<Ssa, usize>,
     active_registers: Vec<Register>,
     unused_registers: Vec<Register>,
+    current: Label,
 }
 
 // TODO: how do we know when an ssa is no longer live? do i need to have an Op::Free(Ssa) when all reads are over?
@@ -26,6 +27,7 @@ pub fn build_asm<Emitter: EmitAarch64>(ir: &Module) -> Emitter {
         ssa_offsets: Default::default(),
         active_registers: Default::default(),
         unused_registers: Default::default(),
+        current: Label(0),
     };
     builder.run(ir);
     builder.emitter
@@ -36,18 +38,28 @@ const SP: Register = Register(RegKind::Int64, 31);
 impl<'ir, Emitter: EmitAarch64> Aarch64Builder<'ir, Emitter> {
     fn run(&mut self, ir: &'ir Module) {
         self.ir = Some(ir);
+        self.emitter.set_prefix(&ir.name);
         for function in &ir.functions {
             self.emit_function(function);
         }
     }
 
     fn emit_function(&mut self, function: &'ir Function) {
-        self.emitter.start_func(&function.signature.name);
+        self.emitter.start_func(function);
         // Reserve stack space (stack grows downwards).
         // TODO: needs to be 16 byte aligned?
+        // TODO: option to fill it in with garbage numbers for debugging?
         self.func = Some(function);
         self.total_stack_size = function.required_stack_bytes + (function.register_types.len() * 8);
         self.stack_remaining = function.required_stack_bytes as isize;
+
+        let extra = self.total_stack_size - ((self.total_stack_size / 16) * 16);
+        self.total_stack_size += extra;
+        assert!(
+            self.total_stack_size % 16 == 0,
+            "aarch64 requires the stack pointer to be 16 byte aligned."
+        );
+
         self.emitter
             .simple_with_const(AsmOp::SUB, SP, SP, self.total_stack_size);
         self.unused_registers = vec![
@@ -57,15 +69,11 @@ impl<'ir, Emitter: EmitAarch64> Aarch64Builder<'ir, Emitter> {
             Register(RegKind::Int64, 12),
         ];
 
-        assert_eq!(function.signature.param_names.len(), 1);
-        let first_arg = self.next_reg();
-        self.emitter
-            .pair(AsmOp::MOV, first_arg, Register(RegKind::Int64, 0));
-        self.set_ssa(&Ssa(0), first_arg);
-
+        self.save_arguments_to_stack(&function.signature);
         self.emitter.jump_to(function.entry_point());
         for (i, code) in function.blocks.iter().enumerate() {
             if let Some(code) = code {
+                self.current = Label(i);
                 self.emitter.start_block(Label(i));
                 for op in code {
                     self.emit_op(op);
@@ -75,6 +83,20 @@ impl<'ir, Emitter: EmitAarch64> Aarch64Builder<'ir, Emitter> {
 
         assert!(self.stack_remaining >= 0);
         assert!(self.active_registers.is_empty());
+    }
+
+    fn save_arguments_to_stack(&mut self, signature: &'ir FuncSignature) {
+        assert!(!signature.has_var_args);
+        let count = signature.param_types.len();
+        if count == 0 {
+            return;
+        }
+
+        assert_eq!(count, 1);
+        let first_arg = self.next_reg();
+        self.emitter
+            .pair(AsmOp::MOV, first_arg, Register(RegKind::Int64, 0));
+        self.set_ssa(&Ssa(0), first_arg);
     }
 
     fn emit_op(&mut self, op: &Op) {
@@ -117,14 +139,24 @@ impl<'ir, Emitter: EmitAarch64> Aarch64Builder<'ir, Emitter> {
                 self.drop_reg(b_value);
                 self.set_ssa(dest, result_temp);
             }
-            Op::Jump { .. } => {
+            Op::Jump {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let cond_temp = self.get_ssa(condition);
+                // compare to 0
+                // if equal, branch to if_false
+                // branch to if_true
+                // (not comparing to 1 because all ints other than 0 are seen as true)
                 todo!()
             }
             Op::AlwaysJump(target_block) => {
                 self.emitter.jump_to(*target_block);
             }
-            Op::Phi { .. } => {
-                todo!()
+            Op::Phi { dest, a, b } => {
+                self.emit_phi(dest, a.0, a.1);
+                self.emit_phi(dest, b.0, b.1);
             }
             Op::Return(value) => {
                 if let Some(value) = value {
@@ -170,10 +202,24 @@ impl<'ir, Emitter: EmitAarch64> Aarch64Builder<'ir, Emitter> {
             Op::GetFieldAddr { .. } => {
                 todo!()
             }
-            Op::Cast { .. } => {
-                todo!()
+            Op::Cast {
+                input,
+                output,
+                kind,
+            } => {
+                assert_eq!(*kind, CastType::Bits);
+                let temp = self.get_ssa(input);
+                self.set_ssa(output, temp);
             }
         }
+    }
+
+    fn emit_phi(&mut self, dest: &Ssa, prev_block: Label, prev_value: Ssa) {
+        let current = self.current;
+        self.emitter.move_cursor(prev_block);
+        let value = self.get_ssa(&prev_value);
+        self.set_ssa(dest, value);
+        self.emitter.move_cursor(current);
     }
 
     // Loads the value of an ssa from the stack into a register.

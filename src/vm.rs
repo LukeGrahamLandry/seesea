@@ -650,6 +650,7 @@ pub struct Ptr {
     offset: u32,
 }
 
+// TODO: since this isn't a real allocator, you can't pass the pointers it produces to external functions.
 impl DebugAlloc {
     fn malloc(&mut self, size: usize, alloc_at: StackTrace) -> Ptr {
         assert!(size < u32::MAX as usize);

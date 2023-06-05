@@ -1,3 +1,2 @@
-fn main() {
-    // TODO: compiler CLI
-}
+// TODO: compiler CLI
+fn main() {}
