@@ -55,8 +55,9 @@ impl<'ir, Emitter: EmitAarch64> Aarch64Builder<'ir, Emitter> {
 
         let extra = self.total_stack_size - ((self.total_stack_size / 16) * 16);
         self.total_stack_size += extra;
-        assert!(
-            self.total_stack_size % 16 == 0,
+        assert_eq!(
+            self.total_stack_size % 16,
+            0,
             "aarch64 requires the stack pointer to be 16 byte aligned."
         );
 
@@ -132,6 +133,35 @@ impl<'ir, Emitter: EmitAarch64> Aarch64Builder<'ir, Emitter> {
                         self.emitter
                             .simple_op(AsmOp::ADD, result_temp, a_value, b_value);
                     }
+                    BinaryOp::GreaterThan => {
+                        self.emitter.pair(AsmOp::CMP, a_value, b_value);
+                        // TODO figure out the zero vs sp thing
+                        // Produce a zero
+                        self.emitter
+                            .simple_op(AsmOp::SUB, result_temp, result_temp, result_temp);
+                        // jump over one if less or equal
+
+                        self.emitter.single_const(AsmOp::BLS, 8);
+                        // self.emitter.single_label(AsmOp::BLS, Label(80));
+                        // add one
+                        self.emitter
+                            .simple_with_const(AsmOp::ADD, result_temp, result_temp, 1);
+                        // self.emitter.temp_block();
+                    }
+                    BinaryOp::LessThan => {
+                        self.emitter.pair(AsmOp::CMP, a_value, b_value);
+                        // TODO figure out the zero vs sp thing
+                        // Produce a zero
+                        self.emitter
+                            .simple_op(AsmOp::SUB, result_temp, result_temp, result_temp);
+                        // jump over one if greater or equal
+                        self.emitter.single_const(AsmOp::BHS, 8);
+                        //self.emitter.single_label(AsmOp::BHS, Label(80));
+                        // add one
+                        self.emitter
+                            .simple_with_const(AsmOp::ADD, result_temp, result_temp, 1);
+                        //self.emitter.temp_block();
+                    }
                     _ => todo!(),
                 };
 
@@ -145,11 +175,11 @@ impl<'ir, Emitter: EmitAarch64> Aarch64Builder<'ir, Emitter> {
                 if_false,
             } => {
                 let cond_temp = self.get_ssa(condition);
-                // compare to 0
-                // if equal, branch to if_false
-                // branch to if_true
-                // (not comparing to 1 because all ints other than 0 are seen as true)
-                todo!()
+                // if <condition == zero>, branch to <else block>
+                self.emitter.arg_label(AsmOp::CBZ, cond_temp, *if_false);
+                // otherwise fall through and branch to <then block>
+                self.emitter.jump_to(*if_true);
+                self.drop_reg(cond_temp);
             }
             Op::AlwaysJump(target_block) => {
                 self.emitter.jump_to(*target_block);

@@ -11,7 +11,10 @@ pub trait EmitAarch64: Default {
     fn start_func(&mut self, function: &Function);
     fn simple_op(&mut self, op: AsmOp, destination: Register, arg1: Register, arg2: Register);
     fn jump_to(&mut self, block: Label);
+    fn single_const(&mut self, op: AsmOp, constant: usize);
     fn single(&mut self, op: AsmOp);
+    fn arg_label(&mut self, op: AsmOp, arg: Register, block: Label);
+    fn single_label(&mut self, op: AsmOp, block: Label);
     fn pair(&mut self, op: AsmOp, destination: Register, arg1: Register);
     fn simple_with_const(
         &mut self,
@@ -22,6 +25,7 @@ pub trait EmitAarch64: Default {
     );
     fn load(&mut self, destination: Register, addr: Register, offset: usize);
     fn store(&mut self, value: Register, addr: Register, offset: usize);
+    fn temp_block(&mut self);
 }
 
 #[derive(Default)]
@@ -45,13 +49,11 @@ impl EmitAarch64 for TextAsm {
 
     fn start_block(&mut self, block: Label) {
         self.move_cursor(block);
-        output!(
-            self,
-            ".{}_{}_b{}:",
-            self.prefix.as_ref().unwrap(),
-            self.func_name.as_ref().unwrap(),
-            block.0
-        );
+        output!(self, "{}:", block.0);
+    }
+
+    fn temp_block(&mut self) {
+        output!(self, "80:");
     }
 
     fn move_cursor(&mut self, block: Label) {
@@ -81,17 +83,22 @@ impl EmitAarch64 for TextAsm {
     }
 
     fn jump_to(&mut self, block: Label) {
-        output!(
-            self,
-            "    B .{}_{}_b{}",
-            self.prefix.as_ref().unwrap(),
-            self.func_name.as_ref().unwrap(),
-            block.0
-        );
+        let b = self.get_label(block);
+        output!(self, "    B {}", b);
+    }
+
+    fn single_const(&mut self, op: AsmOp, constant: usize) {
+        // assert constant in the right range
+        output!(self, "  {:?} #{}", op, constant);
     }
 
     fn single(&mut self, op: AsmOp) {
         output!(self, "  {:?}", op);
+    }
+
+    fn arg_label(&mut self, op: AsmOp, arg: Register, block: Label) {
+        let b = self.get_label(block);
+        output!(self, "  {:?} {:?}, {}", op, arg, b);
     }
 
     fn pair(&mut self, op: AsmOp, destination: Register, arg1: Register) {
@@ -123,9 +130,22 @@ impl EmitAarch64 for TextAsm {
     fn store(&mut self, value: Register, addr: Register, offset: usize) {
         output!(self, "  STR {:?}, [{:?}, #{}]", value, addr, offset);
     }
+
+    fn single_label(&mut self, op: AsmOp, block: Label) {
+        let b = self.get_label(block);
+        output!(self, "  {:?} {}", op, b);
+    }
 }
 
 impl TextAsm {
+    fn get_label(&self, block: Label) -> String {
+        if self.current < (block.index() + 1) {
+            format!("{}f", block.index())
+        } else {
+            format!("{}b", block.index())
+        }
+    }
+
     pub fn get_text(self) -> String {
         let mut result = String::new();
         self.text
@@ -146,6 +166,11 @@ pub enum AsmOp {
     SUB,
     RET,
     MOV,
+    CMP,
+    BGT,
+    CBZ,
+    BLS,
+    BHS,
 }
 
 // The different sizes of each type actually refer to the same register. It just changes how accessing them works.

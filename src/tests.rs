@@ -61,6 +61,28 @@ long main(){
 }
 
 #[test]
+fn simple_if() {
+    // language=c
+    let src = "
+long main(){
+    if (COND) {
+        return 4;
+    } else {
+        return 5;
+    }
+}
+    ";
+    let tgt = src.replace("COND", "15 > 5");
+    let fgt = src.replace("COND", "5 > 15");
+    let flt = src.replace("COND", "15 < 5");
+    let tlt = src.replace("COND", "5 < 15");
+    no_args_run_main(&tgt, 4, "simple_if_true_gt");
+    no_args_run_main(&fgt, 5, "simple_if_false_gt");
+    no_args_run_main(&tlt, 4, "simple_if_true_lt");
+    no_args_run_main(&flt, 5, "simple_if_false_lt");
+}
+
+#[test]
 fn scopes() {
     // language=c
     no_args_run_main(
