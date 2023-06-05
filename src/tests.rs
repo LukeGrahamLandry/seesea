@@ -1,30 +1,4 @@
-use std::arch::{asm, global_asm};
-use std::ffi::CStr;
-use std::fs::File;
-use std::io::Write;
-use std::mem::MaybeUninit;
-use std::time::Duration;
-use std::{fs, mem, thread};
-
-use inkwell::context::Context;
-use inkwell::execution_engine::UnsafeFunctionPointer;
-use inkwell::OptimizationLevel;
-use llvm_sys::core::{
-    LLVMContextCreate, LLVMContextDispose, LLVMDisposeMessage, LLVMModuleCreateWithNameInContext,
-};
-use llvm_sys::execution_engine::{
-    LLVMCreateJITCompilerForModule, LLVMDisposeExecutionEngine, LLVMGetFunctionAddress,
-};
-use llvm_sys::target::{LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget};
-
-use crate::asm::aarch64::build_asm;
-use crate::asm::aarch64_out::TextAsm;
-use crate::asm::llvm::LlvmFuncGen;
-use crate::asm::llvm_raw::{null_terminate, RawLlvmFuncGen, TheContext};
-use crate::ir::Module;
-use crate::scanning::Scanner;
-use crate::vm::{Vm, VmValue};
-use crate::{ast, ir, log};
+use crate::test_logic::*;
 
 #[test]
 fn src_to_ast_to_ir() {
@@ -83,7 +57,7 @@ long main(){
     let less = src.replace("COND", "y < x");
     let greater = src.replace("COND", "y > x");
     no_args_run_main(&less, 5, "if_statement_with_mutation");
-    no_args_run_main(&greater, 1, "if_statement_with_mutation");
+    no_args_run_main(&greater, 1, "if_statement_with_mutation_2");
 }
 
 #[test]
@@ -123,7 +97,7 @@ long main(){
 fn function_args() {
     // language=c
     let src = "
-long max(long a, long b){
+long main(long a, long b){
     if (a > b) {
         return a;
     } else {
@@ -131,25 +105,9 @@ long max(long a, long b){
     }
 }
     ";
-    let cases = [([155, 20].as_slice(), 155), ([15, 200].as_slice(), 200)];
-    let ir = compile_module(src, "function_args");
 
-    vm_run_cases(&ir, "max", &cases);
-    type Func = unsafe extern "C" fn(u64, u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "max", |max| {
-        for (args, answer) in cases {
-            assert_eq!(unsafe { max(args[0], args[1]) }, answer);
-        }
-    });
-
-    // Lying about the signature for science purposes.
-    // It just casts the bits and does an unsigned comparison.
-    // So negative numbers are highest because the sign bit is set.
-    type EvilFunc = unsafe extern "C" fn(i64, i64) -> i64;
-    compile_and_run::<EvilFunc, _>(&ir, "max", |max| {
-        let answer = unsafe { max(-10, 9999) };
-        assert_eq!(answer, -10);
-    });
+    two_ints_to_int_run_main(src, 155, 20, 155, "function_args");
+    two_ints_to_int_run_main(src, 15, 200, 200, "function_args2");
 }
 
 #[test]
@@ -174,13 +132,7 @@ long main(long a){
 }
     ";
 
-    let ir = compile_module(src, "nested_ifs");
-    let vm_result = Vm::eval_int_args(&ir, "main", &[5]).to_int();
-    assert_eq!(vm_result, 17);
-    type Func = unsafe extern "C" fn(u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |func| {
-        assert_eq!(unsafe { func(5) }, 17);
-    });
+    int_to_int_run_main(src, 5, 17, "nested_ifs");
 }
 
 #[test]
@@ -205,15 +157,12 @@ long main(long a){
     return x;
 }
     ";
-    let ir = compile_module(
+    int_to_int_run_main(
         src,
+        5,
+        999,
         "dont_emit_phi_nodes_referencing_blocks_that_jump_instead_of_falling_through",
     );
-    assert_eq!(Vm::eval_int_args(&ir, "main", &[5]).to_int(), 999);
-    type Func = unsafe extern "C" fn(u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |func| {
-        assert_eq!(unsafe { func(5) }, 999);
-    });
 }
 
 #[test]
@@ -227,50 +176,28 @@ long max(long a, long b){
         return b;
     }
 }
-long tri_max(long a, long b, long c){
+long main(long a, long b, long c){
     return max(max(a, b), c);
 }
     ";
 
-    let ir = compile_module(src, "function_calls");
-    let cases = [
-        ([1u64, 2u64, 4u64].as_slice(), 4u64),
-        ([10u64, 20u64, 5u64].as_slice(), 20u64),
-    ];
-
-    vm_run_cases(&ir, "tri_max", &cases);
-    type Func = unsafe extern "C" fn(u64, u64, u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "tri_max", |tri_max| {
-        for (args, answer) in cases {
-            let result = unsafe { tri_max(args[0], args[1], args[2]) };
-            assert_eq!(result, answer);
-        }
-    });
+    three_ints_to_int_run_main(src, 1, 2, 4, 4, "function_calls");
+    three_ints_to_int_run_main(src, 10, 20, 5, 20, "function_calls2");
 }
 
 #[test]
 fn recursion() {
     // language=c
     let src = "
-long fib(long n){
+// fib
+long main(long n){
     if (n < 2) return 1;
     return fib(n - 1) + fib(n - 2);
 }
     ";
 
     // 1 1 2 3 5 8
-    let cases = [([5u64].as_slice(), 8u64)];
-    let ir = compile_module(src, "recursion");
-
-    vm_run_cases(&ir, "fib", &cases);
-    type Func = unsafe extern "C" fn(u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "fib", |fib| {
-        for (args, answer) in cases {
-            let result = unsafe { fib(args[0]) };
-            log!("args: {:?}. result: {}", args, result);
-            assert_eq!(result, answer);
-        }
-    });
+    int_to_int_run_main(src, 5, 8, "recursion");
 }
 
 #[test]
@@ -285,11 +212,7 @@ long main(long a){
     return x;
 }
     ";
-
-    let ir = compile_module(src, "pointers");
-    assert_eq!(Vm::eval_int_args(&ir, "main", &[10]).to_int(), 25);
-    type Func = unsafe extern "C" fn(u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |func| assert_eq!(unsafe { func(10) }, 25));
+    int_to_int_run_main(src, 10, 25, "pointers");
 }
 
 #[test]
@@ -534,13 +457,8 @@ double main(){
     return r;
 }
     ";
-    let ir = compile_module(src, "math_dot_h_sin");
-    assert!(Vm::eval_int_args(&ir, "main", &[]).to_float().abs() < 0.000001);
-    type Func = unsafe extern "C" fn() -> f64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function() };
-        assert!(answer.abs() < 0.000001);
-    });
+
+    no_arg_to_double_run_main(src, 0.0, "math_dot_h_sin");
 }
 
 #[test]
@@ -554,13 +472,7 @@ long main(long start){
     char c = a + 0;
     return c;
 }";
-    let ir = compile_module(src, "int_cast");
-    type Func = unsafe extern "C" fn(u64) -> u64;
-    assert_eq!(Vm::eval(&ir, "main", &[VmValue::U64(5)]).to_int(), 54);
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function(5) };
-        assert_eq!(answer, 54);
-    });
+    int_to_int_run_main(src, 5, 54, "int_cast");
 }
 
 #[test]
@@ -575,13 +487,8 @@ long main(double a){
     }
 }
     ";
-    let ir = compile_module(src, "float_compare");
-    assert_eq!(Vm::eval(&ir, "main", &[VmValue::F64(0.1)]).to_int(), 2);
-    type Func = unsafe extern "C" fn(f64) -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function(0.1) };
-        assert_eq!(answer, 2);
-    });
+
+    double_to_int_run_main(src, 0.1, 2, "float_compare");
 }
 
 #[test]
@@ -694,117 +601,7 @@ long main(){
     no_args_run_main(src, 0, "array_list");
 }
 
-fn no_args_run_main(src: &str, expected: u64, name: &str) {
-    let ir = compile_module(src, name);
-    assert_eq!(Vm::eval_int_args(&ir, "main", &[]).to_int(), expected);
-    type Func = unsafe extern "C" fn() -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function() };
-        assert_eq!(answer, expected);
-    });
-}
-
-fn vm_run_cases(ir: &ir::Module, func_name: &str, cases: &[(&[u64], u64)]) {
-    for (args, answer) in cases {
-        assert_eq!(Vm::eval_int_args(ir, func_name, args).to_int(), *answer);
-    }
-}
-
-// This is unsafe! But since its just in tests and calling the function is unsafe anyway I don't really care.
-// The caller MUST specify the right signature for F.
-// TODO: is there a way I can reflect on the signature since I know what it should be from the ir? maybe make this a macro?
-// F needs to be an unsafe extern "C" fn (?) -> ?
-fn compile_and_run<F, A>(ir: &ir::Module, func_name: &str, action: A)
-where
-    F: UnsafeFunctionPointer,
-    A: FnOnce(F),
-{
-    llvm_run_raw_sys(ir, func_name, action);
-}
-
-#[allow(unused)]
-fn llvm_run_raw_sys<F, A>(ir: &ir::Module, func_name: &str, action: A)
-where
-    F: UnsafeFunctionPointer,
-    A: FnOnce(F),
-{
-    assert!(ir.get_func(func_name).is_some(), "Function not found.");
-    let func_name = null_terminate(func_name);
-    unsafe {
-        let context = LLVMContextCreate();
-        let name = null_terminate(&ir.name);
-        let module = LLVMModuleCreateWithNameInContext(name.as_ptr(), context);
-        let mut the_context = TheContext { context, module };
-
-        let mut execution_engine = MaybeUninit::uninit();
-        let mut err = MaybeUninit::uninit();
-
-        // Fixes: Unable to find target for this triple (no targets are registered)
-        assert_eq!(LLVM_InitializeNativeTarget(), 0);
-        // Fixes:  LLVM ERROR: Target does not support MC emission!
-        assert_eq!(LLVM_InitializeNativeAsmPrinter(), 0);
-        let failed = LLVMCreateJITCompilerForModule(
-            execution_engine.as_mut_ptr(),
-            module,
-            0,
-            err.as_mut_ptr(),
-        );
-
-        if failed != 0 {
-            let err = err.assume_init();
-            let msg = CStr::from_ptr(err).to_str().unwrap().to_string();
-            LLVMDisposeMessage(err);
-            panic!("{}", msg);
-        }
-
-        let execution_engine = execution_engine.assume_init();
-
-        RawLlvmFuncGen::new(&mut the_context).compile_all(ir);
-
-        let function_ptr = LLVMGetFunctionAddress(execution_engine, func_name.as_ptr());
-        assert_ne!(function_ptr, 0);
-        let function_ptr: F = mem::transmute_copy(&function_ptr);
-
-        action(function_ptr);
-
-        // @Leak: Something fucks up the state of the context such that dropping it causes unpredictable memory related crashes.
-        // LLVMDisposeExecutionEngine(execution_engine);
-        // Doing this causes a SIGSEGV. The execution engine owns the module.
-        // LLVMDisposeModule(module);
-        // LLVMContextDispose(context);
-    }
-}
-
-#[allow(unused)]
-fn llvm_run_inkwell<F, A>(ir: &ir::Module, func_name: &str, action: A)
-where
-    F: UnsafeFunctionPointer,
-    // JitFunction instead of direct F to hold the lifetime of our exec engine.
-    A: FnOnce(F),
-{
-    assert!(ir.get_func(func_name).is_some(), "Function not found.");
-    let use_llvm = |context: &Context| {
-        let module = context.create_module(&ir.name);
-        let execution_engine = module
-            .create_jit_execution_engine(OptimizationLevel::None)
-            .unwrap();
-        LlvmFuncGen::new(&module).compile_all(ir);
-
-        let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
-        action(unsafe { func.as_raw() });
-    };
-    unsafe { Context::get_global(use_llvm) }
-}
-
-fn compile_module(src: &str, name: &str) -> ir::Module {
-    log!("{}", src);
-    let scan = Scanner::new(src, name.into());
-    log!("{:?}", scan);
-    let ast = ast::Module::from(scan);
-    log!("{:?}", ast);
-    ir::Module::from(ast)
-}
-
+// TODO
 // short circuiting
 //
 // boolean _0 = a || b

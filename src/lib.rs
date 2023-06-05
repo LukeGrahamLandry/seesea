@@ -5,7 +5,6 @@ pub mod scanning;
 
 mod macros;
 mod resolve;
-mod test_cases;
 pub mod test_logic;
 #[cfg(test)]
 pub mod tests;

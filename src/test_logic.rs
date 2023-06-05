@@ -1,133 +1,297 @@
 use crate::asm::aarch64::build_asm;
 use crate::asm::aarch64_out::TextAsm;
+use crate::asm::llvm::LlvmFuncGen;
+use crate::asm::llvm_raw::{null_terminate, RawLlvmFuncGen, TheContext};
 use crate::ir::Module;
 use crate::scanning::Scanner;
-use crate::test_cases::get_tests;
+use crate::vm::{Vm, VmValue};
 use crate::{ast, ir, log};
-use std::fs;
+use inkwell::context::Context;
+use inkwell::execution_engine::UnsafeFunctionPointer;
+use inkwell::OptimizationLevel;
+use llvm_sys::core::{LLVMContextCreate, LLVMDisposeMessage, LLVMModuleCreateWithNameInContext};
+use llvm_sys::execution_engine::{LLVMCreateJITCompilerForModule, LLVMGetFunctionAddress};
+use llvm_sys::target::{LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget};
+use std::ffi::CStr;
 use std::fs::File;
 use std::io::Write;
-use std::panic::catch_unwind;
-use std::process::{Command, ExitStatus, Stdio};
+use std::mem;
+use std::mem::MaybeUninit;
+use std::process::Command;
+use std::sync::Mutex;
 
-pub enum TestCase {
-    NoArgsRunMain {
-        src: String,
-        expected: u64,
-        name: String,
-    },
-    IntToIntRunMain {
-        src: String,
-        input: u64,
-        expected: u64,
-        name: String,
-    },
+// TODO: macro that you just give the function signature to
+pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
+    let ir = compile_module(src, name);
+
+    // VM
+    assert_eq!(Vm::eval_int_args(&ir, "main", &[]).to_int(), expected);
+
+    // LLVM
+    type Func = unsafe extern "C" fn() -> u64;
+    compile_and_run::<Func, _>(&ir, "main", |function| {
+        let answer = unsafe { function() };
+        assert_eq!(answer, expected);
+    });
+
+    // ASM
+    run_asm_main(&ir, "() -> u64", "", &format!("{}", expected));
 }
 
-#[test]
-pub fn run_asm_tests() {
-    generate_asm_rust_project();
-    let status = Command::new("cargo")
-        .arg("test")
-        .current_dir("target/asm_tests_generated")
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .unwrap();
-    assert!(status.success());
+pub fn int_to_int_run_main(src: &str, input: u64, expected: u64, name: &str) {
+    let ir = compile_module(src, name);
+
+    // VM
+    assert_eq!(Vm::eval_int_args(&ir, "main", &[input]).to_int(), expected);
+
+    // LLVM
+    type Func = unsafe extern "C" fn(u64) -> u64;
+    compile_and_run::<Func, _>(&ir, "main", |function| {
+        let answer = unsafe { function(input) };
+        assert_eq!(answer, expected);
+    });
+
+    // ASM
+    run_asm_main(
+        &ir,
+        "(a: u64) -> u64",
+        &format!("{}", input),
+        &format!("{}", expected),
+    );
 }
 
-/// Since I'm not prepared to deal with figuring out how to assemble and link an executable yet,
-/// I'm letting rust's global_asm macro do it for me.
-/// This generates another crate with a bunch of tests that each call a function defined in inline asm.
-// TODO: generate modules for [asm, llvm, vm] so all compiling happens here and all running happens in the generated tests
-//       so one backend crashing doesn't kill all of them. compile the module once, can i serialize it somehow?
-fn generate_asm_rust_project() {
-    let path = format!("target/asm_tests_generated/cargo.toml");
-    fs::remove_dir_all("target/asm_tests_generated/src").unwrap();
-    fs::create_dir_all("target/asm_tests_generated/src").unwrap();
+pub fn two_ints_to_int_run_main(src: &str, input_a: u64, input_b: u64, expected: u64, name: &str) {
+    let ir = compile_module(src, name);
+
+    // VM
+    assert_eq!(
+        Vm::eval_int_args(&ir, "main", &[input_a, input_b]).to_int(),
+        expected
+    );
+
+    // LLVM
+    type Func = unsafe extern "C" fn(u64, u64) -> u64;
+    compile_and_run::<Func, _>(&ir, "main", |function| {
+        let answer = unsafe { function(input_a, input_b) };
+        assert_eq!(answer, expected);
+    });
+
+    // ASM
+    run_asm_main(
+        &ir,
+        "(a: u64, b: u64) -> u64",
+        &format!("{}, {}", input_a, input_b),
+        &format!("{}", expected),
+    );
+}
+
+pub fn three_ints_to_int_run_main(
+    src: &str,
+    input_a: u64,
+    input_b: u64,
+    input_c: u64,
+    expected: u64,
+    name: &str,
+) {
+    let ir = compile_module(src, name);
+
+    // VM
+    assert_eq!(
+        Vm::eval_int_args(&ir, "main", &[input_a, input_b, input_c]).to_int(),
+        expected
+    );
+
+    // LLVM
+    type Func = unsafe extern "C" fn(u64, u64, u64) -> u64;
+    compile_and_run::<Func, _>(&ir, "main", |function| {
+        let answer = unsafe { function(input_a, input_b, input_c) };
+        assert_eq!(answer, expected);
+    });
+
+    // ASM
+    run_asm_main(
+        &ir,
+        "(a: u64, b: u64, c: u64) -> u64",
+        &format!("{}, {}, {}", input_a, input_b, input_c),
+        &format!("{}", expected),
+    );
+}
+
+pub fn no_arg_to_double_run_main(src: &str, expected: f64, name: &str) {
+    let ir = compile_module(src, name);
+
+    // VM
+    let answer = Vm::eval_int_args(&ir, "main", &[]).to_float();
+    assert!((answer - expected).abs() < 0.000001);
+
+    // LLVM
+    type Func = unsafe extern "C" fn() -> f64;
+    compile_and_run::<Func, _>(&ir, "main", |function| {
+        let answer = unsafe { function() };
+        assert!((answer - expected).abs() < 0.000001);
+    });
+
+    // ASM
+    run_asm_main(&ir, "() -> f64", "", &format!("{}", expected));
+}
+
+pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) {
+    let ir = compile_module(src, name);
+
+    // VM
+    let answer = Vm::eval(&ir, "main", &[VmValue::F64(input)]).to_int();
+    assert_eq!(answer, expected);
+
+    // LLVM
+    type Func = unsafe extern "C" fn(f64) -> u64;
+    compile_and_run::<Func, _>(&ir, "main", |function| {
+        let answer = unsafe { function(input) };
+        assert_eq!(answer, expected);
+    });
+
+    // ASM
+    run_asm_main(
+        &ir,
+        "(a: f64) -> u64",
+        &format!("{}", input),
+        &format!("{}", expected),
+    );
+}
+
+static FILE_GUARD: Mutex<()> = Mutex::new(());
+
+fn run_asm_main(ir: &Module, sig: &str, input: &str, output: &str) {
+    let asm = build_asm::<TextAsm>(ir).get_text();
+    let generated = CODE_TEMPLATE
+        .replace("$FUNC_NAME", &format!("{}_main", ir.name))
+        .replace("$SIG", sig)
+        .replace("$INPUT", input)
+        .replace("$OUTPUT", output)
+        .replace("$ASM", &asm);
+
+    let guard = FILE_GUARD.lock().unwrap();
+
+    let path = format!("target/asm_tests_generated/src/{}.rs", ir.name);
     let mut file = File::create(&path).unwrap();
-    file.write_all(CARGO_TOML.as_ref()).unwrap();
+    file.write_all(generated.as_ref()).unwrap();
 
-    let mut lib_file = String::new();
-    for test_case in &get_tests() {
-        match test_case {
-            TestCase::NoArgsRunMain {
-                src,
-                expected,
-                name,
-            } => {
-                let result = catch_unwind(|| {
-                    let ir = compile_module(src, name);
-                    let asm = build_asm::<TextAsm>(&ir).get_text();
-                    log!("==== Direct Aarch64 =====");
-                    log!("{}", asm);
-                    log!("============");
-                    (ir, asm)
-                });
-
-                let path = format!("target/asm_tests_generated/src/{}.rs", name);
-                let mut file = File::create(&path).unwrap();
-                if let Ok((ir, asm)) = result {
-                    let generated = NO_ARGS_MAIN_TEMPLATE
-                        .replace("$FUNC_NAME", &format!("{}_main", ir.name))
-                        .replace("$OUTPUT", &format!("{}", *expected))
-                        .replace("$ASM", &asm);
-
-                    file.write_all(generated.as_ref()).unwrap();
-                } else {
-                    file.write_all(
-                        FAILED_TEMPLATE
-                            .replace("$FUNC_NAME", &format!("{}_main", name))
-                            .as_ref(),
-                    )
-                    .unwrap();
-                }
-
-                lib_file += &format!("mod {};\n", name);
-            }
-            TestCase::IntToIntRunMain {
-                src,
-                input,
-                expected,
-                name,
-            } => {
-                let result = catch_unwind(|| {
-                    let ir = compile_module(src, name);
-                    let asm = build_asm::<TextAsm>(&ir).get_text();
-                    log!("==== Direct Aarch64 =====");
-                    log!("{}", asm);
-                    log!("============");
-                    (ir, asm)
-                });
-
-                let path = format!("target/asm_tests_generated/src/{}.rs", name);
-                let mut file = File::create(&path).unwrap();
-                if let Ok((ir, asm)) = result {
-                    let generated = INT_TO_INT_TEMPLATE
-                        .replace("$FUNC_NAME", &format!("{}_main", ir.name))
-                        .replace("$OUTPUT", &format!("{}", *expected))
-                        .replace("$INPUT", &format!("{}", *input))
-                        .replace("$ASM", &asm);
-
-                    file.write_all(generated.as_ref()).unwrap();
-                } else {
-                    file.write_all(
-                        FAILED_TEMPLATE
-                            .replace("$FUNC_NAME", &format!("{}_main", name))
-                            .as_ref(),
-                    )
-                    .unwrap();
-                }
-
-                lib_file += &format!("mod {};\n", name);
-            }
-        }
-    }
-
+    // Note: this rewrites the lib path so forces it to be sequential (enforced by the mutex above).
     let path = "target/asm_tests_generated/src/lib.rs";
-    let mut file = File::create(path).unwrap();
-    file.write_all(lib_file.as_ref()).unwrap();
+    let mut file = File::create(&path).unwrap();
+    file.write_all(format!("mod {};", ir.name).as_ref())
+        .unwrap();
+
+    let output = Command::new("cargo")
+        .arg("test")
+        .arg(ir.name.as_ref())
+        .arg("--")
+        .arg("--nocapture")
+        .current_dir("target/asm_tests_generated")
+        .output();
+
+    // Don't do the part that might panic while holding the mutex.
+    drop(guard);
+
+    // Not inheriting streams because that confuses the buffering and puts it above the other logging.
+    let output = output.unwrap();
+    println!("{}", String::from_utf8(output.stdout).unwrap());
+    eprintln!("{}", String::from_utf8(output.stderr).unwrap());
+    assert!(output.status.success());
+}
+
+pub fn vm_run_cases(ir: &Module, func_name: &str, cases: &[(&[u64], u64)]) {
+    for (args, answer) in cases {
+        assert_eq!(Vm::eval_int_args(ir, func_name, args).to_int(), *answer);
+    }
+}
+
+// This is unsafe! But since its just in tests and calling the function is unsafe anyway I don't really care.
+// The caller MUST specify the right signature for F.
+// TODO: is there a way I can reflect on the signature since I know what it should be from the ir? maybe make this a macro?
+// F needs to be an unsafe extern "C" fn (?) -> ?
+// TODO: ideally i could somehow get the asm into executable memory here and call action again with that function pointer
+pub fn compile_and_run<F, A>(ir: &Module, func_name: &str, action: A)
+where
+    F: UnsafeFunctionPointer,
+    A: FnMut(F),
+{
+    llvm_run_raw_sys(ir, func_name, action);
+}
+
+#[allow(unused)]
+pub fn llvm_run_raw_sys<F, A>(ir: &ir::Module, func_name: &str, action: A)
+where
+    F: UnsafeFunctionPointer,
+    A: FnOnce(F),
+{
+    assert!(ir.get_func(func_name).is_some(), "Function not found.");
+    let func_name = null_terminate(func_name);
+    unsafe {
+        let context = LLVMContextCreate();
+        let name = null_terminate(&ir.name);
+        let module = LLVMModuleCreateWithNameInContext(name.as_ptr(), context);
+        let mut the_context = TheContext { context, module };
+
+        let mut execution_engine = MaybeUninit::uninit();
+        let mut err = MaybeUninit::uninit();
+
+        // Fixes: Unable to find target for this triple (no targets are registered)
+        assert_eq!(LLVM_InitializeNativeTarget(), 0);
+        // Fixes:  LLVM ERROR: Target does not support MC emission!
+        assert_eq!(LLVM_InitializeNativeAsmPrinter(), 0);
+        let failed = LLVMCreateJITCompilerForModule(
+            execution_engine.as_mut_ptr(),
+            module,
+            0,
+            err.as_mut_ptr(),
+        );
+
+        if failed != 0 {
+            let err = err.assume_init();
+            let msg = CStr::from_ptr(err).to_str().unwrap().to_string();
+            LLVMDisposeMessage(err);
+            panic!("{}", msg);
+        }
+
+        let execution_engine = execution_engine.assume_init();
+
+        RawLlvmFuncGen::new(&mut the_context).compile_all(ir);
+
+        let function_ptr = LLVMGetFunctionAddress(execution_engine, func_name.as_ptr());
+        assert_ne!(function_ptr, 0);
+        let function_ptr: F = mem::transmute_copy(&function_ptr);
+
+        action(function_ptr);
+
+        // TODO: @Leak but in tests so who cares.
+        //       Something fucks up the state of the context such that dropping it causes unpredictable memory related crashes.
+        //       Removing these makes it better but still doesn't fix it.
+        // LLVMDisposeExecutionEngine(execution_engine);
+        // Doing this causes a SIGSEGV. The execution engine owns the module.
+        // LLVMDisposeModule(module);
+        // LLVMContextDispose(context);
+    }
+}
+
+#[allow(unused)]
+pub fn llvm_run_inkwell<F, A>(ir: &Module, func_name: &str, action: A)
+where
+    F: UnsafeFunctionPointer,
+    // JitFunction instead of direct F to hold the lifetime of our exec engine.
+    A: FnOnce(F),
+{
+    assert!(ir.get_func(func_name).is_some(), "Function not found.");
+    let use_llvm = |context: &Context| {
+        let module = context.create_module(&ir.name);
+        let execution_engine = module
+            .create_jit_execution_engine(OptimizationLevel::None)
+            .unwrap();
+        LlvmFuncGen::new(&module).compile_all(ir);
+
+        let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
+        action(unsafe { func.as_raw() });
+    };
+    unsafe { Context::get_global(use_llvm) }
 }
 
 pub fn compile_module(src: &str, name: &str) -> ir::Module {
@@ -139,9 +303,9 @@ pub fn compile_module(src: &str, name: &str) -> ir::Module {
     ir::Module::from(ast)
 }
 
-const INT_TO_INT_TEMPLATE: &str = r#"
+const CODE_TEMPLATE: &str = r#"
 extern "C" {
-    fn $FUNC_NAME(a: u64) -> u64;
+    fn $FUNC_NAME$SIG;
 }
 
 #[test]
@@ -152,33 +316,4 @@ fn run_asm() {
 }
 
 std::arch::global_asm!("$ASM");
-"#;
-
-const NO_ARGS_MAIN_TEMPLATE: &str = r#"
-extern "C" {
-    fn $FUNC_NAME() -> u64;
-}
-
-#[test]
-fn run_asm() {
-    let result = unsafe { $FUNC_NAME() };
-    println!("ASM says: {}", result);
-    assert_eq!(result, $OUTPUT);
-}
-
-std::arch::global_asm!("$ASM");
-"#;
-
-const FAILED_TEMPLATE: &str = r#"
-#[test]
-fn run_asm() {
-    panic!("Failed to compile ASM.");
-}
-"#;
-
-const CARGO_TOML: &str = r#"
-[package]
-name = "seesea_generated"
-version = "0.1.0"
-edition = "2021"
 "#;

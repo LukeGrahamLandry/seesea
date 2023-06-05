@@ -1,5 +1,5 @@
-use crate::ir;
 use crate::ir::{Function, Label, Ssa};
+use crate::{ir, log};
 use std::fmt::{Debug, Formatter, Write};
 use std::rc::Rc;
 
@@ -133,6 +133,9 @@ impl TextAsm {
             .filter(|s| s.is_some())
             .map(|s| s.unwrap())
             .for_each(|s| result.push_str(&s));
+        log!("==== Direct Aarch64 =====");
+        log!("{}", result);
+        log!("============");
         result
     }
 }
