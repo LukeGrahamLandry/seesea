@@ -14,10 +14,18 @@ struct Aarch64Builder<'ir> {
     active_registers: Vec<Register>,
     unused_registers: Vec<Register>,
     current: Label,
-    text: Vec<Option<(String, VecDeque<String>)>>,
+    text: Vec<Option<[String; 3]>>,
     current_index: usize,
     ssa_registers: Vec<Option<Register>>,
+    cursor: CursorPos,
     // TODO: instead of ssa_registers + ssa_offsets have an enum SsaLocation { Register(x), Stack(x), Uninit }
+}
+
+// These break a block's code into three chunks you can append to separately so phi moves can go after all code but before the jump away.
+enum CursorPos {
+    CodeEnd,
+    PhiTail,
+    JmpEnd,
 }
 
 // TODO: liveness pass so i can know when the last read of each ssa is.
@@ -26,15 +34,18 @@ struct Aarch64Builder<'ir> {
 //       to test this without more complicated code i could artificially limit the number of allowed to like args+3.
 
 macro_rules! output {
-    ($self:ident, $($arg:tt)*) => {
-        writeln!(&mut $self.text[$self.current_index].as_mut().unwrap().0, $($arg)*).unwrap()
-    };
+    ($self:ident, $($arg:tt)*) => {{
+        let i = match $self.cursor {
+            CursorPos::CodeEnd => 0,
+            CursorPos::PhiTail => 1,
+            CursorPos::JmpEnd => 2,
+        };
+        writeln!(&mut $self.text[$self.current_index].as_mut().unwrap()[i], $($arg)*).unwrap();
+    }};
 }
 
 // Should we start functions by filling any corruptible with meaningless sentinel values to help debugging?
 const FILL_REGISTERS_WITH_GARBAGE: bool = false;
-
-// TODO: how do we know when an ssa is no longer live? do i need to have an Op::Free(Ssa) when all reads are over?
 
 pub fn build_asm(ir: &Module) -> String {
     let mut builder = Aarch64Builder {
@@ -49,6 +60,7 @@ pub fn build_asm(ir: &Module) -> String {
         text: vec![],
         current_index: 0,
         ssa_registers: vec![],
+        cursor: CursorPos::CodeEnd,
     };
     builder.run(ir);
     builder.get_text()
@@ -80,7 +92,7 @@ impl<'ir> Aarch64Builder<'ir> {
         );
 
         self.unused_registers = vec![];
-        // Order matters because function params start at X0
+        // Order matters because function params start at X0 and next_reg pops from the end
         let scratch_register_count = 16;
         for i in (0..scratch_register_count).rev() {
             let reg = Register(RegKind::Int64, i);
@@ -119,7 +131,7 @@ impl<'ir> Aarch64Builder<'ir> {
         self.ssa_registers = vec![None; function.register_types.len()];
         if has_enough_registers {
             // We have enough corruptible registers for all our SSAs.
-            // But when we call someone, they're allowed to write over them all.
+            // But when we call someone, they're allowed to write over them all so remember to save them.
 
             // First 8 arguments are passed in X0-X7
             let arg_count = function.arg_registers.len();
@@ -158,9 +170,13 @@ impl<'ir> Aarch64Builder<'ir> {
         for (i, code) in function.blocks.iter().enumerate() {
             if let Some(code) = code {
                 self.current = Label(i);
-                self.move_cursor(self.current);
+                self.move_cursor(self.current, CursorPos::CodeEnd);
                 output!(self, "{}:", self.current.index());
-                for op in code {
+                for (i, op) in code.iter().enumerate() {
+                    if i == (code.len() - 1) {
+                        assert!(op.is_jump(), "last op of basic block must be jump.");
+                        self.move_cursor(self.current, CursorPos::JmpEnd);
+                    }
                     self.emit_op(op);
                 }
             }
@@ -191,7 +207,6 @@ impl<'ir> Aarch64Builder<'ir> {
         self.set_ssa(&Ssa(0), first_arg);
     }
 
-    // TODO: problem is phis are getting inserted into the blocks but after the jumps away
     fn emit_op(&mut self, op: &Op) {
         match op {
             Op::ConstValue { dest, value, kind } => {
@@ -311,10 +326,10 @@ impl<'ir> Aarch64Builder<'ir> {
 
     fn emit_phi(&mut self, dest: &Ssa, prev_block: Label, prev_value: Ssa) {
         let current = self.current;
-        self.move_cursor(prev_block);
+        self.move_cursor(prev_block, CursorPos::PhiTail);
         let value = self.get_ssa(&prev_value);
         self.set_ssa(dest, value);
-        self.move_cursor(current);
+        self.move_cursor(current, CursorPos::CodeEnd);
     }
 
     // Loads the value of an ssa from the stack into a register.
@@ -404,9 +419,10 @@ impl<'ir> Aarch64Builder<'ir> {
         self.func.unwrap().required_stack_bytes + (ssa.index() * 8)
     }
 
-    fn move_cursor(&mut self, block: Label) {
+    fn move_cursor(&mut self, block: Label, pos: CursorPos) {
         self.current = block;
         self.current_index = block.index() + 1;
+        self.cursor = pos;
         assert!(self.text[self.current_index].is_some());
     }
 
@@ -464,10 +480,7 @@ impl<'ir> Aarch64Builder<'ir> {
             .filter(|s| s.is_some())
             .map(|s| s.unwrap())
             .for_each(|s| {
-                result.push_str(&s.0);
-                for ss in &s.1 {
-                    result.push_str(ss);
-                }
+                result.push_str(&*s.concat());
             });
         log!("==== Direct Aarch64 =====");
         log!("{}", result);

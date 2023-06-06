@@ -270,7 +270,7 @@ impl<'src> Parser<'src> {
         }
     }
 
-    // TODO: it parses long* x = &a; as (long * x) = &a; because statement checker doesnt know long* is a type
+    // TODO: operator precedence. everything has a priority value so you can check if the next thing is smaller than yours and you can take it
     /// EXPR
     fn parse_expr(&mut self) -> MetaExpr {
         let left = self.parse_unary();

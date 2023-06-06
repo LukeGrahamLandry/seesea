@@ -814,6 +814,9 @@ impl<'ast> AstParser<'ast> {
                 Lvalue::DerefPtr(addr)
             }
             Operation::GetField(object, index) => {
+                // TODO: this could be a function call that returns a struct.
+                //       maybe should that get desugared to a pointer in the resolve pass but feels too dependent on the backend's calling convention.
+                //       both llvm and aarch only want to return ints but they do want to hint which param is really a return so can't throw away info
                 // Struct values dont fit in a register so they're represented with an extra level of indirection.
                 let the_struct = self.parse_lvalue(object, block).get_addr();
                 assert_eq!(self.type_of(the_struct).depth, 1);
