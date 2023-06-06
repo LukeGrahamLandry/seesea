@@ -1,5 +1,4 @@
 use crate::asm::aarch64::build_asm;
-use crate::asm::aarch64_out::TextAsm;
 use crate::asm::llvm::LlvmFuncGen;
 use crate::asm::llvm_raw::{null_terminate, RawLlvmFuncGen, TheContext};
 use crate::ir::Module;
@@ -161,7 +160,7 @@ pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) 
 static FILE_GUARD: Mutex<()> = Mutex::new(());
 
 fn run_asm_main(ir: &Module, sig: &str, input: &str, output: &str) {
-    let asm = build_asm::<TextAsm>(ir).get_text();
+    let asm = build_asm(ir);
     let generated = CODE_TEMPLATE
         .replace("$FUNC_NAME", &format!("{}_main", ir.name))
         .replace("$SIG", sig)
