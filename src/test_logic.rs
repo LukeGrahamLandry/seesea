@@ -303,6 +303,7 @@ pub fn compile_module(src: &str, name: &str) -> ir::Module {
 }
 
 const CODE_TEMPLATE: &str = r#"
+
 extern "C" {
     fn $FUNC_NAME$SIG;
 }

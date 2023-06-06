@@ -1,9 +1,10 @@
-use crate::ast::{BinaryOp, FuncSignature, LiteralValue, ValueType};
+use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter, Write};
 
+#[derive(Default)]
 struct Aarch64Builder<'ir> {
     ir: Option<&'ir Module>,
     func: Option<&'ir Function>,
@@ -11,18 +12,21 @@ struct Aarch64Builder<'ir> {
     total_stack_size: usize,
     // TODO: this will be useful again when i have more sophisticated spilling so calculating them is non-trivial. should be a Vec<Option<usize>> tho
     ssa_offsets: HashMap<Ssa, usize>,
-    active_registers: Vec<Register>,
-    unused_registers: Vec<Register>,
+    active_registers: Vec<Reg>,
+    unused_registers: VecDeque<Reg>,
     current: Label,
     text: Vec<Option<[String; 3]>>,
     current_index: usize,
-    ssa_registers: Vec<Option<Register>>,
+    ssa_registers: Vec<Option<Reg>>,
     cursor: CursorPos,
-    // TODO: instead of ssa_registers + ssa_offsets have an enum SsaLocation { Register(x), Stack(x), Uninit }
+    // for asserts
+    on_last: bool, // TODO: instead of ssa_registers + ssa_offsets have an enum SsaLocation { Register(x), Stack(x), Uninit }
 }
 
 // These break a block's code into three chunks you can append to separately so phi moves can go after all code but before the jump away.
+#[derive(Default)]
 enum CursorPos {
+    #[default]
     CodeEnd,
     PhiTail,
     JmpEnd,
@@ -48,25 +52,10 @@ macro_rules! output {
 const FILL_REGISTERS_WITH_GARBAGE: bool = false;
 
 pub fn build_asm(ir: &Module) -> String {
-    let mut builder = Aarch64Builder {
-        ir: None,
-        func: None,
-        stack_remaining: 0,
-        total_stack_size: 0,
-        ssa_offsets: Default::default(),
-        active_registers: Default::default(),
-        unused_registers: Default::default(),
-        current: Label(0),
-        text: vec![],
-        current_index: 0,
-        ssa_registers: vec![],
-        cursor: CursorPos::CodeEnd,
-    };
+    let mut builder = Aarch64Builder::default();
     builder.run(ir);
     builder.get_text()
 }
-
-const SP: Register = Register(RegKind::Int64, 31);
 
 impl<'ir> Aarch64Builder<'ir> {
     fn run(&mut self, ir: &'ir Module) {
@@ -91,14 +80,21 @@ impl<'ir> Aarch64Builder<'ir> {
             function.signature.name
         );
 
-        self.unused_registers = vec![];
+        self.unused_registers = vec![].into();
         // Order matters because function params start at X0 and next_reg pops from the end
         let scratch_register_count = 16;
-        for i in (0..scratch_register_count).rev() {
-            let reg = Register(RegKind::Int64, i);
-            self.unused_registers.push(reg);
+        let float_register_count = 8;
+        for i in 0..scratch_register_count {
+            let reg = Reg(RegKind::Int, Bits::B64, i);
+            self.unused_registers.push_back(reg);
         }
 
+        for i in 0..float_register_count {
+            let reg = Reg(RegKind::Float, Bits::B64, i);
+            self.unused_registers.push_back(reg);
+        }
+
+        // TODO: account for floats
         let has_enough_registers = function.register_types.len() <= self.unused_registers.len();
 
         // Reserve stack space (stack grows downwards).
@@ -139,34 +135,35 @@ impl<'ir> Aarch64Builder<'ir> {
             assert!(arg_count < 8, "todo");
             for (i, arg_ssa) in function.arg_registers.iter().enumerate() {
                 let ty = function.register_types.get(arg_ssa).unwrap();
-                assert!(ty.is_raw_int() || ty.is_ptr());
-                assert_eq!(i, arg_ssa.0);
-                let r = self.next_reg();
+                let r = self.next_reg(ty);
                 self.ssa_registers[arg_ssa.index()] = Some(r);
             }
 
             // TODO: X8 is special if we're returning a struct
-            for (_, ty) in &function.register_types {
-                assert!(ty.is_raw_int() || ty.is_ptr());
-            }
-
             for i in arg_count..reg_count {
-                let r = self.next_reg();
+                let ty = function.register_types.get(&Ssa(i)).unwrap();
+                let r = self.next_reg(ty);
                 self.ssa_registers[i] = Some(r);
             }
 
             if FILL_REGISTERS_WITH_GARBAGE {
                 // Skip the registers used to pass arguments.
                 for i in (arg_count as u8)..scratch_register_count {
-                    let reg = Register(RegKind::Int64, i);
+                    let reg = Reg(RegKind::Int, Bits::B64, i);
                     output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, reg, 12345);
                 }
             }
+
+            assert_eq!(self.ssa_registers[0].unwrap().2, 0);
         } else {
+            todo!();
             self.save_arguments_to_stack(&function.signature);
         }
 
+        self.on_last = true;
         self.jump_to(function.entry_point());
+        self.on_last = false;
+
         for (i, code) in function.blocks.iter().enumerate() {
             if let Some(code) = code {
                 self.current = Label(i);
@@ -176,9 +173,11 @@ impl<'ir> Aarch64Builder<'ir> {
                     if i == (code.len() - 1) {
                         assert!(op.is_jump(), "last op of basic block must be jump.");
                         self.move_cursor(self.current, CursorPos::JmpEnd);
+                        self.on_last = true;
                     }
                     self.emit_op(op);
                 }
+                self.on_last = false;
             }
         }
 
@@ -195,14 +194,15 @@ impl<'ir> Aarch64Builder<'ir> {
             return;
         }
 
+        let ty = signature.param_types.get(0).unwrap();
         assert_eq!(count, 1);
-        let first_arg = self.next_reg();
+        let first_arg = self.next_reg(ty);
         output!(
             self,
             "{:?} {:?}, {:?}",
             AsmOp::MOV,
             first_arg,
-            Register(RegKind::Int64, 0)
+            Reg(RegKind::Int, Bits::B64, 0)
         );
         self.set_ssa(&Ssa(0), first_arg);
     }
@@ -210,13 +210,18 @@ impl<'ir> Aarch64Builder<'ir> {
     fn emit_op(&mut self, op: &Op) {
         match op {
             Op::ConstValue { dest, value, kind } => {
-                assert!(kind.is_raw_int());
                 match value {
                     LiteralValue::IntNumber(n) => {
                         // TODO assert value in range. For larger constants we could use several MOVK with shift.
                         let result = self.reg_for(dest);
                         // (MOVZ X, #n;) == (MOV X, XZR; MOVK X, #n;) == (SUB X, X, X; ADD X, X, X, #n;)
                         output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, result, *n);
+                        self.set_ssa(dest, result);
+                    }
+                    LiteralValue::FloatNumber(n) => {
+                        // TODO assert value in range.
+                        let result = self.reg_for(dest);
+                        output!(self, "{:?} {:?}, #{}", AsmOp::FMOV, result, *n);
                         self.set_ssa(dest, result);
                     }
                     _ => todo!(),
@@ -227,12 +232,25 @@ impl<'ir> Aarch64Builder<'ir> {
                 let b_value = self.get_ssa(b);
                 let result_temp = self.reg_for(dest);
 
+                let is_int = a_value.0 == RegKind::Int && b_value.0 == RegKind::Int;
+                let is_float = a_value.0 == RegKind::Float && b_value.0 == RegKind::Float;
+                assert!(is_int || is_float);
+
                 match kind {
+                    // Signed/Unsigned Add/Sub are the same because two's complement
                     BinaryOp::Add => {
                         self.simple_op(AsmOp::ADD, result_temp, a_value, b_value);
                     }
                     BinaryOp::Subtract => {
                         self.simple_op(AsmOp::SUB, result_temp, a_value, b_value);
+                    }
+                    BinaryOp::Multiply => {
+                        self.simple_op(AsmOp::MUL, result_temp, a_value, b_value);
+                    }
+                    // TODO: manual trap for int divide by zero.
+                    BinaryOp::Divide => {
+                        // SDIV
+                        self.simple_op(AsmOp::UDIV, result_temp, a_value, b_value);
                     }
                     // TODO: different flags for signed comparisons
                     BinaryOp::GreaterThan => {
@@ -278,7 +296,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 if let Some(value) = value {
                     let return_value = self.get_ssa(value);
                     // This clobbers self.ssa_registers[0] but we're immediately returning so it's fine.
-                    self.pair(AsmOp::MOV, Register(RegKind::Int64, 0), return_value);
+                    self.pair(AsmOp::MOV, Reg(RegKind::Int, Bits::B64, 0), return_value);
                     self.drop_reg(return_value);
                 }
                 self.simple_with_const(AsmOp::ADD, SP, SP, self.total_stack_size);
@@ -318,6 +336,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 kind,
             } => {
                 assert_eq!(*kind, CastType::Bits);
+                // TODO: make sure bits of float->int or int->float needs to swaps register types properlyx
                 let temp = self.get_ssa(input);
                 self.set_ssa(output, temp);
             }
@@ -335,22 +354,27 @@ impl<'ir> Aarch64Builder<'ir> {
     // Loads the value of an ssa from the stack into a register.
     // You need to return this to the queue.
     #[must_use]
-    fn get_ssa(&mut self, ssa: &Ssa) -> Register {
+    fn get_ssa(&mut self, ssa: &Ssa) -> Reg {
+        let ty = self.func.unwrap().register_types.get(ssa).unwrap();
         match self.ssa_registers[ssa.index()] {
             None => {
                 // We don't have the value in a register yet.
-                let reg = self.next_reg();
+                let reg = self.next_reg(ty);
                 self.load(reg, SP, self.offset_of(ssa));
-                self.ssa_registers[ssa.index()] = Some(reg);
+                // TODO: bring this back when i do proper spilling
+                // self.ssa_registers[ssa.index()] = Some(reg);
                 reg
             }
-            Some(active_reg) => active_reg,
+            Some(active_reg) => {
+                assert_eq!(register_kind(ty), (active_reg.0, active_reg.1));
+                active_reg
+            }
         }
     }
 
     // Stores a value from a register into the stack slot of an ssa.
     // The caller may not use this register again (they must get a new one from the queue because we might have chosen to reuse this one).
-    fn set_ssa(&mut self, ssa: &Ssa, value: Register) {
+    fn set_ssa(&mut self, ssa: &Ssa, value: Reg) {
         match self.ssa_registers[ssa.index()] {
             None => {
                 // We haven't assigned a register to represent this SSA yet.
@@ -375,12 +399,14 @@ impl<'ir> Aarch64Builder<'ir> {
     // If you want to read the value of an ssa, you must call get_ssa instead.
     // You need to return this to the queue.
     #[must_use]
-    fn reg_for(&mut self, ssa: &Ssa) -> Register {
+    fn reg_for(&mut self, ssa: &Ssa) -> Reg {
+        let ty = self.func.unwrap().register_types.get(ssa).unwrap();
         match self.ssa_registers[ssa.index()] {
-            None => self.next_reg(),
+            None => self.next_reg(ty),
             Some(active_reg) => {
                 // We've already allocated a register for this SSA, so let's give you that
                 // so we don't have to move the value in set_ssa.
+                assert_eq!(register_kind(ty), (active_reg.0, active_reg.1));
                 active_reg
             }
         }
@@ -388,21 +414,34 @@ impl<'ir> Aarch64Builder<'ir> {
 
     // You need to return this to the queue.
     #[must_use]
-    fn next_reg(&mut self) -> Register {
-        let reg = self.unused_registers.pop().expect("Need more registers.");
+    fn next_reg(&mut self, ty: &CType) -> Reg {
+        let (kind, bits) = register_kind(ty);
+
+        let index = self
+            .unused_registers
+            .iter()
+            .position(|s| s.0 == kind)
+            .expect("Need more registers.");
+
+        // TODO: order matters for arguments so can't blindly swap_remove
+        let mut reg = self.unused_registers.remove(index).unwrap();
+        reg.1 = bits;
         self.active_registers.push(reg);
         reg
     }
 
     // TODO: maybe make Register not copy so i can enforce passing it to the allocator. drop impl that panics if not returned to queue properly.
-    fn drop_reg(&mut self, register: Register) {
+    fn drop_reg(&mut self, register: Reg) {
         if self
             .ssa_registers
             .iter()
-            .any(|s| matches!(s, Some(register)))
+            .filter(|s| s.is_some())
+            .map(|s| s.unwrap())
+            .any(|s| s == register)
         {
             // This register is allocated for an ssa so we'll just leave it there so we can read it later
             // TODO: some other hook for signalling that we're never doing to need this value again so we can release the register
+            //       things that dont have enough space for all registers dont work right now
             return;
         }
 
@@ -411,8 +450,9 @@ impl<'ir> Aarch64Builder<'ir> {
             .iter()
             .position(|r| *r == register)
             .unwrap();
-        self.active_registers.swap_remove(index);
-        self.unused_registers.push(register);
+        // TODO: order matters for arguments so can't blindly swap_remove
+        self.active_registers.remove(index);
+        self.unused_registers.push_back(register);
     }
 
     fn offset_of(&self, ssa: &Ssa) -> usize {
@@ -426,26 +466,25 @@ impl<'ir> Aarch64Builder<'ir> {
         assert!(self.text[self.current_index].is_some());
     }
 
-    fn simple_op(&mut self, op: AsmOp, destination: Register, arg1: Register, arg2: Register) {
+    fn simple_op(&mut self, op: AsmOp, destination: Reg, arg1: Reg, arg2: Reg) {
         output!(self, "{:?} {:?}, {:?}, {:?}", op, destination, arg1, arg2);
     }
 
     fn jump_to(&mut self, block: Label) {
-        let b = self.get_label(block);
-        output!(self, "B {}", b);
+        // If we're jumping to the next block, just fall through since we know this is the last instruction in the block.
+        // (current_index == current.index + 1) because there's an extra header block to setup the stack.
+        assert!(self.on_last);
+        if block.index() != self.current_index {
+            let b = self.get_label(block);
+            output!(self, "B {}", b);
+        }
     }
 
-    fn pair(&mut self, op: AsmOp, destination: Register, arg1: Register) {
+    fn pair(&mut self, op: AsmOp, destination: Reg, arg1: Reg) {
         output!(self, "{:?} {:?}, {:?}", op, destination, arg1);
     }
 
-    fn simple_with_const(
-        &mut self,
-        op: AsmOp,
-        destination: Register,
-        arg1: Register,
-        arg2_constant: usize,
-    ) {
+    fn simple_with_const(&mut self, op: AsmOp, destination: Reg, arg1: Reg, arg2_constant: usize) {
         // assert arg2_constant in the right range
         output!(
             self,
@@ -457,11 +496,11 @@ impl<'ir> Aarch64Builder<'ir> {
         );
     }
 
-    fn load(&mut self, destination: Register, addr: Register, offset: usize) {
+    fn load(&mut self, destination: Reg, addr: Reg, offset: usize) {
         output!(self, "LDR {:?}, [{:?}, #{}]", destination, addr, offset);
     }
 
-    fn store(&mut self, value: Register, addr: Register, offset: usize) {
+    fn store(&mut self, value: Reg, addr: Reg, offset: usize) {
         output!(self, "STR {:?}, [{:?}, #{}]", value, addr, offset);
     }
 
@@ -489,15 +528,15 @@ impl<'ir> Aarch64Builder<'ir> {
     }
 
     // false_flags is the inverse of the condition this evaluates
-    fn binary_compare(
-        &mut self,
-        a_value: Register,
-        b_value: Register,
-        result_temp: Register,
-        false_flags: AsmOp,
-    ) {
+    fn binary_compare(&mut self, a_value: Reg, b_value: Reg, result_temp: Reg, false_flags: AsmOp) {
+        let cmp = if a_value.0 == RegKind::Int {
+            AsmOp::CMP
+        } else {
+            AsmOp::FCMP
+        };
+
         // Set the magic flags in the sky based on the relationship between these numbers.
-        self.pair(AsmOp::CMP, a_value, b_value);
+        self.pair(cmp, a_value, b_value);
 
         // Set the destination to zero.
         output!(self, "{:?} {:?}, XZR", AsmOp::MOV, result_temp);
@@ -524,36 +563,76 @@ pub enum AsmOp {
     BHS,
     BLO,
     BHI,
+    MUL,
+    UDIV,
+    FCMP,
+    FMOV,
 }
 
-// The different sizes of each type actually refer to the same register. It just changes how accessing them works.
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum Bits {
+    B32,
+    B64,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum RegKind {
-    Int32,
-    Int64,
-    Float32,
-    Float64,
+    Int,
+    Float,
+    IntStackPointer,
+    IntZero,
 }
 
-// TODO: this eq is wrong
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub struct Register(pub RegKind, pub u8);
+#[derive(Copy, Clone)]
+struct Reg(RegKind, Bits, u8);
 
-impl Debug for Register {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if self.1 == 31 {
-            return write!(f, "sp");
+const SP: Reg = Reg(RegKind::IntStackPointer, Bits::B64, 31);
+const ZERO: Reg = Reg(RegKind::IntZero, Bits::B64, 31);
+
+impl PartialEq<Self> for Reg {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0 && self.2 == other.2
+    }
+}
+
+fn register_kind(ty: &CType) -> (RegKind, Bits) {
+    if ty.is_ptr() {
+        return (RegKind::Int, Bits::B64);
+    } else {
+        match ty.ty {
+            ValueType::U64 => (RegKind::Int, Bits::B64),
+            ValueType::U32 => (RegKind::Int, Bits::B32),
+            ValueType::U8 => todo!(),
+            ValueType::F64 => (RegKind::Float, Bits::B64),
+            ValueType::F32 => (RegKind::Float, Bits::B32),
+            ValueType::Struct(_) | ValueType::Void => unreachable!(),
         }
-        let prefix = match self.0 {
-            RegKind::Int32 => "W",
-            RegKind::Int64 => "X",
-            RegKind::Float32 => {
-                todo!()
+    }
+}
+
+impl Debug for Reg {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Reg(RegKind::Int, bits, i) => {
+                let prefix = match bits {
+                    Bits::B32 => "W",
+                    Bits::B64 => "X",
+                };
+                write!(f, "{}{}", prefix, i)
             }
-            RegKind::Float64 => {
-                todo!()
+            Reg(RegKind::Float, bits, i) => {
+                let prefix = match bits {
+                    Bits::B32 => "S",
+                    Bits::B64 => "D",
+                };
+                write!(f, "{}{}", prefix, i)
             }
-        };
-        write!(f, "{}{}", prefix, self.1)
+            Reg(RegKind::IntStackPointer, _, _) => {
+                write!(f, "SP")
+            }
+            Reg(RegKind::IntZero, _, _) => {
+                write!(f, "XZR")
+            }
+        }
     }
 }

@@ -13,7 +13,7 @@ mod print;
 pub struct Ssa(pub usize);
 
 /// Identifier of a basic block that you can jump to.
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub struct Label(pub usize); // sequential indexes into the blocks array
 
 // @Memory u16 would be plenty for those ^ if i care about how big this enum is
