@@ -9,6 +9,7 @@ use crate::{ir, log};
 
 use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::macros::vm::{do_bin_cmp, do_bin_math};
+use crate::resolve::FuncSource;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
@@ -222,11 +223,13 @@ impl<'ir> Vm<'ir> {
                 func_name,
                 args,
                 return_value_dest,
+                kind,
             } => {
                 let entry_location = self.here();
                 let func = match self.module.get_func(&func_name) {
                     Some(f) => f,
                     None => {
+                        assert_eq!(kind, FuncSource::External);
                         let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
                         let result = self.call_libc_for_tests(&func_name, &arg_values);
                         if let Some(dest) = return_value_dest {

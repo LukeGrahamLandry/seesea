@@ -211,7 +211,10 @@ impl<'ast> AstParser<'ast> {
         args: &'ast [ResolvedExpr],
         debug: OpDebugInfo,
     ) -> Option<Ssa> {
-        assert!(matches!(func_src, FuncSource::Internal));
+        assert!(matches!(
+            func_src,
+            FuncSource::Internal | FuncSource::External
+        ));
         let arg_registers = args.iter().map(|arg| self.emit_expr(arg, block)).collect();
         let return_value_dest = if signature.return_type.is_raw_void() {
             None
@@ -227,6 +230,7 @@ impl<'ast> AstParser<'ast> {
                 func_name: signature.name.clone(),
                 args: arg_registers,
                 return_value_dest,
+                kind: func_src.clone(),
             },
             debug,
         );

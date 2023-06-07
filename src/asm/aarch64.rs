@@ -2,6 +2,7 @@ use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
+use crate::resolve::FuncSource;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter, Write};
 use std::rc::Rc;
@@ -388,8 +389,9 @@ impl<'ir> Aarch64Builder<'ir> {
                 func_name,
                 args,
                 return_value_dest,
+                kind,
             } => {
-                self.do_func_call(func_name, args, return_value_dest);
+                self.do_func_call(func_name, args, return_value_dest, kind);
             }
             Op::GetFieldAddr { .. } => {
                 todo!()
@@ -429,7 +431,13 @@ impl<'ir> Aarch64Builder<'ir> {
         self.move_cursor(current, CursorPos::CodeEnd);
     }
 
-    fn do_func_call(&mut self, name: &str, args: &[Ssa], return_dest: &Option<Ssa>) {
+    fn do_func_call(
+        &mut self,
+        name: &str,
+        args: &[Ssa],
+        return_dest: &Option<Ssa>,
+        kind: &FuncSource,
+    ) {
         // We know any values that need to be held across the call are already on the stack.
         // Any currently active registers are either garbage or an argument to this function.
 
@@ -487,7 +495,15 @@ impl<'ir> Aarch64Builder<'ir> {
         );
 
         // Now do the call
-        output!(self, "BL _{}_{}", self.ir.name, name);
+        match kind {
+            FuncSource::Internal => {
+                // TODO: I should stop adding the module name prefix to functions, i was just afraid of trying to do tests in one binary and them conflicting.
+                output!(self, "BL _{}_{}", self.ir.name, name);
+            }
+            FuncSource::External => {
+                output!(self, "BL _{}", name);
+            }
+        }
 
         if let Some(dest) = return_dest {
             // Handle the return value

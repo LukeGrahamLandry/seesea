@@ -238,6 +238,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                 func_name,
                 args,
                 return_value_dest,
+                ..
             } => {
                 let function = *self
                     .functions

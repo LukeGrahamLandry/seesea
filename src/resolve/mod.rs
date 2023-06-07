@@ -51,9 +51,10 @@ pub enum Operation {
     Assign(Box<ResolvedExpr>, /* = */ Box<ResolvedExpr>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FuncSource {
     Internal,
+    External,
     // Pointer(Box<ResolvedExpr>),
 }
 

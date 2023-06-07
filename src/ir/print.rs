@@ -67,9 +67,16 @@ impl Function {
                 func_name,
                 args,
                 return_value_dest,
+                kind,
             } => match return_value_dest {
                 None => format!("void call {:?} {:?}", func_name, args),
-                Some(dest) => format!("{} = call {:?} {:?}", self.name_ty(dest), func_name, args),
+                Some(dest) => format!(
+                    "{} = {:?} call {:?} {:?}",
+                    self.name_ty(dest),
+                    kind,
+                    func_name,
+                    args
+                ),
             },
             Op::GetFieldAddr {
                 dest,

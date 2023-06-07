@@ -189,6 +189,7 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 func_name,
                 args,
                 return_value_dest,
+                ..
             } => {
                 let function = *self
                     .functions

@@ -126,10 +126,16 @@ impl<'ir> SsaLiveness<'ir> {
             }
             let mut end = last_read;
             if end == 0 {
-                // No reads
                 assert_eq!(first_read, usize::MAX);
-                assert_eq!(uses, 1);
-                end = start;
+                if uses == 0 {
+                    // Unused argument
+                    end = 1;
+                } else if uses == 1 {
+                    // write but no read.
+                    end = start;
+                } else {
+                    unreachable!()
+                }
             } else {
                 assert!(first_read <= last_read);
             }

@@ -254,11 +254,17 @@ impl<'ast> Resolver<'ast> {
 
                     resolved_args.push(arg);
                 }
+                let call_kind = if self.raw_ast.get_func(name.as_ref()).is_some() {
+                    FuncSource::Internal
+                } else {
+                    FuncSource::External
+                };
+
                 (
                     signature.return_type.clone(),
                     Operation::Call {
                         signature,
-                        func: FuncSource::Internal,
+                        func: call_kind,
                         args: resolved_args,
                     },
                 )
