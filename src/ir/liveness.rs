@@ -9,9 +9,12 @@ pub struct SsaLiveness<'ir> {
     pub block_start_index: Vec<usize>,
     pub range: Vec<RangeInclusive<usize>>,
     // Floats and Ints are tracked separately (these numbers will be hit at different points in the program)
+    // These don't count those that are held across function calls! TODO: change this if i stop just putting those on the stack.
     pub max_floats_alive: usize,
     pub max_ints_alive: usize,
     pub usage_count: Vec<usize>,
+    pub held_across_call: Vec<bool>,
+    pub has_any_calls: bool,
 
     // Private fields used for computing the live-ness.
     first_write: Vec<usize>,
@@ -27,19 +30,48 @@ pub struct SsaLiveness<'ir> {
 //       or ones that are used the most go in registers. being held across a function call pushes towards storing on the stack?
 //       inline is great if you have enough extra registers because it means the callee can use your extras instead of you saving them on the stack
 //       should store all usage positions so you know whether to load it off the stack after a function call or wait until the next
+//       calculate which position as function arg each is so it can prioritise getting the right register when possible.
 
 pub fn compute_liveness(ir: &Function) -> SsaLiveness {
+    println!("{:?}", ir.signature);
     let mut liveness = SsaLiveness::new(ir);
     liveness.walk_all_ops();
     log!("-----");
     liveness.calc_ssa_lifetimes();
+    liveness.calc_held_across_call();
     liveness.calc_max_alive();
+
+    for (i, range) in liveness.range.iter().enumerate() {
+        if liveness.held_across_call[i] {
+            log!(
+                "{}: [{}] -> [{}] ({} uses) held",
+                liveness.ir.name_ty(&Ssa(i)),
+                range.start(),
+                range.end(),
+                liveness.usage_count[i]
+            );
+        } else {
+            log!(
+                "{}: [{}] -> [{}] ({} uses)",
+                liveness.ir.name_ty(&Ssa(i)),
+                range.start(),
+                range.end(),
+                liveness.usage_count[i]
+            );
+        }
+    }
 
     log!(
         "Max Alive: ({}I, {}F) / {}T",
         liveness.max_ints_alive,
         liveness.max_floats_alive,
         liveness.range.len()
+    );
+
+    log!(
+        "{}/{} held across calls",
+        liveness.held_across_call.iter().filter(|b| **b).count(),
+        liveness.held_across_call.len()
     );
 
     liveness
@@ -59,6 +91,8 @@ impl<'ir> SsaLiveness<'ir> {
             current_block: 0,
             max_floats_alive: 0,
             max_ints_alive: 0,
+            held_across_call: vec![false; ir.register_types.len()],
+            has_any_calls: false,
         };
 
         for ssa in &ir.arg_registers {
@@ -101,13 +135,6 @@ impl<'ir> SsaLiveness<'ir> {
             }
 
             self.range.push(start..=end);
-            log!(
-                "{}: [{}] -> [{}] ({} uses)",
-                self.ir.name_ty(&Ssa(i)),
-                start,
-                end,
-                uses
-            );
             assert!(start <= end);
             if uses == 1 {
                 assert!(
@@ -119,11 +146,39 @@ impl<'ir> SsaLiveness<'ir> {
         }
     }
 
+    fn calc_held_across_call(&mut self) {
+        if !self.has_any_calls {
+            return;
+        }
+        let mut opi = 0;
+        for block in &self.ir.blocks {
+            if let Some(block) = block {
+                for op in block {
+                    opi += 1;
+
+                    if let Op::Call { .. } = op {
+                        for (ssa_i, live_range) in self.range.iter().enumerate() {
+                            // for args end==opi, for returns start==opi
+                            if *live_range.start() < opi && *live_range.end() > opi {
+                                self.held_across_call[ssa_i] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn calc_max_alive(&mut self) {
         for op_i in 0..self.op_index {
             let mut floats = 0;
             let mut ints = 0;
             for (ssa, ty) in &self.ir.register_types {
+                // NOTE: not counting those held across calls because i'll just put those on the stack for now.
+                if self.held_across_call[ssa.index()] {
+                    continue;
+                }
+
                 if !self.range[ssa.index()].contains(&op_i) {
                     continue;
                 }
@@ -201,6 +256,7 @@ impl<'ir> SsaLiveness<'ir> {
                 return_value_dest,
                 ..
             } => {
+                self.has_any_calls = true;
                 args.iter().for_each(|a| self.read(a));
                 if let Some(val) = return_value_dest {
                     self.write(val);

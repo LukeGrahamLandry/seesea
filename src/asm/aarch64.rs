@@ -4,6 +4,7 @@ use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter, Write};
+use std::rc::Rc;
 
 struct Aarch64Builder<'ir> {
     ir: &'ir Module,
@@ -34,11 +35,6 @@ enum CursorPos {
     JmpEnd,
 }
 
-// TODO: liveness pass so i can know when the last read of each ssa is.
-//       Vec(Ssa -> OpIndex) and then whenever i run out of registers i can go through ssa_registers + ssa_offsets and clear out any that are done
-//       need to think about how that interacts with loops. you dont count as done until you get past the jump that might go back to the top.
-//       to test this without more complicated code i could artificially limit the number of allowed to like args+3.
-
 macro_rules! output {
     ($self:ident, $($arg:tt)*) => {{
         let i = match $self.cursor {
@@ -53,6 +49,12 @@ macro_rules! output {
 // Should we start functions by filling any corruptible with meaningless sentinel values to help debugging?
 const CLEAR_REGISTERS_ON_INIT: bool = false;
 const CLEAR_REGISTERS_ON_CALL: bool = false;
+
+// Hardware magic numbers.
+const CORRUPTIBLE_INTS: usize = 16;
+const CORRUPTIBLE_FLOATS: usize = 8;
+const SP_ALIGNMENT: usize = 16;
+const CC_REG_ARGS: usize = 8; // how many arguments of each type are passed in registers when calling a function.
 
 pub fn build_asm(ir: &Module) -> String {
     let mut text = String::new();
@@ -104,7 +106,7 @@ impl<'ir> Aarch64Builder<'ir> {
 
         self.emit_func_code();
 
-        assert!(self.stack_remaining >= 0);
+        assert!(self.stack_remaining >= 0, "{}", self.stack_remaining);
         self.get_text()
     }
 
@@ -112,9 +114,9 @@ impl<'ir> Aarch64Builder<'ir> {
         // Initialize our list of available corruptible registers.
         // Order matters because function params start at X0 and next_reg pops from the end
         self.unused_registers
-            .extend((0..16).map(|i| Reg(RegKind::Int, Bits::B64, i)));
+            .extend((0..CORRUPTIBLE_INTS).map(|i| Reg(RegKind::Int, Bits::B64, i)));
         self.unused_registers
-            .extend((0..8).map(|i| Reg(RegKind::Float, Bits::B64, i)));
+            .extend((0..CORRUPTIBLE_FLOATS).map(|i| Reg(RegKind::Float, Bits::B64, i)));
 
         // First 8 arguments of each int/float are passed in _0-_7
         let mut ints = 0;
@@ -129,7 +131,12 @@ impl<'ir> Aarch64Builder<'ir> {
                 unreachable!();
             }
             let r = self.next_reg(ty);
-            self.ssa_registers[arg_ssa.index()] = Some(r);
+            if let Some(_) = self.ssa_offsets.get(arg_ssa) {
+                // The argument was passed in a register but we want to store it on the stack because it gets held across a function call.
+                self.set_ssa(arg_ssa, r);
+            } else {
+                self.ssa_registers[arg_ssa.index()] = Some(r);
+            }
             log!("[{}] arg {:?} in {:?}", self.op_index, arg_ssa, r);
         }
         assert!(
@@ -150,24 +157,37 @@ impl<'ir> Aarch64Builder<'ir> {
         // TODO: option to fill it in with garbage numbers for debugging?
         // structs and addressed variables.
         self.total_stack_size = self.func.required_stack_bytes;
-        // TODO: account for spilling across function calls
+        // TODO: this ignores live-ness! Anything ever held across a call gets a dedicated stack slot.
+        self.total_stack_size += 8 * self
+            .liveness
+            .held_across_call
+            .iter()
+            .filter(|p| **p)
+            .count();
         // TODO: I think im allowing too many ssas to be held in registers. need to leave some free for doing work with the stack, etc.
-        if self.liveness.max_ints_alive > 16 {
-            self.total_stack_size += (self.liveness.max_ints_alive - 16) * 8;
+        if self.liveness.max_ints_alive > CORRUPTIBLE_INTS {
+            self.total_stack_size += (self.liveness.max_ints_alive - CORRUPTIBLE_INTS) * 8;
+            todo!("need to set ssa_offsets for ssa")
         }
-        if self.liveness.max_floats_alive > 8 {
-            self.total_stack_size += (self.liveness.max_floats_alive - 8) * 8;
+        if self.liveness.max_floats_alive > CORRUPTIBLE_FLOATS {
+            self.total_stack_size += (self.liveness.max_floats_alive - CORRUPTIBLE_FLOATS) * 8;
+            todo!("need to set ssa_offsets for ssa")
         }
 
-        self.stack_remaining = self.func.required_stack_bytes as isize;
+        if self.liveness.has_any_calls {
+            // For FP & LR
+            self.total_stack_size += 16;
+        }
 
-        let extra = self.total_stack_size - ((self.total_stack_size / 16) * 16);
+        let extra = self.total_stack_size - ((self.total_stack_size / SP_ALIGNMENT) * SP_ALIGNMENT);
         self.total_stack_size += extra;
         assert_eq!(
-            self.total_stack_size % 16,
+            self.total_stack_size % SP_ALIGNMENT,
             0,
-            "aarch64 requires the stack pointer to be 16 byte aligned."
+            "aarch64 requires the stack pointer to be {} byte aligned.",
+            SP_ALIGNMENT
         );
+        self.stack_remaining = self.total_stack_size as isize;
 
         output!(
             self,
@@ -177,6 +197,29 @@ impl<'ir> Aarch64Builder<'ir> {
             SP,
             self.total_stack_size
         );
+
+        // If we ever call a function, we need to save the previous return address on the stack so we have it when we want to return ourselves.
+        if self.liveness.has_any_calls {
+            self.stack_remaining -= 16;
+            output!(
+                self,
+                "STP {:?}, {:?}, [{:?}, #{}]",
+                FP,
+                LR,
+                SP,
+                self.stack_remaining
+            );
+        }
+
+        // Any SSAs that are held across calls are assigned a slot on the stack so I don't need to deal with loading and storing them.
+        for (i, held) in self.liveness.held_across_call.iter().enumerate() {
+            if !held {
+                continue;
+            }
+            self.stack_remaining -= 8;
+            self.ssa_offsets
+                .insert(Ssa(i), self.stack_remaining as usize);
+        }
     }
 
     fn emit_func_code(&mut self) {
@@ -299,9 +342,23 @@ impl<'ir> Aarch64Builder<'ir> {
                 if let Some(value) = value {
                     let return_value = self.get_ssa(value);
                     // This clobbers self.ssa_registers[0] but we're immediately returning so it's fine.
+                    assert_eq!(return_value.0, RegKind::Int, "todo");
                     self.pair(AsmOp::MOV, Reg(RegKind::Int, Bits::B64, 0), return_value);
                     self.drop_reg(return_value);
                 }
+
+                // If we called a function, make sure to fix the return address so we're going to the right place instead of infinity returning to ourself.
+                if self.liveness.has_any_calls {
+                    output!(
+                        self,
+                        "LDP {:?}, {:?}, [{:?}, #{}]",
+                        FP,
+                        LR,
+                        SP,
+                        self.total_stack_size - 16
+                    );
+                }
+
                 self.simple_with_const(AsmOp::ADD, SP, SP, self.total_stack_size);
                 output!(self, "{:?}", AsmOp::RET);
             }
@@ -327,8 +384,12 @@ impl<'ir> Aarch64Builder<'ir> {
                 self.drop_reg(address);
                 self.drop_reg(value);
             }
-            Op::Call { .. } => {
-                todo!()
+            Op::Call {
+                func_name,
+                args,
+                return_value_dest,
+            } => {
+                self.do_func_call(func_name, args, return_value_dest);
             }
             Op::GetFieldAddr { .. } => {
                 todo!()
@@ -347,7 +408,6 @@ impl<'ir> Aarch64Builder<'ir> {
                     | CastType::FloatDown
                     | CastType::FloatToUInt
                     | CastType::UIntToFloat => {
-                        //
                         todo!()
                     }
                     CastType::IntToPtr | CastType::PtrToInt | CastType::Bits => {
@@ -367,6 +427,81 @@ impl<'ir> Aarch64Builder<'ir> {
         let value = self.get_ssa(&prev_value);
         self.set_ssa(dest, value);
         self.move_cursor(current, CursorPos::CodeEnd);
+    }
+
+    fn do_func_call(&mut self, name: &str, args: &[Ssa], return_dest: &Option<Ssa>) {
+        // We know any values that need to be held across the call are already on the stack.
+        // Any currently active registers are either garbage or an argument to this function.
+
+        // We need to arrange the arguments according to the calling convention.
+        let mut ints = 0;
+        let mut floats = 0;
+        for arg_ssa in args {
+            let ty = self.func.register_types.get(arg_ssa).unwrap();
+            let current_reg = self.get_ssa(arg_ssa);
+            if ty.is_ptr() || ty.is_raw_int() {
+                let target_reg = get_reg_num(ty, ints);
+                if current_reg != target_reg {
+                    // Swap TODO: this is dumb
+                    let scratch = self.next_reg(ty);
+                    let op = target_reg.mov_kind();
+                    output!(self, "{:?} {:?}, {:?}", op, scratch, target_reg);
+                    output!(self, "{:?} {:?}, {:?}", op, target_reg, current_reg);
+                    output!(self, "{:?} {:?}, {:?}", op, current_reg, scratch);
+                    self.drop_reg(scratch);
+                    // TODO: one of these doesnt matter but for now im doing the book keeping properly
+                    // the one that was in current is now in target
+                    let other_ssa = self
+                        .ssa_registers
+                        .iter()
+                        .filter(|r| r.is_some())
+                        .map(|r| r.unwrap())
+                        .position(|r| r == current_reg);
+                    if let Some(other_ssa) = other_ssa {
+                        self.ssa_registers[other_ssa] = Some(target_reg);
+                    }
+                    // the one that was in target is now in current
+                    let this_ssa = self
+                        .ssa_registers
+                        .iter()
+                        .filter(|r| r.is_some())
+                        .map(|r| r.unwrap())
+                        .position(|r| r == target_reg);
+                    if let Some(this_ssa) = this_ssa {
+                        self.ssa_registers[this_ssa] = Some(current_reg);
+                    }
+                    self.drop_reg(current_reg);
+                }
+                ints += 1;
+            } else if ty.is_raw_float() {
+                let target_reg = get_reg_num(ty, floats);
+                todo!();
+                floats += 1;
+            } else {
+                unreachable!();
+            }
+        }
+        assert!(
+            ints <= CC_REG_ARGS && floats <= CC_REG_ARGS,
+            "todo: support stack args"
+        );
+
+        // Now do the call
+        output!(self, "BL _{}_{}", self.ir.name, name);
+
+        if let Some(dest) = return_dest {
+            // Handle the return value
+            let ty = self.func.register_types.get(dest).unwrap();
+            let current_reg = get_reg_num(ty, 0);
+            self.set_ssa(dest, current_reg);
+        }
+    }
+
+    fn swap(&mut self, a: Reg, b: Reg) {
+        assert_eq!(a.0, b.0);
+        let op = a.mov_kind();
+
+        todo!()
     }
 
     // TODO: only call this as needed
@@ -442,7 +577,13 @@ impl<'ir> Aarch64Builder<'ir> {
         // The value lives in a register but it's currently in the wrong one.
         // For example, phi nodes will always hit this because they're the only ones that are reusing an existing value.
         // We can't just steal the register from it because could be coming from either branch at runtime.
-        output!(self, "{:?} {:?}, {:?}", AsmOp::MOV, active_reg, value);
+        output!(
+            self,
+            "{:?} {:?}, {:?}",
+            active_reg.mov_kind(),
+            active_reg,
+            value
+        );
         // We know this call would be a no-op since we already have the right register.
         // self.set_ssa(ssa, active_reg);
         assert!(value.same_kind(active_reg));
@@ -485,7 +626,7 @@ impl<'ir> Aarch64Builder<'ir> {
             .unused_registers
             .iter()
             .position(|s| s.0 == kind)
-            .expect("Need more registers.");
+            .expect("unreachable: Need more registers.");
 
         // TODO: order matters for arguments so can't blindly swap_remove
         let mut reg = self.unused_registers.remove(index).unwrap();
@@ -504,7 +645,7 @@ impl<'ir> Aarch64Builder<'ir> {
             .any(|s| s == register)
         {
             // This register is allocated for an ssa so we'll just leave it there so we can read it later.
-            // TODO: liveness check here instead of garbage collecting every tick.
+            // TODO: liveness check here instead of garbage collecting every tick but need to use op_index+1.
             return;
         }
 
@@ -513,8 +654,8 @@ impl<'ir> Aarch64Builder<'ir> {
             .iter()
             .position(|r| *r == register)
             .unwrap();
-        // TODO: order matters for arguments so can't blindly swap_remove
-        self.active_registers.remove(index);
+        self.active_registers.swap_remove(index);
+        // Needs to go on the back because of how im doing arguments.
         self.unused_registers.push_back(register);
     }
 
@@ -648,10 +789,12 @@ pub enum RegKind {
 }
 
 #[derive(Copy, Clone)]
-struct Reg(RegKind, Bits, u8);
+struct Reg(RegKind, Bits, usize);
 
 const SP: Reg = Reg(RegKind::IntStackPointer, Bits::B64, 31);
 const ZERO: Reg = Reg(RegKind::IntZero, Bits::B64, 31);
+const FP: Reg = Reg(RegKind::Int, Bits::B64, 29);
+const LR: Reg = Reg(RegKind::Int, Bits::B64, 30);
 
 /// Checks that these are the same physical register (doesn't care about bit count).
 impl PartialEq<Self> for Reg {
@@ -668,6 +811,14 @@ impl Reg {
     fn right_kind(&self, ty: &CType) -> bool {
         register_kind(ty) == (self.0, self.1)
     }
+
+    fn mov_kind(&self) -> AsmOp {
+        match self.0 {
+            RegKind::Int => AsmOp::MOV,
+            RegKind::Float => AsmOp::FMOV,
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn register_kind(ty: &CType) -> (RegKind, Bits) {
@@ -683,6 +834,11 @@ fn register_kind(ty: &CType) -> (RegKind, Bits) {
             ValueType::Struct(_) | ValueType::Void => unreachable!(),
         }
     }
+}
+
+fn get_reg_num(ty: &CType, n: usize) -> Reg {
+    let info = register_kind(ty);
+    Reg(info.0, info.1, n)
 }
 
 impl Debug for Reg {
