@@ -260,7 +260,7 @@ impl CType {
     }
 
     /// Does this type fit in a register (ie. is not a struct)
-    pub fn is_basic(&self) -> bool {
+    pub fn fits_in_register(&self) -> bool {
         self.depth > 0 || !matches!(self.ty, ValueType::Struct(_))
     }
 

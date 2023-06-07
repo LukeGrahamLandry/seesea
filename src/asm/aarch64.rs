@@ -22,6 +22,7 @@ struct Aarch64Builder<'ir> {
     // for asserts
     on_last: bool, // TODO: instead of ssa_registers + ssa_offsets have an enum SsaLocation { Register(x), Stack(x), Uninit }
     liveness: SsaLiveness<'ir>,
+    op_index: usize,
 }
 
 // These break a block's code into three chunks you can append to separately so phi moves can go after all code but before the jump away.
@@ -50,7 +51,8 @@ macro_rules! output {
 }
 
 // Should we start functions by filling any corruptible with meaningless sentinel values to help debugging?
-const FILL_REGISTERS_WITH_GARBAGE: bool = false;
+const CLEAR_REGISTERS_ON_INIT: bool = false;
+const CLEAR_REGISTERS_ON_CALL: bool = false;
 
 pub fn build_asm(ir: &Module) -> String {
     let mut text = String::new();
@@ -74,14 +76,16 @@ impl<'ir> Aarch64Builder<'ir> {
             current: Default::default(),
             text: vec![],
             current_index: 0,
-            ssa_registers: vec![],
+            ssa_registers: vec![None; function.register_types.len()],
             cursor: Default::default(),
             on_last: false,
             liveness: compute_liveness(function),
+            op_index: 0,
         }
     }
 
     fn run(mut self) -> String {
+        log!("----------");
         self.text.push(Some(Default::default()));
         for code in &self.func.blocks {
             match code {
@@ -91,7 +95,8 @@ impl<'ir> Aarch64Builder<'ir> {
         }
         output!(self, "_{}_{}:", self.ir.name, self.func.signature.name);
 
-        self.init_args_and_stack(self.func);
+        self.reserve_stack_space();
+        self.init_arg_registers();
 
         self.on_last = true;
         self.jump_to(self.func.entry_point());
@@ -103,31 +108,58 @@ impl<'ir> Aarch64Builder<'ir> {
         self.get_text()
     }
 
-    fn init_args_and_stack(&mut self, function: &Function) {
+    fn init_arg_registers(&mut self) {
+        // Initialize our list of available corruptible registers.
         // Order matters because function params start at X0 and next_reg pops from the end
-        let scratch_register_count = 16;
-        let float_register_count = 8;
-        for i in 0..scratch_register_count {
-            let reg = Reg(RegKind::Int, Bits::B64, i);
-            self.unused_registers.push_back(reg);
+        self.unused_registers
+            .extend((0..16).map(|i| Reg(RegKind::Int, Bits::B64, i)));
+        self.unused_registers
+            .extend((0..8).map(|i| Reg(RegKind::Float, Bits::B64, i)));
+
+        // First 8 arguments of each int/float are passed in _0-_7
+        let mut ints = 0;
+        let mut floats = 0;
+        for arg_ssa in self.func.arg_registers.iter() {
+            let ty = self.func.register_types.get(arg_ssa).unwrap();
+            if ty.is_ptr() || ty.is_raw_int() {
+                ints += 1;
+            } else if ty.is_raw_float() {
+                floats += 1;
+            } else {
+                unreachable!();
+            }
+            let r = self.next_reg(ty);
+            self.ssa_registers[arg_ssa.index()] = Some(r);
+            log!("[{}] arg {:?} in {:?}", self.op_index, arg_ssa, r);
         }
+        assert!(
+            ints <= 8 && floats <= 8,
+            "We don't support passing arguments on the stack yet."
+        );
 
-        for i in 0..float_register_count {
-            let reg = Reg(RegKind::Float, Bits::B64, i);
-            self.unused_registers.push_back(reg);
+        if CLEAR_REGISTERS_ON_INIT {
+            // TODO: do this in an evil() function so I can call it randomly to test my saving registers.
+            // Skip the registers used to pass arguments.
+            for reg in &self.unused_registers {
+                output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, reg, 12345);
+            }
         }
+    }
 
-        // TODO: account for floats
-        let has_enough_registers = function.register_types.len() <= self.unused_registers.len();
-
-        // Reserve stack space (stack grows downwards).
+    fn reserve_stack_space(&mut self) {
         // TODO: option to fill it in with garbage numbers for debugging?
-        self.total_stack_size = function.required_stack_bytes;
-        if !has_enough_registers {
-            self.total_stack_size += function.register_types.len() * 8;
+        // structs and addressed variables.
+        self.total_stack_size = self.func.required_stack_bytes;
+        // TODO: account for spilling across function calls
+        // TODO: I think im allowing too many ssas to be held in registers. need to leave some free for doing work with the stack, etc.
+        if self.liveness.max_ints_alive > 16 {
+            self.total_stack_size += (self.liveness.max_ints_alive - 16) * 8;
+        }
+        if self.liveness.max_floats_alive > 8 {
+            self.total_stack_size += (self.liveness.max_floats_alive - 8) * 8;
         }
 
-        self.stack_remaining = function.required_stack_bytes as isize;
+        self.stack_remaining = self.func.required_stack_bytes as isize;
 
         let extra = self.total_stack_size - ((self.total_stack_size / 16) * 16);
         self.total_stack_size += extra;
@@ -145,44 +177,6 @@ impl<'ir> Aarch64Builder<'ir> {
             SP,
             self.total_stack_size
         );
-
-        self.ssa_registers = vec![None; function.register_types.len()];
-        if has_enough_registers {
-            // We have enough corruptible registers for all our SSAs.
-            // But when we call someone, they're allowed to write over them all so remember to save them.
-
-            // First 8 arguments are passed in X0-X7
-            let arg_count = function.arg_registers.len();
-            let reg_count = function.register_types.len();
-            assert!(arg_count < 8, "todo");
-            for (i, arg_ssa) in function.arg_registers.iter().enumerate() {
-                let ty = function.register_types.get(arg_ssa).unwrap();
-                let r = self.next_reg(ty);
-                self.ssa_registers[arg_ssa.index()] = Some(r);
-            }
-
-            // TODO: X8 is special if we're returning a struct
-            for i in arg_count..reg_count {
-                let ty = function.register_types.get(&Ssa(i)).unwrap();
-                let r = self.next_reg(ty);
-                self.ssa_registers[i] = Some(r);
-            }
-
-            if FILL_REGISTERS_WITH_GARBAGE {
-                // TODO: do this in an evil() function so I can call it randomly to test my saving registers.
-                //       do the float registers as well. and set the flags to something random.
-                // Skip the registers used to pass arguments.
-                for i in (arg_count as u8)..scratch_register_count {
-                    let reg = Reg(RegKind::Int, Bits::B64, i);
-                    output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, reg, 12345);
-                }
-            }
-
-            assert_eq!(self.ssa_registers[0].unwrap().2, 0);
-        } else {
-            todo!();
-            self.save_arguments_to_stack(&function.signature);
-        }
     }
 
     fn emit_func_code(&mut self) {
@@ -193,36 +187,27 @@ impl<'ir> Aarch64Builder<'ir> {
                 self.move_cursor(self.current, CursorPos::CodeEnd);
                 output!(self, "{}:", self.current.index());
                 for (i, op) in code.iter().enumerate() {
+                    self.op_index += 1;
                     if i == (code.len() - 1) {
                         assert!(op.is_jump(), "last op of basic block must be jump.");
                         self.move_cursor(self.current, CursorPos::JmpEnd);
                         self.on_last = true;
                     }
                     self.emit_op(op);
+                    self.clean_registers();
                 }
                 self.on_last = false;
             }
         }
-    }
 
-    fn save_arguments_to_stack(&mut self, signature: &'ir FuncSignature) {
-        assert!(!signature.has_var_args);
-        let count = signature.param_types.len();
-        if count == 0 {
-            return;
+        // Sanity check.
+        self.op_index += 1;
+        self.clean_registers();
+        for (i, reg) in self.ssa_registers.iter().enumerate() {
+            if let Some(r) = reg {
+                panic!("Ssa({}) = {:?} was allocated at end of function.", i, r);
+            }
         }
-
-        let ty = signature.param_types.get(0).unwrap();
-        assert_eq!(count, 1);
-        let first_arg = self.next_reg(ty);
-        output!(
-            self,
-            "{:?} {:?}, {:?}",
-            AsmOp::MOV,
-            first_arg,
-            Reg(RegKind::Int, Bits::B64, 0)
-        );
-        self.set_ssa(&Ssa(0), first_arg);
     }
 
     fn emit_op(&mut self, op: &Op) {
@@ -384,48 +369,84 @@ impl<'ir> Aarch64Builder<'ir> {
         self.move_cursor(current, CursorPos::CodeEnd);
     }
 
+    // TODO: only call this as needed
+    fn clean_registers(&mut self) {
+        for i in 0..self.ssa_registers.len() {
+            let reg = self.ssa_registers[i];
+            if let Some(reg) = reg {
+                if !self.liveness.range[i].contains(&self.op_index) {
+                    log!("[{}] free Ssa({}) in {:?}", self.op_index, i, reg);
+                    // The ssa is dead so we can return the register.
+                    self.active_registers.retain(|r| *r != reg);
+                    self.unused_registers.push_back(reg);
+                    self.ssa_registers[i] = None;
+                }
+            }
+        }
+    }
+
     // Loads the value of an ssa from the stack into a register.
     // You need to return this to the queue.
     #[must_use]
     fn get_ssa(&mut self, ssa: &Ssa) -> Reg {
+        self.assert_live(ssa);
         let ty = self.func.register_types.get(ssa).unwrap();
-        match self.ssa_registers[ssa.index()] {
-            None => {
-                // We don't have the value in a register yet.
-                let reg = self.next_reg(ty);
-                self.load(reg, SP, self.offset_of(ssa));
-                // TODO: bring this back when i do proper spilling
-                // self.ssa_registers[ssa.index()] = Some(reg);
-                reg
-            }
-            Some(active_reg) => {
-                assert_eq!(register_kind(ty), (active_reg.0, active_reg.1));
-                active_reg
-            }
+        if let Some(stack_offset) = self.ssa_offsets.get(&ssa).cloned() {
+            // The value lives on the stack, so load it.
+            let reg = self.next_reg(ty);
+            self.load(reg, SP, stack_offset);
+            return reg;
         }
+
+        if let Some(active_reg) = self.ssa_registers[ssa.index()] {
+            // The value is already in a live register, so return it.
+            assert_eq!(register_kind(ty), (active_reg.0, active_reg.1));
+            return active_reg;
+        }
+
+        // This is, lexically, a read before write. We must be emitting a MOV for a phi node of a loop.
+        assert!(
+            self.liveness.block_start_index[self.current.index()] > self.op_index,
+            "Read before write but not looking ahead."
+        );
+
+        // Allocate the register now and trust that the phi is correct and won't actually read until it's set inside the loop.
+        self.reg_for(ssa)
+        // TODO: assert(ssa is second branch of phi node)
     }
 
     // Stores a value from a register into the stack slot of an ssa.
     // The caller may not use this register again (they must get a new one from the queue because we might have chosen to reuse this one).
     fn set_ssa(&mut self, ssa: &Ssa, value: Reg) {
-        match self.ssa_registers[ssa.index()] {
-            None => {
-                // We haven't assigned a register to represent this SSA yet.
-                self.store(value, SP, self.offset_of(ssa));
-                self.drop_reg(value);
-            }
-            Some(active_reg) => {
-                if value == active_reg {
-                    // NO-OP, the value is already in the right place.
-                } else {
-                    // For example, phi nodes will always hit this because they're the only ones that are reusing an existing value.
-                    // We can't just steal the register from it because could be coming from either branch at runtime.
-                    output!(self, "{:?} {:?}, {:?}", AsmOp::MOV, active_reg, value);
-                    // We know this call would be a no-op since we already have the right register.
-                    // self.set_ssa(ssa, active_reg);
-                }
-            }
+        self.assert_live(ssa);
+        if let Some(stack_offset) = self.ssa_offsets.get(&ssa) {
+            // The value lives on the stack, so save it.
+            self.store(value, SP, *stack_offset);
+            self.drop_reg(value);
+            return;
         }
+
+        let active_reg = if let Some(active_reg) = self.ssa_registers[ssa.index()] {
+            if value == active_reg {
+                // NO-OP, the value is already in the right place.
+                return;
+            }
+
+            // Second branch of phi node.
+            active_reg
+        } else {
+            // First branch of phi node, allocate a register.
+            self.reg_for(ssa)
+        };
+
+        // The value lives in a register but it's currently in the wrong one.
+        // For example, phi nodes will always hit this because they're the only ones that are reusing an existing value.
+        // We can't just steal the register from it because could be coming from either branch at runtime.
+        output!(self, "{:?} {:?}, {:?}", AsmOp::MOV, active_reg, value);
+        // We know this call would be a no-op since we already have the right register.
+        // self.set_ssa(ssa, active_reg);
+        assert!(value.same_kind(active_reg));
+        // TODO: assert(ssa is dest of phi node)
     }
 
     // Get an unused register with an undefined value but hint that we want to store the new value of <ssa> in it.
@@ -433,16 +454,26 @@ impl<'ir> Aarch64Builder<'ir> {
     // You need to return this to the queue.
     #[must_use]
     fn reg_for(&mut self, ssa: &Ssa) -> Reg {
+        self.assert_live(ssa);
         let ty = self.func.register_types.get(ssa).unwrap();
-        match self.ssa_registers[ssa.index()] {
-            None => self.next_reg(ty),
-            Some(active_reg) => {
-                // We've already allocated a register for this SSA, so let's give you that
-                // so we don't have to move the value in set_ssa.
-                assert_eq!(register_kind(ty), (active_reg.0, active_reg.1));
-                active_reg
-            }
+        if let Some(_) = self.ssa_offsets.get(&ssa) {
+            // The value lives on the stack, so just give an extra register and we'll save it later in set_ssa.
+            return self.next_reg(ty);
         }
+
+        if let Some(active_reg) = self.ssa_registers[ssa.index()] {
+            // We've already allocated a register for this SSA, so let's give you that
+            // so we don't have to move the value in set_ssa.
+            // Note: Since it's single assignment, this means either this is an argument or a phi node.
+            assert_eq!(register_kind(ty), (active_reg.0, active_reg.1));
+            return active_reg;
+        }
+
+        // This is the first write of the ssa and we should have room to store it in a register the whole time.
+        let reg = self.next_reg(ty);
+        self.ssa_registers[ssa.index()] = Some(reg);
+        log!("[{}] take {:?} in {:?}", self.op_index, ssa, reg);
+        reg
     }
 
     // You need to return this to the queue.
@@ -472,9 +503,8 @@ impl<'ir> Aarch64Builder<'ir> {
             .map(|s| s.unwrap())
             .any(|s| s == register)
         {
-            // This register is allocated for an ssa so we'll just leave it there so we can read it later
-            // TODO: some other hook for signalling that we're never doing to need this value again so we can release the register
-            //       things that dont have enough space for all registers dont work right now
+            // This register is allocated for an ssa so we'll just leave it there so we can read it later.
+            // TODO: liveness check here instead of garbage collecting every tick.
             return;
         }
 
@@ -486,10 +516,6 @@ impl<'ir> Aarch64Builder<'ir> {
         // TODO: order matters for arguments so can't blindly swap_remove
         self.active_registers.remove(index);
         self.unused_registers.push_back(register);
-    }
-
-    fn offset_of(&self, ssa: &Ssa) -> usize {
-        self.func.required_stack_bytes + (ssa.index() * 8)
     }
 
     fn move_cursor(&mut self, block: Label, pos: CursorPos) {
@@ -580,6 +606,11 @@ impl<'ir> Aarch64Builder<'ir> {
         // Add one to the result.
         self.simple_with_const(AsmOp::ADD, result_temp, result_temp, 1);
     }
+
+    fn assert_live(&self, ssa: &Ssa) {
+        // The vm checks this as well so the IR is probably correct and I messed up and argument in this file.
+        assert!(self.liveness.range[ssa.index()].contains(&self.op_index));
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -622,9 +653,20 @@ struct Reg(RegKind, Bits, u8);
 const SP: Reg = Reg(RegKind::IntStackPointer, Bits::B64, 31);
 const ZERO: Reg = Reg(RegKind::IntZero, Bits::B64, 31);
 
+/// Checks that these are the same physical register (doesn't care about bit count).
 impl PartialEq<Self> for Reg {
     fn eq(&self, other: &Self) -> bool {
         self.0 == other.0 && self.2 == other.2
+    }
+}
+
+impl Reg {
+    fn same_kind(&self, other: Reg) -> bool {
+        self.0 == other.0 && self.1 == other.1
+    }
+
+    fn right_kind(&self, ty: &CType) -> bool {
+        register_kind(ty) == (self.0, self.1)
     }
 }
 

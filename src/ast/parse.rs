@@ -28,6 +28,7 @@ struct Parser<'src> {
     program: Module,
 }
 
+// TODO: should clean up the advancing and be more constant in how i check the next token but also this is the boring part.
 impl<'src> Parser<'src> {
     fn run(&mut self) {
         while self.scanner.has_next() {

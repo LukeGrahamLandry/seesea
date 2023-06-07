@@ -20,6 +20,7 @@ pub struct ResolvedExpr {
     line: OpDebugInfo,
 }
 
+// TODO: move resolve pass to mod ast for symmetry with liveness is part of mod ir?
 // TODO:
 //      - What if new statement thing that has only goto and no loops?
 //        That would mean i would have less redundant ssa work but throwing away information feels wrong.

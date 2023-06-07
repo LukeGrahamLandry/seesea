@@ -642,7 +642,7 @@ impl<'ast> AstParser<'ast> {
                 let register = match lvalue {
                     Lvalue::RegisterVar(var) => self.control.get(&var).unwrap(),
                     Lvalue::DerefPtr(addr) => {
-                        assert!(expr.ty.is_basic()); // TODO
+                        assert!(expr.ty.fits_in_register()); // TODO
                         let value_dest = self.make_ssa(&expr.ty);
                         self.func_mut().push(
                             block,
