@@ -1,10 +1,13 @@
 use crate::ir::{Function, Op, Ssa};
 use crate::log;
+use std::ops::{Range, RangeInclusive};
 
 pub struct SsaLiveness<'ir> {
     first_write: Vec<usize>,
     last_read: Vec<usize>,
-    block_start_index: Vec<usize>,
+    first_read: Vec<usize>,
+    pub block_start_index: Vec<usize>,
+    pub range: Vec<RangeInclusive<usize>>,
     op_index: usize,
     ir: &'ir Function,
     current_block: usize,
@@ -14,7 +17,9 @@ pub fn compute_liveness(ir: &Function) -> SsaLiveness {
     let mut liveness = SsaLiveness {
         first_write: vec![usize::MAX; ir.register_types.len()],
         last_read: vec![0; ir.register_types.len()],
+        first_read: vec![usize::MAX; ir.register_types.len()],
         block_start_index: vec![],
+        range: vec![],
         op_index: 0,
         ir,
         current_block: 0,
@@ -46,23 +51,38 @@ pub fn compute_liveness(ir: &Function) -> SsaLiveness {
 
     log!("-----");
     for i in 0..ir.register_types.len() {
-        log!(
-            "{}: [{}] -> [{}]",
-            ir.name_ty(&Ssa(i)),
-            liveness.first_write[i],
-            liveness.last_read[i]
-        );
+        let mut start = liveness.first_write[i];
+        if liveness.first_write[i] > liveness.first_read[i] && liveness.first_read[i] != usize::MAX
+        {
+            // TODO: this is not optimal
+            // Hack to fix loops that set in the body then jump back up to a phi that reads.
+            // We want the same register allocated for the whole interval [phi_read -> body_set -> loop_back].
+            start = liveness.first_read[i];
+        }
+        let mut end = liveness.last_read[i];
+        if end == 0 {
+            // No reads
+            assert_eq!(liveness.first_read[i], usize::MAX);
+            end = start;
+        } else {
+            assert!(liveness.first_read[i] <= liveness.last_read[i]);
+        }
+
+        liveness.range.push(start..=end);
+        log!("{}: [{}] -> [{}]", ir.name_ty(&Ssa(i)), start, end);
+        assert!(start <= end);
     }
 
     // Must have an entry for each ssa.
     assert!(!liveness.first_write.iter().any(|i| *i == usize::MAX));
+
     // 0 means no reads.
     // assert!(!liveness.last_read.iter().any(|i| *i == 0));
 
     liveness
 }
 
-// TODO: vm panic if you try to use an ssa when it shouldn't be live. 
+// TODO: vm panic if you try to use an ssa when it shouldn't be live.
 impl<'ir> SsaLiveness<'ir> {
     fn walk_op(&mut self, op: &Op) {
         match op {
@@ -99,6 +119,11 @@ impl<'ir> SsaLiveness<'ir> {
                 } else {
                     // We jumped backwards. The value must live for the whole loop.
                     // Treat this as a read after the block we came from so it gets dropped when we escape the loop.
+
+                    // Set first_read to here.
+                    self.read(&b.1);
+
+                    // Extend lifetime down to the end of the loop.
                     let ssa_i = b.1.index();
                     let block_i = b.0.index() + 1;
                     let read_i = self.block_start_index[block_i];
@@ -106,7 +131,6 @@ impl<'ir> SsaLiveness<'ir> {
                     if read_i > prev_best {
                         self.last_read[ssa_i] = read_i;
                     }
-                    println!("{} {}", read_i, self.op_index);
                     assert!(read_i > self.op_index);
                 }
             }
@@ -145,6 +169,15 @@ impl<'ir> SsaLiveness<'ir> {
         let prev_best = self.last_read[ssa.index()];
         if self.op_index > prev_best {
             self.last_read[ssa.index()] = self.op_index;
+        }
+        let prev_best = self.first_read[ssa.index()];
+        if self.op_index < prev_best {
+            assert_eq!(
+                prev_best,
+                usize::MAX,
+                "first read we see should be the first read."
+            );
+            self.first_read[ssa.index()] = self.op_index;
         }
     }
 

@@ -7,6 +7,7 @@ use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::{ir, log};
 
+use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::macros::vm::{do_bin_cmp, do_bin_math};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
@@ -47,6 +48,7 @@ struct StackFrame<'ir> {
     return_value_register: Option<Ssa>,
     allocations: Vec<Ptr>,
     entry_location: Location,
+    liveness: SsaLiveness<'ir>,
 }
 
 pub enum VmResult {
@@ -118,6 +120,7 @@ impl<'ir> Vm<'ir> {
                 block: Label(0),
                 func_name: "Program_Start".into(),
             },
+            liveness: compute_liveness(func),
         };
         vm.call_stack.push(frame);
         vm.init_params(args.iter().copied());
@@ -248,6 +251,8 @@ impl<'ir> Vm<'ir> {
                     return_value_register: None,
                     allocations: vec![],
                     entry_location,
+                    // TODO: this is redundant computation on every function call
+                    liveness: compute_liveness(func),
                 };
                 self.call_stack.push(frame);
                 self.init_params(arg_values.into_iter());
@@ -411,9 +416,24 @@ impl<'ir> Vm<'ir> {
     fn set(&mut self, register: Ssa, value: VmValue) {
         self.mut_frame().registers.insert(register, value);
         vmlog!("--- {:?} = {:?}", register, value);
+
+        let live = &self.get_frame().liveness;
+        assert!(
+            live.range[register.index()].contains(&self.op_index()),
+            "Set {:?} out of live range on op_i={}",
+            register,
+            self.op_index()
+        );
     }
 
     pub fn get(&self, register: Ssa) -> VmValue {
+        let live = &self.get_frame().liveness;
+        assert!(
+            live.range[register.index()].contains(&self.op_index()),
+            "Get {:?} out of live range on op_i={}",
+            register,
+            self.op_index()
+        );
         *self
             .get_frame()
             .registers
@@ -491,6 +511,12 @@ impl<'ir> Vm<'ir> {
             block: self.get_frame().block,
             func_name: self.get_frame().function.signature.name.clone(),
         }
+    }
+
+    fn op_index(&self) -> usize {
+        self.get_frame().ip
+            + 1
+            + self.get_frame().liveness.block_start_index[self.get_frame().block.index()]
     }
 }
 
