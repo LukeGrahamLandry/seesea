@@ -192,9 +192,11 @@ impl<Func: FuncRepr> AnyModule<Func> {
             .find(|&func| func.name.as_ref() == name.as_ref())
     }
 
+    // TODO: assert(sizeof(size_t) == sizeof(uint64_t) == sizeof(unsigned long)))
     pub fn size_of(&self, ty: impl Borrow<CType>) -> usize {
         let ty = ty.borrow();
         if ty.depth > 0 {
+            // this is checking at compile time when it should care about runtime but it will have to do for now. 
             assert_eq!(size_of::<usize>(), size_of::<u64>());
             return 8;
         }

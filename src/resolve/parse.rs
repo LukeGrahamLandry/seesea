@@ -382,6 +382,9 @@ impl<'ast> Resolver<'ast> {
             return value;
         }
 
+        let input = &value.ty;
+        let output = target;
+
         // Void pointers can be used as any pointer type.
         let void_ptr = (target.is_void_ptr() && value.ty.is_ptr())
             || (target.is_ptr() && value.ty.is_void_ptr());
@@ -394,6 +397,7 @@ impl<'ast> Resolver<'ast> {
                     target.ty
                 );
             }
+
             return do_cast(CastType::Bits, value, target);
         }
 
@@ -411,8 +415,6 @@ impl<'ast> Resolver<'ast> {
             return do_cast(CastType::IntToPtr, addr_number, target);
         }
 
-        let input = &value.ty;
-        let output = target;
         let kind = if input.is_raw_float() && output.is_raw_float() {
             if input.ty == ValueType::F32 {
                 CastType::FloatUp

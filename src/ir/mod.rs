@@ -5,6 +5,7 @@ use std::fmt::{Display, Formatter};
 use std::rc::Rc;
 
 pub mod flow_stack;
+pub mod liveness;
 mod parse;
 mod print;
 
@@ -100,7 +101,7 @@ pub type Module = AnyModule<Function>;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub enum CastType {
-    // Does not change the raw bits (void* -> int*). Must be the same size?
+    // Does not change the raw bits (void* -> int*). Must be the same size.
     Bits,
 
     // Extends with leading zeros (u32 -> u64)

@@ -17,6 +17,16 @@ use std::ops::Add;
 use std::ptr::write;
 use std::rc::Rc;
 
+const LOG_VM_TRACE: bool = false;
+
+macro_rules! vmlog {
+    ($($arg:tt)*) => {{
+        if LOG_VM_TRACE {
+            log!($($arg)*);
+        }
+    }};
+}
+
 // TODO: @Speed group allocations and reuse memory (especially for the stack + registers)
 pub struct Vm<'ir> {
     module: &'ir Module,
@@ -116,6 +126,7 @@ impl<'ir> Vm<'ir> {
             let result = vm.tick();
             if let VmResult::Done(_) = result {
                 vm.heap.assert_no_leaks();
+                log!("-------");
                 return result;
             }
         }
@@ -133,7 +144,7 @@ impl<'ir> Vm<'ir> {
         }
         self.tick += 1;
 
-        log!(
+        vmlog!(
             "[{:?}] ip = {}; {} (frame = {})",
             self.get_frame().block,
             self.get_frame().ip,
@@ -144,7 +155,7 @@ impl<'ir> Vm<'ir> {
             .as_ref()
             .unwrap();
         let op = ops[self.get_frame().ip].clone();
-        log!("Op: {}", self.get_frame().function.print(&op));
+        vmlog!("Op: {}", self.get_frame().function.print(&op));
         match op {
             Op::Binary { dest, a, b, kind } => {
                 let result = match kind {
@@ -189,14 +200,15 @@ impl<'ir> Vm<'ir> {
             }
             Op::Return(value) => {
                 let result = value.map(|v| self.get(v));
-                log!("--- ret {:?}", result);
                 for addr in self.get_frame().allocations.clone() {
                     self.heap.free(addr, self.trace());
                 }
                 self.call_stack.pop().unwrap();
                 return if self.call_stack.is_empty() {
+                    log!("Vm Says: {:?}", result);
                     VmResult::Done(result)
                 } else {
+                    vmlog!("--- ret {:?}", result);
                     if let Some(ssa) = self.get_frame().return_value_register {
                         self.set(ssa, result.unwrap());
                     }
@@ -248,7 +260,7 @@ impl<'ir> Vm<'ir> {
                 self.mut_frame()
                     .registers
                     .insert(dest, VmValue::Pointer(addr));
-                log!("--- Stack {:?} = {:?} ZEROED", addr, ty);
+                vmlog!("--- Stack {:?} = {:?} ZEROED", addr, ty);
             }
             Op::LoadFromPtr { value_dest, addr } => {
                 let addr = self.get(addr);
@@ -259,7 +271,7 @@ impl<'ir> Vm<'ir> {
                     .get(&value_dest)
                     .unwrap();
                 let value = self.heap.as_ref(addr.to_ptr(), self.module.size_of(ty));
-                log!("--- {:?} = *{:?}", value_dest, addr);
+                vmlog!("--- {:?} = *{:?}", value_dest, addr);
                 let value = VmValue::from_bytes(value, ty, self.module);
                 self.set(value_dest, value);
             }
@@ -276,7 +288,7 @@ impl<'ir> Vm<'ir> {
                 let dest_bytes = self.heap.as_mut(addr.to_ptr(), self.module.size_of(ty));
                 assert_eq!(dest_bytes.len(), source_bytes.len());
                 dest_bytes.copy_from_slice(&source_bytes);
-                log!("--- *{:?} = {:?}", addr, value);
+                vmlog!("--- *{:?} = {:?}", addr, value);
             }
             Op::GetFieldAddr {
                 dest,
@@ -298,7 +310,7 @@ impl<'ir> Vm<'ir> {
 
                 let mut result = self.get(object_addr).to_ptr();
                 result.offset += offset as u32;
-                log!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
+                vmlog!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
                 self.set(dest, VmValue::Pointer(result));
             }
             Op::ConstValue { dest, value, .. } => {
@@ -389,7 +401,7 @@ impl<'ir> Vm<'ir> {
         self.mut_frame().last_block = Some(self.get_frame().block);
         self.mut_frame().block = target;
         self.mut_frame().ip = 0;
-        log!(
+        vmlog!(
             "--- Jump from {:?} to {:?}",
             self.get_frame().last_block.unwrap(),
             self.get_frame().block
@@ -398,7 +410,7 @@ impl<'ir> Vm<'ir> {
 
     fn set(&mut self, register: Ssa, value: VmValue) {
         self.mut_frame().registers.insert(register, value);
-        log!("--- {:?} = {:?}", register, value);
+        vmlog!("--- {:?} = {:?}", register, value);
     }
 
     pub fn get(&self, register: Ssa) -> VmValue {
@@ -425,7 +437,7 @@ impl<'ir> Vm<'ir> {
                 VmValue::F64(angle.sin())
             }
             "printf" => {
-                log!("Called printf {:?}", args);
+                vmlog!("Called printf {:?}", args);
                 VmValue::U64(0)
             }
             "malloc" => {
@@ -448,7 +460,7 @@ impl<'ir> Vm<'ir> {
                 VmValue::Uninit
             }
             "print_vm_stack_trace" => {
-                log!("{:?}", self.trace());
+                vmlog!("{:?}", self.trace());
                 VmValue::Uninit
             }
             _ => {
@@ -695,7 +707,7 @@ impl DebugAlloc {
                 .iter()
                 .filter(|(_, alloc)| alloc.free_at.is_none())
                 .map(|(_, alloc)| {
-                    log!("Memory leak {}", alloc.debug());
+                    vmlog!("Memory leak {}", alloc.debug());
                 })
                 .count(),
             0

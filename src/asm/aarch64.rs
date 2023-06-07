@@ -1,13 +1,13 @@
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
+use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter, Write};
 
-#[derive(Default)]
 struct Aarch64Builder<'ir> {
-    ir: Option<&'ir Module>,
-    func: Option<&'ir Function>,
+    ir: &'ir Module,
+    func: &'ir Function,
     stack_remaining: isize,
     total_stack_size: usize,
     // TODO: this will be useful again when i have more sophisticated spilling so calculating them is non-trivial. should be a Vec<Option<usize>> tho
@@ -21,6 +21,7 @@ struct Aarch64Builder<'ir> {
     cursor: CursorPos,
     // for asserts
     on_last: bool, // TODO: instead of ssa_registers + ssa_offsets have an enum SsaLocation { Register(x), Stack(x), Uninit }
+    liveness: SsaLiveness<'ir>,
 }
 
 // These break a block's code into three chunks you can append to separately so phi moves can go after all code but before the jump away.
@@ -52,35 +53,57 @@ macro_rules! output {
 const FILL_REGISTERS_WITH_GARBAGE: bool = false;
 
 pub fn build_asm(ir: &Module) -> String {
-    let mut builder = Aarch64Builder::default();
-    builder.run(ir);
-    builder.get_text()
+    let mut text = String::new();
+    for function in &ir.functions {
+        let builder = Aarch64Builder::new(ir, function);
+        text += &builder.run();
+    }
+    text
 }
 
 impl<'ir> Aarch64Builder<'ir> {
-    fn run(&mut self, ir: &'ir Module) {
-        self.ir = Some(ir);
-        for function in &ir.functions {
-            self.emit_function(function);
+    fn new(ir: &'ir Module, function: &'ir Function) -> Aarch64Builder<'ir> {
+        Aarch64Builder {
+            ir,
+            func: function,
+            stack_remaining: 0,
+            total_stack_size: 0,
+            ssa_offsets: Default::default(),
+            active_registers: vec![],
+            unused_registers: Default::default(),
+            current: Default::default(),
+            text: vec![],
+            current_index: 0,
+            ssa_registers: vec![],
+            cursor: Default::default(),
+            on_last: false,
+            liveness: compute_liveness(function),
         }
     }
 
-    fn emit_function(&mut self, function: &'ir Function) {
+    fn run(mut self) -> String {
         self.text.push(Some(Default::default()));
-        for code in &function.blocks {
+        for code in &self.func.blocks {
             match code {
                 None => self.text.push(None),
                 Some(_) => self.text.push(Some(Default::default())),
             }
         }
-        output!(
-            self,
-            "_{}_{}:",
-            self.ir.unwrap().name,
-            function.signature.name
-        );
+        output!(self, "_{}_{}:", self.ir.name, self.func.signature.name);
 
-        self.unused_registers = vec![].into();
+        self.init_args_and_stack(self.func);
+
+        self.on_last = true;
+        self.jump_to(self.func.entry_point());
+        self.on_last = false;
+
+        self.emit_func_code();
+
+        assert!(self.stack_remaining >= 0);
+        self.get_text()
+    }
+
+    fn init_args_and_stack(&mut self, function: &Function) {
         // Order matters because function params start at X0 and next_reg pops from the end
         let scratch_register_count = 16;
         let float_register_count = 8;
@@ -99,7 +122,6 @@ impl<'ir> Aarch64Builder<'ir> {
 
         // Reserve stack space (stack grows downwards).
         // TODO: option to fill it in with garbage numbers for debugging?
-        self.func = Some(function);
         self.total_stack_size = function.required_stack_bytes;
         if !has_enough_registers {
             self.total_stack_size += function.register_types.len() * 8;
@@ -147,6 +169,8 @@ impl<'ir> Aarch64Builder<'ir> {
             }
 
             if FILL_REGISTERS_WITH_GARBAGE {
+                // TODO: do this in an evil() function so I can call it randomly to test my saving registers.
+                //       do the float registers as well. and set the flags to something random.
                 // Skip the registers used to pass arguments.
                 for i in (arg_count as u8)..scratch_register_count {
                     let reg = Reg(RegKind::Int, Bits::B64, i);
@@ -159,12 +183,11 @@ impl<'ir> Aarch64Builder<'ir> {
             todo!();
             self.save_arguments_to_stack(&function.signature);
         }
+    }
 
-        self.on_last = true;
-        self.jump_to(function.entry_point());
-        self.on_last = false;
-
-        for (i, code) in function.blocks.iter().enumerate() {
+    fn emit_func_code(&mut self) {
+        let blocks = self.func.blocks.iter().enumerate();
+        for (i, code) in blocks {
             if let Some(code) = code {
                 self.current = Label(i);
                 self.move_cursor(self.current, CursorPos::CodeEnd);
@@ -179,11 +202,6 @@ impl<'ir> Aarch64Builder<'ir> {
                 }
                 self.on_last = false;
             }
-        }
-
-        assert!(self.stack_remaining >= 0);
-        if function.register_types.len() > scratch_register_count as usize {
-            assert!(self.active_registers.is_empty());
         }
     }
 
@@ -304,7 +322,7 @@ impl<'ir> Aarch64Builder<'ir> {
             }
             Op::StackAlloc { dest, ty, count } => {
                 assert_eq!(*count, 1);
-                let bytes = self.ir.unwrap().size_of(ty);
+                let bytes = self.ir.size_of(ty);
                 self.stack_remaining -= bytes as isize;
                 let dest_ptr = self.reg_for(dest);
                 self.simple_with_const(AsmOp::ADD, dest_ptr, SP, self.stack_remaining as usize);
@@ -335,10 +353,25 @@ impl<'ir> Aarch64Builder<'ir> {
                 output,
                 kind,
             } => {
-                assert_eq!(*kind, CastType::Bits);
-                // TODO: make sure bits of float->int or int->float needs to swaps register types properlyx
-                let temp = self.get_ssa(input);
-                self.set_ssa(output, temp);
+                let in_ty = self.func.register_types.get(input).unwrap();
+                let out_ty = self.func.register_types.get(output).unwrap();
+                match kind {
+                    CastType::UnsignedIntUp
+                    | CastType::IntDown
+                    | CastType::FloatUp
+                    | CastType::FloatDown
+                    | CastType::FloatToUInt
+                    | CastType::UIntToFloat => {
+                        //
+                        todo!()
+                    }
+                    CastType::IntToPtr | CastType::PtrToInt | CastType::Bits => {
+                        // TODO: make sure bits of float->int or int->float needs to swaps register types properly
+                        assert_eq!(register_kind(in_ty), register_kind(out_ty));
+                        let temp = self.get_ssa(input);
+                        self.set_ssa(output, temp);
+                    }
+                }
             }
         }
     }
@@ -355,7 +388,7 @@ impl<'ir> Aarch64Builder<'ir> {
     // You need to return this to the queue.
     #[must_use]
     fn get_ssa(&mut self, ssa: &Ssa) -> Reg {
-        let ty = self.func.unwrap().register_types.get(ssa).unwrap();
+        let ty = self.func.register_types.get(ssa).unwrap();
         match self.ssa_registers[ssa.index()] {
             None => {
                 // We don't have the value in a register yet.
@@ -400,7 +433,7 @@ impl<'ir> Aarch64Builder<'ir> {
     // You need to return this to the queue.
     #[must_use]
     fn reg_for(&mut self, ssa: &Ssa) -> Reg {
-        let ty = self.func.unwrap().register_types.get(ssa).unwrap();
+        let ty = self.func.register_types.get(ssa).unwrap();
         match self.ssa_registers[ssa.index()] {
             None => self.next_reg(ty),
             Some(active_reg) => {
@@ -456,7 +489,7 @@ impl<'ir> Aarch64Builder<'ir> {
     }
 
     fn offset_of(&self, ssa: &Ssa) -> usize {
-        self.func.unwrap().required_stack_bytes + (ssa.index() * 8)
+        self.func.required_stack_bytes + (ssa.index() * 8)
     }
 
     fn move_cursor(&mut self, block: Label, pos: CursorPos) {
