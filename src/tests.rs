@@ -476,11 +476,18 @@ fn math_dot_h_sin() {
 double sin(double value);
 double main(){
     double r = sin(3.1415926525897);
-    return r;
+    double max = 0.001;
+    double min = 0.0 - max;
+    if (r > min) {
+        if (r < max) {
+            return 0.1;
+        }
+    }
+    return 999.0;
 }
     ";
 
-    no_arg_to_double_run_main(src, 0.0, "math_dot_h_sin");
+    no_arg_to_double_run_main(src, 0.1, "math_dot_h_sin");
 }
 
 #[test]
@@ -621,6 +628,28 @@ long main(){
     ";
     let src = &[include_str!("../tests/array_list.c"), src].join("");
     no_args_run_main(src, 0, "array_list");
+}
+
+#[test]
+fn return_a_double() {
+    let src = "
+double main(){
+    return 0.1;
+}
+    ";
+
+    no_arg_to_double_run_main(src, 0.1, "return_a_double");
+}
+
+#[test]
+fn big_constant() {
+    let src = "
+long main(){
+    return 18446744073709551615;
+}
+    ";
+
+    no_args_run_main(src, 18446744073709551615, "big_constant");
 }
 
 // TODO

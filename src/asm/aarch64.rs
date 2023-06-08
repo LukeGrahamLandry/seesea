@@ -1,3 +1,4 @@
+use crate::asm::aarch64::Bits::B64;
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
@@ -5,6 +6,7 @@ use crate::log;
 use crate::resolve::FuncSource;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter, Write};
+use std::mem::transmute;
 use std::rc::Rc;
 
 struct Aarch64Builder<'ir> {
@@ -256,24 +258,23 @@ impl<'ir> Aarch64Builder<'ir> {
 
     fn emit_op(&mut self, op: &Op) {
         match op {
-            Op::ConstValue { dest, value, kind } => {
-                match value {
-                    LiteralValue::IntNumber(n) => {
-                        // TODO assert value in range. For larger constants we could use several MOVK with shift.
-                        let result = self.reg_for(dest);
-                        // (MOVZ X, #n;) == (MOV X, XZR; MOVK X, #n;) == (SUB X, X, X; ADD X, X, X, #n;)
-                        output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, result, *n);
-                        self.set_ssa(dest, result);
-                    }
-                    LiteralValue::FloatNumber(n) => {
-                        // TODO assert value in range.
-                        let result = self.reg_for(dest);
-                        output!(self, "{:?} {:?}, #{}", AsmOp::FMOV, result, *n);
-                        self.set_ssa(dest, result);
-                    }
-                    _ => todo!(),
+            Op::ConstValue { dest, value, .. } => match value {
+                LiteralValue::IntNumber(n) => {
+                    let result = self.reg_for(dest);
+                    self.build_const_u64(result, *n);
+                    self.set_ssa(dest, result);
                 }
-            }
+                LiteralValue::FloatNumber(n) => {
+                    let result = self.reg_for(dest);
+                    // Load the bits as an integer
+                    let temp = self.next_reg(&CType::int());
+                    self.build_const_u64(temp, n.to_bits());
+                    // Then copy it to a float register.
+                    output!(self, "{:?} {:?}, {:?}", AsmOp::FMOV, result, temp);
+                    self.set_ssa(dest, result);
+                }
+                _ => todo!(),
+            },
             Op::Binary { dest, a, b, kind } => {
                 let a_value = self.get_ssa(a);
                 let b_value = self.get_ssa(b);
@@ -286,20 +287,25 @@ impl<'ir> Aarch64Builder<'ir> {
                 match kind {
                     // Signed/Unsigned Add/Sub are the same because two's complement
                     BinaryOp::Add => {
-                        self.simple_op(AsmOp::ADD, result_temp, a_value, b_value);
+                        let op = if is_int { AsmOp::ADD } else { AsmOp::FADD };
+                        self.simple_op(op, result_temp, a_value, b_value);
                     }
                     BinaryOp::Subtract => {
-                        self.simple_op(AsmOp::SUB, result_temp, a_value, b_value);
+                        let op = if is_int { AsmOp::SUB } else { AsmOp::FSUB };
+                        self.simple_op(op, result_temp, a_value, b_value);
                     }
                     BinaryOp::Multiply => {
-                        self.simple_op(AsmOp::MUL, result_temp, a_value, b_value);
+                        let op = if is_int { AsmOp::MUL } else { AsmOp::FMUL };
+                        self.simple_op(op, result_temp, a_value, b_value);
                     }
                     // TODO: manual trap for int divide by zero.
                     BinaryOp::Divide => {
-                        // SDIV
-                        self.simple_op(AsmOp::UDIV, result_temp, a_value, b_value);
+                        // TODO: SDIV for ints
+                        let op = if is_int { AsmOp::UDIV } else { AsmOp::FDIV };
+                        self.simple_op(op, result_temp, a_value, b_value);
                     }
                     // TODO: different flags for signed comparisons
+                    // Float comparisons set the same flags as normal.
                     BinaryOp::GreaterThan => {
                         self.binary_compare(a_value, b_value, result_temp, AsmOp::BLS);
                     }
@@ -341,10 +347,11 @@ impl<'ir> Aarch64Builder<'ir> {
             }
             Op::Return(value) => {
                 if let Some(value) = value {
+                    // TODO: I think returning structs by value is done in the caller's stack space.
                     let return_value = self.get_ssa(value);
-                    // This clobbers self.ssa_registers[0] but we're immediately returning so it's fine.
-                    assert_eq!(return_value.0, RegKind::Int, "todo");
-                    self.pair(AsmOp::MOV, Reg(RegKind::Int, Bits::B64, 0), return_value);
+                    // This clobbers whatever is in _0 but we're immediately returning so it's fine.
+                    let reg = Reg(return_value.0, return_value.1, 0);
+                    self.pair(reg.mov_kind(), reg, return_value);
                     self.drop_reg(return_value);
                 }
 
@@ -450,40 +457,16 @@ impl<'ir> Aarch64Builder<'ir> {
             if ty.is_ptr() || ty.is_raw_int() {
                 let target_reg = get_reg_num(ty, ints);
                 if current_reg != target_reg {
-                    // Swap TODO: this is dumb
-                    let scratch = self.next_reg(ty);
-                    let op = target_reg.mov_kind();
-                    output!(self, "{:?} {:?}, {:?}", op, scratch, target_reg);
-                    output!(self, "{:?} {:?}, {:?}", op, target_reg, current_reg);
-                    output!(self, "{:?} {:?}, {:?}", op, current_reg, scratch);
-                    self.drop_reg(scratch);
-                    // TODO: one of these doesnt matter but for now im doing the book keeping properly
-                    // the one that was in current is now in target
-                    let other_ssa = self
-                        .ssa_registers
-                        .iter()
-                        .filter(|r| r.is_some())
-                        .map(|r| r.unwrap())
-                        .position(|r| r == current_reg);
-                    if let Some(other_ssa) = other_ssa {
-                        self.ssa_registers[other_ssa] = Some(target_reg);
-                    }
-                    // the one that was in target is now in current
-                    let this_ssa = self
-                        .ssa_registers
-                        .iter()
-                        .filter(|r| r.is_some())
-                        .map(|r| r.unwrap())
-                        .position(|r| r == target_reg);
-                    if let Some(this_ssa) = this_ssa {
-                        self.ssa_registers[this_ssa] = Some(current_reg);
-                    }
+                    self.swap(ty, target_reg, current_reg);
                     self.drop_reg(current_reg);
                 }
                 ints += 1;
             } else if ty.is_raw_float() {
                 let target_reg = get_reg_num(ty, floats);
-                todo!();
+                if current_reg != target_reg {
+                    self.swap(ty, target_reg, current_reg);
+                    self.drop_reg(current_reg);
+                }
                 floats += 1;
             } else {
                 unreachable!();
@@ -513,11 +496,35 @@ impl<'ir> Aarch64Builder<'ir> {
         }
     }
 
-    fn swap(&mut self, a: Reg, b: Reg) {
+    fn swap(&mut self, ty: &CType, a: Reg, b: Reg) {
         assert_eq!(a.0, b.0);
+        let scratch = self.next_reg(ty);
         let op = a.mov_kind();
-
-        todo!()
+        output!(self, "{:?} {:?}, {:?}", op, scratch, a);
+        output!(self, "{:?} {:?}, {:?}", op, a, b);
+        output!(self, "{:?} {:?}, {:?}", op, b, scratch);
+        self.drop_reg(scratch);
+        // TODO: one of these doesnt matter but for now im doing the book keeping properly
+        // the one that was in current is now in target
+        let other_ssa = self
+            .ssa_registers
+            .iter()
+            .filter(|r| r.is_some())
+            .map(|r| r.unwrap())
+            .position(|r| r == b);
+        if let Some(other_ssa) = other_ssa {
+            self.ssa_registers[other_ssa] = Some(a);
+        }
+        // the one that was in target is now in current
+        let this_ssa = self
+            .ssa_registers
+            .iter()
+            .filter(|r| r.is_some())
+            .map(|r| r.unwrap())
+            .position(|r| r == a);
+        if let Some(this_ssa) = this_ssa {
+            self.ssa_registers[this_ssa] = Some(b);
+        }
     }
 
     // TODO: only call this as needed
@@ -768,15 +775,44 @@ impl<'ir> Aarch64Builder<'ir> {
         // The vm checks this as well so the IR is probably correct and I messed up and argument in this file.
         assert!(self.liveness.range[ssa.index()].contains(&self.op_index));
     }
+
+    fn build_const_u64(&mut self, result: Reg, n: u64) {
+        const OOOI: u64 = u16::MAX as u64;
+
+        // (MOVZ X, #n;) == (MOV X, XZR; MOVK X, #n;) == (SUB X, X, X; ADD X, X, X, #n;)
+        output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, result, n & OOOI);
+
+        // Build the rest of the number in 16 bit chunks.
+        for shift in [16, 32, 48] {
+            let mask = OOOI << shift;
+            let last_max = mask >> 16;
+            if n > last_max {
+                let chunk = (n & mask) >> shift;
+                output!(
+                    self,
+                    "{:?} {:?}, #{:?}, lsl {}",
+                    AsmOp::MOVK,
+                    result,
+                    chunk,
+                    shift
+                );
+            }
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
 pub enum AsmOp {
     ADD,
+    FADD,
     SUB,
+    FSUB,
     RET,
+    /// Move a value from one int register into another.
     MOV,
+    /// Load an immediate and zero the extra bits of the register.
     MOVZ,
+    /// Compare two int registers and set the magic flags.
     CMP,
     BGT,
     CBZ,
@@ -785,9 +821,16 @@ pub enum AsmOp {
     BLO,
     BHI,
     MUL,
+    FMUL,
     UDIV,
+    FDIV,
+    /// Compare two float registers and set the magic flags.
     FCMP,
     FMOV,
+    VMOV,
+    LDR,
+    /// Load a shifted immediate without changing other bits of the register.
+    MOVK,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
