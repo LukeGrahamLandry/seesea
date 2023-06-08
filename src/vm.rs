@@ -460,7 +460,7 @@ impl<'ir> Vm<'ir> {
                 VmValue::F64(angle.sin())
             }
             "printf" => {
-                vmlog!("Called printf {:?}", args);
+                log!("Called printf {:?}", args);
                 VmValue::U64(0)
             }
             "malloc" => {
@@ -485,6 +485,14 @@ impl<'ir> Vm<'ir> {
             "print_vm_stack_trace" => {
                 vmlog!("{:?}", self.trace());
                 VmValue::Uninit
+            }
+            "exit" => {
+                assert_eq!(args.len(), 1);
+                let status = args[0].to_int();
+                panic!("Vm exit with status code {}", status)
+            }
+            "abort" => {
+                panic!("Vm called abort()")
             }
             _ => {
                 panic!("Called unrecognised function {}", name)

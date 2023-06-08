@@ -89,6 +89,7 @@ pub enum AnyStmt<Expr> {
     Return {
         value: Option<Expr>,
     },
+    Intrinsic(IntrinsicType, Vec<Expr>, OpDebugInfo),
     Nothing,
 }
 
@@ -316,7 +317,7 @@ impl<T> FuncRepr for AnyFunction<T> {
 pub type OpDebugInfo = i64;
 pub struct MetaExpr {
     pub expr: RawExpr,
-    line: i64,
+    pub(crate) line: OpDebugInfo,
 }
 
 impl RawExpr {
@@ -358,5 +359,23 @@ impl AsRef<RawExpr> for MetaExpr {
 impl Debug for MetaExpr {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         self.expr.fmt(f)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum IntrinsicType {
+    Assert,
+    Panic,
+    Todo,
+}
+
+impl IntrinsicType {
+    pub fn get(name: &str) -> IntrinsicType {
+        match name.as_ref() {
+            "assert" => IntrinsicType::Assert,
+            "panic" => IntrinsicType::Panic,
+            "todo" => IntrinsicType::Todo,
+            _ => unreachable!("Unknown intrinsic {}", name),
+        }
     }
 }

@@ -1,14 +1,16 @@
 //! TOKENS -> AST
 
 use crate::ast::{
-    AnyStmt, BinaryOp, CType, FuncSignature, Function, LiteralValue, MetaExpr, Module, RawExpr,
-    StructSignature, ValueType,
+    AnyStmt, BinaryOp, CType, FuncSignature, Function, IntrinsicType, LiteralValue, MetaExpr,
+    Module, RawExpr, StructSignature, ValueType,
 };
 
 use crate::scanning::{Scanner, Token, TokenType};
 use std::rc::Rc;
 
 pub type Stmt = AnyStmt<MetaExpr>;
+
+const ALLOW_AT_INTRINSICS: bool = true;
 
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {
@@ -181,6 +183,12 @@ impl<'src> Parser<'src> {
             )
         }
 
+        if ALLOW_AT_INTRINSICS && self.scanner.matches(TokenType::AtSign) {
+            let name = self.expect(TokenType::Identifier);
+            let args = self.comma_seperated_exprs(TokenType::LeftParen, TokenType::RightParen);
+            return Stmt::Intrinsic(IntrinsicType::get(name.lexeme), args, name.line as i64);
+        }
+
         // EXPR;
         let expr = self.parse_expr();
         if !self.scanner.matches(TokenType::Semicolon) {
@@ -345,18 +353,8 @@ impl<'src> Parser<'src> {
             let token = self.scanner.peek_n(0);
             match self.scanner.peek() {
                 TokenType::LeftParen => {
-                    self.expect(TokenType::LeftParen);
-                    let mut args = vec![];
-                    while !self.scanner.matches(TokenType::RightParen) {
-                        args.push(self.parse_expr());
-                        if !self.scanner.matches(TokenType::Comma) {
-                            assert_eq!(
-                                self.scanner.peek(),
-                                TokenType::RightParen,
-                                "Expected ')' or ',' after function arg."
-                            );
-                        }
-                    }
+                    let args =
+                        self.comma_seperated_exprs(TokenType::LeftParen, TokenType::RightParen);
 
                     expr = RawExpr::Call {
                         func: Box::new(expr),
@@ -390,6 +388,22 @@ impl<'src> Parser<'src> {
                 _ => return expr,
             }
         }
+    }
+
+    fn comma_seperated_exprs(&mut self, first: TokenType, last: TokenType) -> Vec<MetaExpr> {
+        self.expect(first);
+        let mut args = vec![];
+        while !self.scanner.matches(last) {
+            args.push(self.parse_expr());
+            if !self.scanner.matches(TokenType::Comma) {
+                assert_eq!(
+                    self.scanner.peek(),
+                    TokenType::RightParen,
+                    "Expected ')' or ',' after function arg."
+                );
+            }
+        }
+        args
     }
 
     /// NAME | NUMBER | "STRING" | (EXPR) | (TYPE) EXPR

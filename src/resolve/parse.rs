@@ -1,6 +1,6 @@
 use crate::ast::{
-    AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue,
-    MetaExpr, RawExpr, ValueType,
+    AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncRepr, FuncSignature, IntrinsicType,
+    LiteralValue, MetaExpr, OpDebugInfo, RawExpr, ValueType,
 };
 use crate::ir::CastType;
 
@@ -169,6 +169,7 @@ impl<'ast> Resolver<'ast> {
                 AnyStmt::Return { value }
             }
             AnyStmt::Nothing => AnyStmt::Nothing,
+            AnyStmt::Intrinsic(name, args, info) => self.parse_intrinsic(name, args, info),
         }
     }
 
@@ -226,49 +227,7 @@ impl<'ast> Resolver<'ast> {
                 let value = self.parse_expr(value);
                 (value.ty.clone(), Operation::Unary(*op, Box::new(value)))
             }
-            RawExpr::Call { func, args } => {
-                let name = match &func.expr {
-                    RawExpr::GetVar(name) => name,
-                    _ => todo!("Support function pointers. "),
-                };
-
-                let signature = self
-                    .raw_ast
-                    .get_func_signature(name.as_ref())
-                    .unwrap_or_else(|| panic!("Call undeclared function {}", name))
-                    .clone();
-
-                let mut resolved_args = Vec::with_capacity(args.len());
-                for (i, arg) in args.iter().enumerate() {
-                    let mut arg = self.parse_expr(arg);
-
-                    if i < signature.param_types.len() {
-                        let expected = &signature.param_types[i];
-                        arg = self.implicit_cast(arg, expected);
-                    } else {
-                        assert!(
-                            signature.has_var_args,
-                            "Too many arguments passed to function call."
-                        );
-                    }
-
-                    resolved_args.push(arg);
-                }
-                let call_kind = if self.raw_ast.get_func(name.as_ref()).is_some() {
-                    FuncSource::Internal
-                } else {
-                    FuncSource::External
-                };
-
-                (
-                    signature.return_type.clone(),
-                    Operation::Call {
-                        signature,
-                        func: call_kind,
-                        args: resolved_args,
-                    },
-                )
-            }
+            RawExpr::Call { func, args } => self.parse_call(func, args),
             RawExpr::GetField(object, field_name) => {
                 let object = self.parse_expr(object);
                 let struct_name = match &object.ty.ty {
@@ -368,32 +327,29 @@ impl<'ast> Resolver<'ast> {
         let ptr_ty = element_ty.ref_type();
         let line = index.info();
 
+        let s = self.raw_ast.size_of(&element_ty) as u64;
         let element_size = ResolvedExpr {
-            expr: Operation::number(self.raw_ast.size_of(&element_ty) as u64),
+            expr: Operation::number(s),
             ty: CType::int(),
             line,
         };
-        let offset = ResolvedExpr {
-            expr: Operation::Binary {
-                left: Box::new(index),
-                right: Box::new(element_size),
-                op: BinaryOp::Multiply,
-            },
-            ty: CType::int(),
-            line,
-        };
-        let element_ptr = ResolvedExpr {
-            expr: Operation::Binary {
-                left: Box::new(self.implicit_cast(start_ptr, &CType::int())),
-                right: Box::new(offset),
-                op: BinaryOp::Add,
-            },
-            ty: CType::int(),
-            line,
-        };
+        let offset = self.int_op(BinaryOp::Multiply, index, element_size);
+        let element_ptr = self.int_op(BinaryOp::Add, start_ptr, offset);
         let element = Operation::DerefPtr(Box::new(self.implicit_cast(element_ptr, &ptr_ty)));
 
         (element_ty, element)
+    }
+
+    fn int_op(&self, op: BinaryOp, a: ResolvedExpr, b: ResolvedExpr) -> ResolvedExpr {
+        ResolvedExpr {
+            line: a.line,
+            expr: Operation::Binary {
+                left: Box::new(self.implicit_cast(a, &CType::int())),
+                right: Box::new(self.implicit_cast(b, &CType::int())),
+                op,
+            },
+            ty: CType::int(),
+        }
     }
 
     pub fn resolve_name(&self, name: &'ast str) -> VariableRef {
@@ -433,11 +389,7 @@ impl<'ast> Resolver<'ast> {
         if void_ptr {
             // TODO: Does c have rules about levels of indirection?
             if value.ty.depth != target.depth {
-                log!(
-                    "Warning: implicit cast from {:?} to {:?}",
-                    value.ty,
-                    target.ty
-                );
+                log!("Warning: implicit cast from {:?} to {:?}", value.ty, target);
             }
 
             return do_cast(CastType::Bits, value, target);
@@ -512,6 +464,112 @@ impl<'ast> Resolver<'ast> {
             );
             CastType::Bits
         }
+    }
+
+    fn parse_intrinsic(
+        &self,
+        name: &IntrinsicType,
+        args: &[MetaExpr],
+        line: &OpDebugInfo,
+    ) -> AnyStmt<ResolvedExpr> {
+        match name {
+            IntrinsicType::Assert => {
+                let condition = self.parse_expr(&args[0]);
+                let throw = self.parse_intrinsic(&IntrinsicType::Panic, &args[1..], line);
+                AnyStmt::If {
+                    condition,
+                    then_body: Box::new(AnyStmt::Nothing),
+                    else_body: Box::new(throw),
+                }
+            }
+            IntrinsicType::Panic => {
+                // TODO: stack trace.
+                //       auto include forward declarations for printf and abort.
+                let msg = format!(
+                    "\n{} panicked in function {} at line {}.\n",
+                    self.raw_ast.name,
+                    self.func.signature.unwrap().name,
+                    line
+                );
+                let mut body = vec![
+                    self.call_stmt("printf", &[const_str(msg, *line)], *line),
+                    self.call_stmt("abort", &[], *line),
+                ];
+                if args.len() > 0 {
+                    body.insert(1, self.call_stmt("printf", args, *line));
+                }
+                AnyStmt::Block { body }
+            }
+            IntrinsicType::Todo => {
+                if args.len() == 0 {
+                    let msg = &[const_str("Not implemented yet.", *line)];
+                    self.parse_intrinsic(&IntrinsicType::Panic, msg, line)
+                } else {
+                    self.parse_intrinsic(&IntrinsicType::Panic, args, line)
+                }
+            }
+        }
+    }
+
+    fn call_stmt(&self, name: &str, args: &[MetaExpr], line: OpDebugInfo) -> AnyStmt<ResolvedExpr> {
+        let call = self.parse_call(
+            &MetaExpr {
+                expr: RawExpr::GetVar(name.into()),
+                line,
+            },
+            args,
+        );
+        AnyStmt::Expression {
+            expr: ResolvedExpr {
+                expr: call.1,
+                ty: call.0,
+                line,
+            },
+        }
+    }
+
+    fn parse_call(&self, func: &MetaExpr, args: &[MetaExpr]) -> (CType, Operation) {
+        let name = match &func.expr {
+            RawExpr::GetVar(name) => name,
+            _ => todo!("Support function pointers. "),
+        };
+
+        let signature = self
+            .raw_ast
+            .get_func_signature(name.as_ref())
+            .unwrap_or_else(|| panic!("Call undeclared function {}", name))
+            .clone();
+
+        let mut resolved_args = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let mut arg = self.parse_expr(arg);
+
+            if i < signature.param_types.len() {
+                let expected = &signature.param_types[i];
+                arg = self.implicit_cast(arg, expected);
+            } else {
+                assert!(
+                    signature.has_var_args,
+                    "Too many arguments passed to function call."
+                );
+            }
+
+            resolved_args.push(arg);
+        }
+        let call_kind = if self.raw_ast.get_func(name.as_ref()).is_some() {
+            FuncSource::Internal
+        } else {
+            FuncSource::External
+        };
+
+        (
+            signature.return_type.clone(),
+            Operation::Call {
+                signature,
+                func: call_kind,
+                args: resolved_args,
+            },
+        )
     }
 }
 
@@ -596,5 +654,12 @@ impl<Func: FuncRepr> AnyModule<Func> {
             );
             log!("{:?}", s);
         }
+    }
+}
+
+fn const_str(text: impl Into<Rc<str>>, line: OpDebugInfo) -> MetaExpr {
+    MetaExpr {
+        expr: RawExpr::Literal(LiteralValue::StringBytes(text.into())),
+        line,
     }
 }

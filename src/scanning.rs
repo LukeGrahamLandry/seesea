@@ -124,6 +124,9 @@ pub enum TokenType {
     #[token("sizeof")]
     SizeOf,
 
+    #[token("@")]
+    AtSign,
+
     Eof,
 }
 

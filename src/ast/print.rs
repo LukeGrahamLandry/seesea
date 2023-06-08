@@ -84,6 +84,13 @@ impl<Expr: TreePrint> AnyStmt<Expr> {
             AnyStmt::Nothing => {
                 writeln!(f, "Nothing")
             }
+            AnyStmt::Intrinsic(kind, args, _) => {
+                writeln!(f, "Intrinsic {:?}", kind)?;
+                for a in args {
+                    a.print(depth + 1, f)?;
+                }
+                Ok(())
+            }
         }
     }
 }

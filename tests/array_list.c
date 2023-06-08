@@ -1,6 +1,3 @@
-// could make assertions a compiler intrinsic, so I don't have to deal with this
-// #include "assert.h"
-
 typedef int index_t;
 typedef void* value_t;
 
@@ -8,7 +5,7 @@ void* malloc(long size);
 void free(void* ptr);
 void *memcpy(void* dest, void* src, long n);
 int printf(char* format, ...);
-// void print_vm_stack_trace();
+void abort();
 
 typedef struct ArrayList {
     value_t* values;
@@ -17,16 +14,13 @@ typedef struct ArrayList {
 } ArrayList;
 
 index_t list_set(ArrayList* list, index_t index, value_t value) {
-    if (index >= list->length) {
-        return -1;
-    }
-    index_t offset = index * sizeof(value_t);
-    *(list->values + offset) = value;
+    @assert(index < list->length, "Index out of bounds %d", index);
+    list->values[index] = value;
     return 0;
 }
 
 void list_resize(ArrayList* list, index_t new_capacity) {
-    // assert(new_capacity >= list->length, "Tried to reduce size of list when that would lose elements.");
+    @assert(new_capacity >= list->length, "Tried to reduce size of list when that would lose elements.");
     value_t* old_values = list->values;
     if (new_capacity < 1) {
         free(old_values);
@@ -47,7 +41,6 @@ ArrayList* list_create(index_t capacity) {
     ArrayList* list = malloc(sizeof(ArrayList));
     list->length = 0;
     list_resize(list, capacity);
-    // print_vm_stack_trace();
     return list;
 }
 
@@ -56,27 +49,19 @@ void list_push(ArrayList* list, value_t value) {
     if (list->length >= list->capacity) {
         list_resize(list, list->capacity * 2);
     }
-    index_t offset = list->length * sizeof(value_t);
-    value_t* end = list->values + offset;
-    *end = value;
+    list->values[list->length] = value;
     list->length = list->length + 1;
     return;
 }
 
 value_t list_get(ArrayList* list, index_t index) {
-    if (index >= list->length) {
-        return 0;
-    }
-    index_t offset = index * sizeof(value_t);
-    return *(list->values + offset);
+    @assert(index < list->length, "Index out of bounds %d", index);
+    return list->values[index];
 }
 
 value_t list_remove(ArrayList* list, index_t index) {
-    if (index >= list->length) {
-        return 0;
-    }
-    index_t offset = index * sizeof(value_t);
-    // TODO
+    @assert(index < list->length, "Index out of bounds %d", index);
+    @todo();
     return 0;
 }
 
@@ -85,9 +70,10 @@ value_t list_pop(ArrayList* list) {
 }
 
 void list_free(ArrayList* list) {
-    if (list->capacity >= 1) {
+    if (list->capacity > 0) {
         free(list->values);
     }
+    list->values = 0;
     free(list);
     return;
 }
