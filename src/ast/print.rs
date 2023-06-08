@@ -143,6 +143,11 @@ impl TreePrint for RawExpr {
                 left.print(depth + 1, f)?;
                 right.print(depth + 1, f)
             }
+            RawExpr::ArrayIndex { ptr, index } => {
+                writeln!(f, "Index:")?;
+                ptr.print(depth + 1, f)?;
+                index.print(depth + 1, f)
+            }
         }
     }
 }

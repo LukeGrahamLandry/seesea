@@ -12,9 +12,10 @@ pub struct SsaLiveness<'ir> {
     // These don't count those that are held across function calls! TODO: change this if i stop just putting those on the stack.
     pub max_floats_alive: usize,
     pub max_ints_alive: usize,
-    pub usage_count: Vec<usize>,
     pub held_across_call: Vec<bool>,
     pub has_any_calls: bool,
+    // Not used currently
+    usage_count: Vec<usize>,
 
     // Private fields used for computing the live-ness.
     first_write: Vec<usize>,
@@ -42,23 +43,14 @@ pub fn compute_liveness(ir: &Function) -> SsaLiveness {
     liveness.calc_max_alive();
 
     for (i, range) in liveness.range.iter().enumerate() {
-        if liveness.held_across_call[i] {
-            log!(
-                "{}: [{}] -> [{}] ({} uses) held",
-                liveness.ir.name_ty(&Ssa(i)),
-                range.start(),
-                range.end(),
-                liveness.usage_count[i]
-            );
-        } else {
-            log!(
-                "{}: [{}] -> [{}] ({} uses)",
-                liveness.ir.name_ty(&Ssa(i)),
-                range.start(),
-                range.end(),
-                liveness.usage_count[i]
-            );
-        }
+        let held = liveness.held_across_call[i];
+        log!(
+            "{}: [{}] -> [{}] {}",
+            liveness.ir.name_ty(&Ssa(i)),
+            range.start(),
+            range.end(),
+            if held { "held" } else { "" }
+        );
     }
 
     log!(

@@ -173,7 +173,7 @@ impl<'ast> Resolver<'ast> {
     }
 
     // TODO: how does this cast? double a = INT_MAX + INT_MAX;
-    fn parse_expr(&mut self, expr: &'ast MetaExpr) -> ResolvedExpr {
+    fn parse_expr(&self, expr: &'ast MetaExpr) -> ResolvedExpr {
         let (ty, new_expr) = match expr.as_ref() {
             RawExpr::Binary { left, right, op } => {
                 let left = self.parse_expr(left);
@@ -304,7 +304,7 @@ impl<'ast> Resolver<'ast> {
                     (ty.clone(), Operation::Literal(LiteralValue::UninitStruct))
                 } else {
                     let zero = ResolvedExpr {
-                        expr: Operation::Literal(LiteralValue::IntNumber(0)),
+                        expr: Operation::number(0),
                         ty: CType::int(),
                         line: expr.info(),
                     };
@@ -323,7 +323,7 @@ impl<'ast> Resolver<'ast> {
             // TODO: resolve all the struct packing stuff before this. replace the StructSignatures with ones with char arrays for padding.
             RawExpr::SizeOfType(ty) => {
                 let s = self.raw_ast.size_of(ty) as u64;
-                (CType::int(), Operation::Literal(LiteralValue::IntNumber(s)))
+                (CType::int(), Operation::number(s))
             }
             RawExpr::DerefPtr(ptr) => {
                 let ptr = self.parse_expr(ptr);
@@ -346,6 +346,7 @@ impl<'ast> Resolver<'ast> {
                     Operation::Assign(Box::new(lvalue), Box::new(rvalue)),
                 )
             }
+            RawExpr::ArrayIndex { ptr, index } => self.array_index(ptr, index),
         };
 
         if let Operation::Call { .. } = &new_expr {
@@ -358,6 +359,41 @@ impl<'ast> Resolver<'ast> {
             expr: new_expr,
             line: expr.info(),
         }
+    }
+
+    fn array_index(&self, start_ptr: &MetaExpr, index: &MetaExpr) -> (CType, Operation) {
+        let start_ptr = self.parse_expr(start_ptr);
+        let index = self.parse_expr(index);
+        let element_ty = start_ptr.ty.deref_type();
+        let ptr_ty = element_ty.ref_type();
+        let line = index.info();
+
+        let element_size = ResolvedExpr {
+            expr: Operation::number(self.raw_ast.size_of(&element_ty) as u64),
+            ty: CType::int(),
+            line,
+        };
+        let offset = ResolvedExpr {
+            expr: Operation::Binary {
+                left: Box::new(index),
+                right: Box::new(element_size),
+                op: BinaryOp::Multiply,
+            },
+            ty: CType::int(),
+            line,
+        };
+        let element_ptr = ResolvedExpr {
+            expr: Operation::Binary {
+                left: Box::new(self.implicit_cast(start_ptr, &CType::int())),
+                right: Box::new(offset),
+                op: BinaryOp::Add,
+            },
+            ty: CType::int(),
+            line,
+        };
+        let element = Operation::DerefPtr(Box::new(self.implicit_cast(element_ptr, &ptr_ty)));
+
+        (element_ty, element)
     }
 
     pub fn resolve_name(&self, name: &'ast str) -> VariableRef {
@@ -505,6 +541,11 @@ fn priority(target: &CType) -> usize {
 }
 
 impl<Func: FuncRepr> AnyModule<Func> {
+    // TODO: This is doing it by inserting the padding as real fields which might be making field offsets wrong.
+    //       But actually this runs before the resolve pass (since sizes need it) so it accounts for these.
+    // TODO: Need to mark which fields are padding because they don't need to get passed in registers when calling functions.
+    //       Are padding bytes required to be preserved when passed by value to functions? Surely not.
+    /// http://www.catb.org/esr/structure-packing/
     pub fn calc_struct_padding(&mut self) {
         let mut pad = 0;
         let mut max_field_size = 0;
@@ -552,7 +593,8 @@ impl<Func: FuncRepr> AnyModule<Func> {
             assert_eq!(
                 self.size_of(CType::direct(ValueType::Struct(s.name.clone()))) % max_field_size,
                 0
-            )
+            );
+            log!("{:?}", s);
         }
     }
 }

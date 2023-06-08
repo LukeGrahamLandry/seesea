@@ -632,6 +632,7 @@ long main(){
 
 #[test]
 fn return_a_double() {
+    // language=c
     let src = "
 double main(){
     return 0.1;
@@ -643,6 +644,7 @@ double main(){
 
 #[test]
 fn big_constant() {
+    // language=c
     let src = "
 long main(){
     return 18446744073709551615;
@@ -650,6 +652,26 @@ long main(){
     ";
 
     no_args_run_main(src, 18446744073709551615, "big_constant");
+}
+
+#[test]
+fn array_index_syntax_on_pointers() {
+    // language=c
+    let src = "
+void* malloc(long size);
+void free(void* ptr);
+long main() {
+    long* x = malloc(sizeof(long) * 10);
+    x[2] = 10;
+    long* y = &x[3];
+    *y = 5;
+    long result = x[2] + x[3];
+    free(x);
+    return result;
+}
+    ";
+
+    no_args_run_main(src, 15, "array_index_syntax_on_pointers");
 }
 
 // TODO

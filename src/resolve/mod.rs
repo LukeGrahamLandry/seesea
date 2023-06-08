@@ -111,3 +111,9 @@ impl Hash for Variable {
         self.name.hash(state);
     }
 }
+
+impl Operation {
+    pub fn number(n: u64) -> Operation {
+        Operation::Literal(LiteralValue::IntNumber(n))
+    }
+}

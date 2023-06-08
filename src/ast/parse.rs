@@ -5,7 +5,6 @@ use crate::ast::{
     StructSignature, ValueType,
 };
 
-use crate::log;
 use crate::scanning::{Scanner, Token, TokenType};
 use std::rc::Rc;
 
@@ -338,8 +337,10 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// EXPR(EXPR,*) | EXPR.IDENT | EXPR->IDENT | EXPR\[EXPR] | EXPR
     fn parse_primary(&mut self) -> MetaExpr {
         let mut expr = self.parse_basic();
+        // I haven't thought about precedence yet so for now we just eat as many suffix-operators as possible.
         loop {
             let token = self.scanner.peek_n(0);
             match self.scanner.peek() {
@@ -369,17 +370,29 @@ impl<'src> Parser<'src> {
                     expr = RawExpr::GetField(Box::new(expr), name.into()).debug(token)
                 }
                 TokenType::Arrow => {
+                    // This could have it's own node type but I think it's purely syntax sugar.
                     self.expect(TokenType::Arrow);
                     let name = self.scanner.consume(TokenType::Identifier);
                     expr = RawExpr::DerefPtr(Box::new(expr)).debug(token);
                     expr = RawExpr::GetField(Box::new(expr), name.lexeme.into()).debug(name);
+                }
+                TokenType::LeftSquareBracket => {
+                    // This is sugar for incrementing the pointer by the size of elements but sizes are only known after resolving everything.
+                    self.expect(TokenType::LeftSquareBracket);
+                    let index = self.parse_expr();
+                    self.expect(TokenType::RightSquareBracket);
+                    expr = RawExpr::ArrayIndex {
+                        ptr: Box::new(expr),
+                        index: Box::new(index),
+                    }
+                    .debug(token);
                 }
                 _ => return expr,
             }
         }
     }
 
-    /// NAME | NUMBER | (EXPR)
+    /// NAME | NUMBER | "STRING" | (EXPR) | (TYPE) EXPR
     fn parse_basic(&mut self) -> MetaExpr {
         let token = self.scanner.take();
         match token.kind {
@@ -387,18 +400,21 @@ impl<'src> Parser<'src> {
             TokenType::DecimalFloat(v) => RawExpr::Literal(LiteralValue::FloatNumber(v)),
             // TODO: all should share the same Rc (same for field accesses)
             TokenType::Identifier => RawExpr::GetVar(token.lexeme.into()),
-            TokenType::LeftParen => match self.read_type() {
-                None => {
-                    let expr = self.parse_expr();
-                    self.expect(TokenType::RightParen);
-                    expr.expr
+            TokenType::LeftParen => {
+                // Either a sub-expression or a type cast.
+                match self.read_type() {
+                    None => {
+                        let expr = self.parse_expr();
+                        self.expect(TokenType::RightParen);
+                        expr.expr
+                    }
+                    Some(target) => {
+                        self.expect(TokenType::RightParen);
+                        let expr = self.parse_expr();
+                        RawExpr::LooseCast(Box::new(expr), target)
+                    }
                 }
-                Some(target) => {
-                    self.expect(TokenType::RightParen);
-                    let expr = self.parse_expr();
-                    RawExpr::LooseCast(Box::new(expr), target)
-                }
-            },
+            }
             TokenType::StringLiteral => RawExpr::Literal(LiteralValue::StringBytes(
                 token.lexeme[1..(token.lexeme.len() - 1)].to_string().into(),
             )),
@@ -455,7 +471,6 @@ impl<'src> Parser<'src> {
         while self.scanner.matches(TokenType::Star) {
             ty = ty.ref_type();
         }
-        log!("found type {:?} next: {:?}", ty, self.scanner.peek());
         Some(ty)
     }
 

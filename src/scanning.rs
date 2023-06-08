@@ -56,10 +56,10 @@ pub enum TokenType {
     RightBrace,
 
     #[token("[")]
-    LeftBracket,
+    LeftSquareBracket,
 
     #[token("]")]
-    RightBracket,
+    RightSquareBracket,
 
     #[token("return")]
     Return,

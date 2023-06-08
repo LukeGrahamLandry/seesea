@@ -78,10 +78,13 @@ pub enum AnyStmt<Expr> {
         body: Box<AnyStmt<Expr>>,
     },
     DeclareVar {
-        name: Rc<str>,
         value: Expr,
+        // TODO clean this up. but means raw and resolved would need different stmt types which is a bit annoying.
+        // only while raw
+        name: Rc<str>,
         kind: CType,
-        variable: Option<VariableRef>, // TODO clean this up
+        // only once resolved
+        variable: Option<VariableRef>,
     },
     Return {
         value: Option<Expr>,
@@ -89,6 +92,9 @@ pub enum AnyStmt<Expr> {
     Nothing,
 }
 
+// TODO: If I really cared, it would probably be much faster to use an arena allocator for these boxes.
+//       I think that would also allow using raw references by unsafely guaranteeing everything has the same lifetime.
+//       Feels silly to obsess about allocations at this stage but would be fun.
 pub enum RawExpr {
     Binary {
         left: Box<MetaExpr>,
@@ -109,6 +115,10 @@ pub enum RawExpr {
     DerefPtr(Box<MetaExpr>),
     AddressOf(Box<MetaExpr>),
     Assign(Box<MetaExpr>, /* = */ Box<MetaExpr>),
+    ArrayIndex {
+        ptr: Box<MetaExpr>,
+        index: Box<MetaExpr>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -196,7 +206,7 @@ impl<Func: FuncRepr> AnyModule<Func> {
     pub fn size_of(&self, ty: impl Borrow<CType>) -> usize {
         let ty = ty.borrow();
         if ty.depth > 0 {
-            // this is checking at compile time when it should care about runtime but it will have to do for now. 
+            // this is checking at compile time when it should care about runtime but it will have to do for now.
             assert_eq!(size_of::<usize>(), size_of::<u64>());
             return 8;
         }

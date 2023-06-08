@@ -158,6 +158,8 @@ impl<'ir> Aarch64Builder<'ir> {
         // structs and addressed variables.
         self.total_stack_size = self.func.required_stack_bytes;
         // TODO: this ignores live-ness! Anything ever held across a call gets a dedicated stack slot.
+        // TODO: work out the spacing similar to struct padding. ie. two u32s don't need 16 bytes.
+        //       could make a fake struct for them and just call the function.
         self.total_stack_size += 8 * self
             .liveness
             .held_across_call
@@ -210,6 +212,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 SP,
                 self.stack_remaining
             );
+            log!("LR/FP at [SP, #{}]", self.stack_remaining);
         }
 
         // Any SSAs that are held across calls are assigned a slot on the stack so I don't need to deal with loading and storing them.
@@ -220,6 +223,7 @@ impl<'ir> Aarch64Builder<'ir> {
             self.stack_remaining -= 8;
             self.ssa_offsets
                 .insert(Ssa(i), self.stack_remaining as usize);
+            log!("Ssa({}) at [SP, #{}]", i, self.stack_remaining);
         }
     }
 
@@ -537,7 +541,7 @@ impl<'ir> Aarch64Builder<'ir> {
             let reg = self.ssa_registers[i];
             if let Some(reg) = reg {
                 if !self.liveness.range[i].contains(&self.op_index) {
-                    log!("[{}] free Ssa({}) in {:?}", self.op_index, i, reg);
+                    // log!("[{}] free Ssa({}) in {:?}", self.op_index, i, reg);
                     // The ssa is dead so we can return the register.
                     self.active_registers.retain(|r| *r != reg);
                     self.unused_registers.push_back(reg);
@@ -640,7 +644,7 @@ impl<'ir> Aarch64Builder<'ir> {
         // This is the first write of the ssa and we should have room to store it in a register the whole time.
         let reg = self.next_reg(ty);
         self.ssa_registers[ssa.index()] = Some(reg);
-        log!("[{}] take {:?} in {:?}", self.op_index, ssa, reg);
+        // log!("[{}] take {:?} in {:?}", self.op_index, ssa, reg);
         reg
     }
 
