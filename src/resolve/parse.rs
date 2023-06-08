@@ -1,6 +1,6 @@
 use crate::ast::{
-    AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncSignature, LiteralValue, MetaExpr,
-    RawExpr, ValueType,
+    AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue,
+    MetaExpr, RawExpr, ValueType,
 };
 use crate::ir::CastType;
 
@@ -300,18 +300,17 @@ impl<'ast> Resolver<'ast> {
                 (ty, Operation::Literal(value.clone()))
             }
             RawExpr::Default(ty) => {
-                let lit = if ty.is_struct() {
-                    LiteralValue::UninitStruct
+                if ty.is_struct() {
+                    (ty.clone(), Operation::Literal(LiteralValue::UninitStruct))
                 } else {
-                    LiteralValue::IntNumber(0)
-                };
-                let zero = ResolvedExpr {
-                    expr: Operation::Literal(lit),
-                    ty: ty.clone(),
-                    line: expr.info(),
-                };
-                let value = self.implicit_cast(zero, ty);
-                (value.ty, value.expr)
+                    let zero = ResolvedExpr {
+                        expr: Operation::Literal(LiteralValue::IntNumber(0)),
+                        ty: CType::int(),
+                        line: expr.info(),
+                    };
+                    let value = self.implicit_cast(zero, ty);
+                    (value.ty, value.expr)
+                }
             }
             RawExpr::LooseCast(value, target) => {
                 let value = self.parse_expr(value);
@@ -321,6 +320,7 @@ impl<'ast> Resolver<'ast> {
                     Operation::Cast(Box::new(value), target.clone(), kind),
                 )
             }
+            // TODO: resolve all the struct packing stuff before this. replace the StructSignatures with ones with char arrays for padding.
             RawExpr::SizeOfType(ty) => {
                 let s = self.raw_ast.size_of(ty) as u64;
                 (CType::int(), Operation::Literal(LiteralValue::IntNumber(s)))
@@ -500,6 +500,59 @@ fn priority(target: &CType) -> usize {
             ValueType::Struct(_) | ValueType::Void => {
                 panic!("Binary expr implicit cast cannot include Struct or Void")
             }
+        }
+    }
+}
+
+impl<Func: FuncRepr> AnyModule<Func> {
+    pub fn calc_struct_padding(&mut self) {
+        let mut pad = 0;
+        let mut max_field_size = 0;
+        for s in 0..self.structs.len() {
+            let mut addr = 0;
+            let mut f = 0;
+            while f < self.structs[s].fields.len() {
+                let ty = self.structs[s].fields[f].1.clone();
+                assert!(
+                    !matches!(ty.ty, ValueType::Struct(_)),
+                    "todo: pad nested structs"
+                );
+                let field_size = self.size_of(&ty);
+                max_field_size = max_field_size.max(field_size);
+                while addr % field_size != 0 {
+                    self.structs[s]
+                        .fields
+                        .insert(f, (format!("_pad_{}_", pad), CType::direct(ValueType::U8)));
+                    addr += 1;
+                    f += 1;
+                    pad += 1;
+                }
+                addr += field_size;
+                f += 1;
+            }
+            while addr % max_field_size != 0 {
+                self.structs[s]
+                    .fields
+                    .insert(f, (format!("_pad_{}_", pad), CType::direct(ValueType::U8)));
+                addr += 1;
+                pad += 1;
+            }
+        }
+
+        // Check
+        for s in &self.structs {
+            let mut max_field_size = 0;
+            let mut addr = 0;
+            for f in &s.fields {
+                let field_size = self.size_of(&f.1);
+                max_field_size = max_field_size.max(field_size);
+                assert_eq!(addr % field_size, 0);
+                addr += field_size;
+            }
+            assert_eq!(
+                self.size_of(CType::direct(ValueType::Struct(s.name.clone()))) % max_field_size,
+                0
+            )
         }
     }
 }

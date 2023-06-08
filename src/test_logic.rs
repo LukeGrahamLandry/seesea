@@ -1,21 +1,19 @@
 use crate::asm::aarch64::build_asm;
-use crate::asm::llvm::LlvmFuncGen;
-use crate::asm::llvm_raw::{null_terminate, RawLlvmFuncGen, TheContext};
+use crate::asm::llvm::{null_terminate, RawLlvmFuncGen, TheContext};
 use crate::ir::Module;
 use crate::scanning::Scanner;
 use crate::vm::{Vm, VmValue};
 use crate::{ast, ir, log};
-use inkwell::context::Context;
-use inkwell::execution_engine::UnsafeFunctionPointer;
-use inkwell::OptimizationLevel;
 use llvm_sys::core::{LLVMContextCreate, LLVMDisposeMessage, LLVMModuleCreateWithNameInContext};
-use llvm_sys::execution_engine::{LLVMCreateJITCompilerForModule, LLVMGetFunctionAddress};
+use llvm_sys::execution_engine::{
+    LLVMCreateJITCompilerForModule, LLVMGetFunctionAddress, LLVMLinkInMCJIT,
+};
 use llvm_sys::target::{LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget};
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::Write;
 use std::mem;
-use std::mem::MaybeUninit;
+use std::mem::{size_of, MaybeUninit};
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -28,9 +26,12 @@ pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
 
     // LLVM
     type Func = unsafe extern "C" fn() -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function() };
-        assert_eq!(answer, expected);
+    compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function();
+            assert_eq!(answer, expected);
+        };
     });
 
     // ASM
@@ -45,9 +46,12 @@ pub fn int_to_int_run_main(src: &str, input: u64, expected: u64, name: &str) {
 
     // LLVM
     type Func = unsafe extern "C" fn(u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function(input) };
-        assert_eq!(answer, expected);
+    compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function(input);
+            assert_eq!(answer, expected);
+        };
     });
 
     // ASM
@@ -70,9 +74,12 @@ pub fn two_ints_to_int_run_main(src: &str, input_a: u64, input_b: u64, expected:
 
     // LLVM
     type Func = unsafe extern "C" fn(u64, u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function(input_a, input_b) };
-        assert_eq!(answer, expected);
+    compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function(input_a, input_b);
+            assert_eq!(answer, expected);
+        };
     });
 
     // ASM
@@ -102,9 +109,12 @@ pub fn three_ints_to_int_run_main(
 
     // LLVM
     type Func = unsafe extern "C" fn(u64, u64, u64) -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function(input_a, input_b, input_c) };
-        assert_eq!(answer, expected);
+    compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function(input_a, input_b, input_c);
+            assert_eq!(answer, expected);
+        };
     });
 
     // ASM
@@ -125,9 +135,12 @@ pub fn no_arg_to_double_run_main(src: &str, expected: f64, name: &str) {
 
     // LLVM
     type Func = unsafe extern "C" fn() -> f64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function() };
-        assert!((answer - expected).abs() < 0.000001);
+    compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function();
+            assert!((answer - expected).abs() < 0.000001);
+        };
     });
 
     // ASM
@@ -143,9 +156,12 @@ pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) 
 
     // LLVM
     type Func = unsafe extern "C" fn(f64) -> u64;
-    compile_and_run::<Func, _>(&ir, "main", |function| {
-        let answer = unsafe { function(input) };
-        assert_eq!(answer, expected);
+    compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function(input);
+            assert_eq!(answer, expected);
+        };
     });
 
     // ASM
@@ -162,7 +178,7 @@ static FILE_GUARD: Mutex<()> = Mutex::new(());
 fn run_asm_main(ir: &Module, sig: &str, input: &str, output: &str) {
     let asm = build_asm(ir);
     let generated = CODE_TEMPLATE
-        .replace("$FUNC_NAME", &format!("{}_main", ir.name))
+        .replace("$FUNC_NAME", "main")
         .replace("$SIG", sig)
         .replace("$INPUT", input)
         .replace("$OUTPUT", output)
@@ -209,20 +225,7 @@ pub fn vm_run_cases(ir: &Module, func_name: &str, cases: &[(&[u64], u64)]) {
 // TODO: is there a way I can reflect on the signature since I know what it should be from the ir? maybe make this a macro?
 // F needs to be an unsafe extern "C" fn (?) -> ?
 // TODO: ideally i could somehow get the asm into executable memory here and call action again with that function pointer
-pub fn compile_and_run<F, A>(ir: &Module, func_name: &str, action: A)
-where
-    F: UnsafeFunctionPointer,
-    A: FnMut(F),
-{
-    llvm_run_raw_sys(ir, func_name, action);
-}
-
-#[allow(unused)]
-pub fn llvm_run_raw_sys<F, A>(ir: &ir::Module, func_name: &str, action: A)
-where
-    F: UnsafeFunctionPointer,
-    A: FnOnce(F),
-{
+pub fn compile_and_run(ir: &Module, func_name: &str, action: impl FnOnce(u64)) {
     assert!(ir.get_func(func_name).is_some(), "Function not found.");
     let func_name = null_terminate(func_name);
     unsafe {
@@ -238,6 +241,8 @@ where
         assert_eq!(LLVM_InitializeNativeTarget(), 0);
         // Fixes:  LLVM ERROR: Target does not support MC emission!
         assert_eq!(LLVM_InitializeNativeAsmPrinter(), 0);
+        // Fixes: JIT has not been linked in.
+        LLVMLinkInMCJIT();
         let failed = LLVMCreateJITCompilerForModule(
             execution_engine.as_mut_ptr(),
             module,
@@ -258,8 +263,11 @@ where
 
         let function_ptr = LLVMGetFunctionAddress(execution_engine, func_name.as_ptr());
         assert_ne!(function_ptr, 0);
-        let function_ptr: F = mem::transmute_copy(&function_ptr);
-
+        assert_eq!(
+            size_of::<usize>(),
+            size_of::<u64>(),
+            "My transmutes are assuming that the int returned is the of a function pointer."
+        );
         action(function_ptr);
 
         // TODO: @Leak but in tests so who cares.
@@ -272,28 +280,7 @@ where
     }
 }
 
-#[allow(unused)]
-pub fn llvm_run_inkwell<F, A>(ir: &Module, func_name: &str, action: A)
-where
-    F: UnsafeFunctionPointer,
-    // JitFunction instead of direct F to hold the lifetime of our exec engine.
-    A: FnOnce(F),
-{
-    assert!(ir.get_func(func_name).is_some(), "Function not found.");
-    let use_llvm = |context: &Context| {
-        let module = context.create_module(&ir.name);
-        let execution_engine = module
-            .create_jit_execution_engine(OptimizationLevel::None)
-            .unwrap();
-        LlvmFuncGen::new(&module).compile_all(ir);
-
-        let func = unsafe { execution_engine.get_function::<F>(func_name).unwrap() };
-        action(unsafe { func.as_raw() });
-    };
-    unsafe { Context::get_global(use_llvm) }
-}
-
-pub fn compile_module(src: &str, name: &str) -> ir::Module {
+pub fn compile_module(src: &str, name: &str) -> Module {
     log!("{}", src);
     let scan = Scanner::new(src, name.into());
     log!("{:?}", scan);
@@ -315,5 +302,6 @@ fn run_asm() {
     assert_eq!(result, $OUTPUT);
 }
 
-std::arch::global_asm!("$ASM");
+std::arch::global_asm!("
+$ASM");
 "#;

@@ -1,28 +1,3 @@
-pub mod llvm {
-    macro_rules! emit_bin_op {
-        ($self:ident, $a:ident, $b:ident, $kind:ident, $read_func:ident, $cmp_pred:ident, $cmp_func:tt, $add_func:tt, $sub_func:tt, $mul_func:tt, $div_func:tt) => {{
-            let a = $self.$read_func($a);
-            let b = $self.$read_func($b);
-            let result: AnyValueEnum = match $kind {
-                BinaryOp::Add => $self.builder.$add_func(a, b, "").into(),
-                BinaryOp::GreaterThan => $self.builder.$cmp_func($cmp_pred::UGT, a, b, "").into(),
-                BinaryOp::LessThan => $self.builder.$cmp_func($cmp_pred::ULT, a, b, "").into(),
-                BinaryOp::Subtract => $self.builder.$sub_func(a, b, "").into(),
-                BinaryOp::Multiply => $self.builder.$mul_func(a, b, "").into(),
-                BinaryOp::Divide => $self.builder.$div_func(a, b, "").into(),
-                BinaryOp::GreaterOrEqual => {
-                    $self.builder.$cmp_func($cmp_pred::UGE, a, b, "").into()
-                }
-                BinaryOp::LessOrEqual => $self.builder.$cmp_func($cmp_pred::ULE, a, b, "").into(),
-                BinaryOp::Modulo | BinaryOp::Equality => todo!(),
-            };
-            result
-        }};
-    }
-
-    pub(crate) use emit_bin_op;
-}
-
 pub mod vm {
     macro_rules! do_bin_math {
         ($self:ident, $a:ident, $b:ident, $op:tt) => {{

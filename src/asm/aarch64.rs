@@ -1,13 +1,10 @@
-use crate::asm::aarch64::Bits::B64;
-use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
+use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
 use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
 use crate::resolve::FuncSource;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter, Write};
-use std::mem::transmute;
-use std::rc::Rc;
 
 struct Aarch64Builder<'ir> {
     ir: &'ir Module,
@@ -98,7 +95,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 Some(_) => self.text.push(Some(Default::default())),
             }
         }
-        output!(self, "_{}_{}:", self.ir.name, self.func.signature.name);
+        output!(self, "_{}:", self.func.signature.name);
 
         self.reserve_stack_space();
         self.init_arg_registers();
@@ -206,7 +203,8 @@ impl<'ir> Aarch64Builder<'ir> {
             self.stack_remaining -= 16;
             output!(
                 self,
-                "STP {:?}, {:?}, [{:?}, #{}]",
+                "{:?} {:?}, {:?}, [{:?}, #{}]",
+                AsmOp::STP,
                 FP,
                 LR,
                 SP,
@@ -359,7 +357,8 @@ impl<'ir> Aarch64Builder<'ir> {
                 if self.liveness.has_any_calls {
                     output!(
                         self,
-                        "LDP {:?}, {:?}, [{:?}, #{}]",
+                        "{:?} {:?}, {:?}, [{:?}, #{}]",
+                        AsmOp::LDP,
                         FP,
                         LR,
                         SP,
@@ -420,10 +419,16 @@ impl<'ir> Aarch64Builder<'ir> {
                         todo!()
                     }
                     CastType::IntToPtr | CastType::PtrToInt | CastType::Bits => {
-                        // TODO: make sure bits of float->int or int->float needs to swaps register types properly
-                        assert_eq!(register_kind(in_ty), register_kind(out_ty));
-                        let temp = self.get_ssa(input);
-                        self.set_ssa(output, temp);
+                        if register_kind(in_ty) == register_kind(out_ty) {
+                            let temp = self.get_ssa(input);
+                            self.set_ssa(output, temp);
+                        } else {
+                            // Changing between int and float. TODO: test this.
+                            let input_reg = self.get_ssa(input);
+                            let output_reg = self.reg_for(output);
+                            output!(self, "{:?} {:?}, {:?}", AsmOp::FMOV, output_reg, input_reg);
+                            self.set_ssa(output, output_reg);
+                        }
                     }
                 }
             }
@@ -457,6 +462,7 @@ impl<'ir> Aarch64Builder<'ir> {
             if ty.is_ptr() || ty.is_raw_int() {
                 let target_reg = get_reg_num(ty, ints);
                 if current_reg != target_reg {
+                    // TODO: if current_reg isn't an argument, dont bother preserving it and if it is, swap it to the right register for the call instead.
                     self.swap(ty, target_reg, current_reg);
                     self.drop_reg(current_reg);
                 }
@@ -472,18 +478,16 @@ impl<'ir> Aarch64Builder<'ir> {
                 unreachable!();
             }
         }
+
+        let is_variadic = self.ir.get_func_signature(name).unwrap().has_var_args;
         assert!(
-            ints <= CC_REG_ARGS && floats <= CC_REG_ARGS,
+            ints <= CC_REG_ARGS && floats <= CC_REG_ARGS && !is_variadic,
             "todo: support stack args"
         );
 
         // Now do the call
         match kind {
-            FuncSource::Internal => {
-                // TODO: I should stop adding the module name prefix to functions, i was just afraid of trying to do tests in one binary and them conflicting.
-                output!(self, "BL _{}_{}", self.ir.name, name);
-            }
-            FuncSource::External => {
+            FuncSource::Internal | FuncSource::External => {
                 output!(self, "BL _{}", name);
             }
         }
@@ -762,7 +766,7 @@ impl<'ir> Aarch64Builder<'ir> {
         self.pair(cmp, a_value, b_value);
 
         // Set the destination to zero.
-        output!(self, "{:?} {:?}, XZR", AsmOp::MOV, result_temp);
+        output!(self, "{:?} {:?}, {:?}", AsmOp::MOV, result_temp, ZERO);
 
         // Skip one instruction if the condition we care about was false
         output!(self, "{:?} #{}", false_flags, 8);
@@ -803,34 +807,46 @@ impl<'ir> Aarch64Builder<'ir> {
 
 #[derive(Debug, Copy, Clone)]
 pub enum AsmOp {
+    // Math
     ADD,
     FADD,
     SUB,
     FSUB,
-    RET,
-    /// Move a value from one int register into another.
-    MOV,
-    /// Load an immediate and zero the extra bits of the register.
-    MOVZ,
-    /// Compare two int registers and set the magic flags.
-    CMP,
-    BGT,
-    CBZ,
-    BLS,
-    BHS,
-    BLO,
-    BHI,
     MUL,
     FMUL,
     UDIV,
     FDIV,
+
+    // Branch based on flags previously set by cmp/fcmp.
+    BGT,
+    BLS,
+    BHS,
+    BLO,
+    BHI,
+
+    /// Compare two int registers and set the magic flags.
+    CMP,
     /// Compare two float registers and set the magic flags.
     FCMP,
-    FMOV,
-    VMOV,
-    LDR,
+
+    /// Branch if zero (without setting flags)
+    CBZ,
+    /// Return from the function. You must have the right values in LR & FP before using this.
+    RET,
+
+    /// Move a value from one int register into another.
+    MOV,
+    /// Load an immediate and zero the extra bits of the register.
+    MOVZ,
     /// Load a shifted immediate without changing other bits of the register.
     MOVK,
+    /// Move between float registers OR move raw bits between int<->float without value cast.
+    FMOV,
+
+    /// Load from sequential stack slots to a pair of registers
+    LDP,
+    /// Store a pair of registers to sequential stack slots.
+    STP,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -865,10 +881,6 @@ impl PartialEq<Self> for Reg {
 impl Reg {
     fn same_kind(&self, other: Reg) -> bool {
         self.0 == other.0 && self.1 == other.1
-    }
-
-    fn right_kind(&self, ty: &CType) -> bool {
-        register_kind(ty) == (self.0, self.1)
     }
 
     fn mov_kind(&self) -> AsmOp {

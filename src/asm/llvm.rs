@@ -2,57 +2,64 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::ffi::{c_char, c_uint, CStr, CString};
+use std::mem::MaybeUninit;
+use std::num::NonZeroU8;
 use std::rc::Rc;
 
-use inkwell::basic_block::BasicBlock;
-use inkwell::builder::Builder;
-use inkwell::context::ContextRef;
-use inkwell::module::Module;
-use inkwell::types::{AnyTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType};
-use inkwell::values::{
-    AnyValue, AnyValueEnum, BasicMetadataValueEnum, BasicValueEnum, FloatValue, FunctionValue,
-    IntValue, PhiValue, PointerValue,
-};
-use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
+use llvm_sys::core::*;
+use llvm_sys::prelude::*;
+use llvm_sys::{LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind, LLVMValueKind};
 
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir::{CastType, Function, Label, Op, Ssa};
-use crate::macros::llvm::emit_bin_op;
 use crate::{ir, log};
 
-pub struct LlvmFuncGen<'ctx: 'module, 'module> {
-    pub(crate) context: ContextRef<'ctx>,
-    module: &'module Module<'ctx>,
-    pub(crate) builder: Builder<'ctx>,
-    functions: HashMap<Rc<str>, FunctionValue<'ctx>>,
-    func: Option<FuncContext<'ctx, 'module>>,
-    ir: Option<&'module ir::Module>,
+pub struct RawLlvmFuncGen<'ir> {
+    ctx: LLVMContextRef,
+    module: LLVMModuleRef,
+    builder: LLVMBuilderRef,
+    functions: HashMap<Rc<str>, LLVMValueRef>,
+    function_types: HashMap<Rc<str>, LLVMTypeRef>,
+    func: Option<FuncContext<'ir>>,
+    ir: Option<&'ir ir::Module>,
+    llvm_structs: HashMap<Rc<str>, LLVMTypeRef>,
 }
 
 /// Plain old data that holds the state that must be reset for each function.
-struct FuncContext<'ctx: 'module, 'module> {
-    local_registers: HashMap<Ssa, AnyValueEnum<'ctx>>,
-    // These being Options is a bit awkward but means I can remove empty blocks before it reaches the backend and keep Labels being correct indexes into the array.
-    blocks: Vec<Option<BasicBlock<'ctx>>>,
-    func_ir: &'module Function,
-    phi_nodes: HashMap<PhiValue<'ctx>, Vec<(Label, Ssa)>>,
+struct FuncContext<'ir> {
+    local_registers: HashMap<Ssa, LLVMValueRef>,
+    blocks: Vec<Option<LLVMBasicBlockRef>>,
+    func_ir: &'ir Function,
+    phi_nodes: HashMap<LLVMValueRef, Vec<(Label, Ssa)>>,
 }
 
-/// TODO: get rid of this module and stop depending on inkwell now that i can use llvm-sys directly
-impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
-    pub fn new(module: &'module Module<'ctx>) -> LlvmFuncGen<'ctx, 'module> {
-        LlvmFuncGen {
-            context: module.get_context(),
-            module,
-            builder: module.get_context().create_builder(),
+pub struct TheContext {
+    pub context: LLVMContextRef,
+    pub module: LLVMModuleRef,
+}
+
+impl<'ir> RawLlvmFuncGen<'ir> {
+    /// # Safety
+    /// You must not release the context or the module until after dropping the RawLlvmFuncGen.
+    pub unsafe fn new(context: &mut TheContext) -> RawLlvmFuncGen<'ir> {
+        RawLlvmFuncGen {
+            ctx: context.context,
+            module: context.module,
+            builder: LLVMCreateBuilderInContext(context.context),
             functions: Default::default(),
+            function_types: Default::default(),
             func: None,
             ir: None,
+            llvm_structs: Default::default(),
         }
     }
 
     /// To access the results, use an execution engine created on the LLVM Module.
-    pub fn compile_all(&mut self, ir: &'module ir::Module) {
+    /// # Safety
+    /// You must not release the context or the module until after dropping the RawLlvmFuncGen.
+    pub unsafe fn compile_all(&mut self, ir: &'ir ir::Module) {
         self.ir = Some(ir);
         for struct_def in &ir.structs {
             let mut field_types = vec![];
@@ -60,13 +67,19 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 field_types.push(self.llvm_type(ty));
             }
 
-            let llvm_struct = self.context.opaque_struct_type(struct_def.name.as_ref());
-            llvm_struct.set_body(&field_types, false);
+            let name = null_terminate(&struct_def.name);
+            let llvm_struct = LLVMStructCreateNamed(self.ctx, name.as_ptr());
+            LLVMStructSetBody(
+                llvm_struct,
+                field_types.as_mut_ptr(),
+                field_types.len() as c_uint,
+                LLVMBool::from(false),
+            );
+            self.llvm_structs
+                .insert(struct_def.name.clone(), llvm_struct);
         }
         for function in &ir.forward_declarations {
-            let t = self.get_func_type(function);
-            let func = self.module.add_function(function.name.as_ref(), t, None);
-            self.functions.insert(function.name.clone(), func);
+            self.emit_function_definition(function);
         }
         for function in ir.functions.iter() {
             log!("Compiling {:?}", function.signature);
@@ -74,22 +87,49 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
         }
 
         log!("=== LLVM IR ====");
-        log!("{}", self.module.to_string());
+        let ir_str = LLVMPrintModuleToString(self.module);
+        log!("{}", CStr::from_ptr(ir_str).to_str().unwrap());
+        LLVMDisposeMessage(ir_str);
         log!("=========");
 
-        match self.module.verify() {
-            Ok(_) => {}
-            Err(_e) => log!("Failed llvm verify! \n{}.", _e),
+        let mut msg = MaybeUninit::uninit();
+        let failed = LLVMVerifyModule(
+            self.module,
+            LLVMVerifierFailureAction::LLVMPrintMessageAction,
+            msg.as_mut_ptr(),
+        );
+        if failed != 0 {
+            let msg = msg.assume_init();
+            log!(
+                "Failed llvm verify! \n{}.",
+                CStr::from_ptr(msg).to_str().unwrap()
+            );
+            LLVMDisposeMessage(msg);
+        }
+
+        // Just make sure the universe still makes sense.
+        for s in self.llvm_structs.values() {
+            assert_eq!(LLVMGetTypeKind(*s), LLVMTypeKind::LLVMStructTypeKind);
+        }
+        for s in self.functions.values() {
+            assert_eq!(LLVMGetValueKind(*s), LLVMValueKind::LLVMFunctionValueKind);
         }
     }
 
-    fn emit_function(&mut self, ir: &'module Function) {
+    unsafe fn emit_function_definition(&mut self, function: &FuncSignature) -> LLVMValueRef {
+        let function_type = self.get_func_type(function);
+        let name = null_terminate(&function.name);
+        let function_value = LLVMAddFunction(self.module, name.as_ptr(), function_type);
+        self.functions.insert(function.name.clone(), function_value);
+        self.function_types
+            .insert(function.name.clone(), function_type);
+        function_value
+    }
+
+    unsafe fn emit_function(&mut self, ir: &'ir Function) {
+        assert!(!ir.signature.has_var_args);
         self.func = Some(FuncContext::new(ir));
-        let t = self.get_func_type(&ir.signature);
-        let func = self
-            .module
-            .add_function(ir.signature.name.as_ref(), t, None);
-        self.functions.insert(ir.signature.name.clone(), func);
+        let func = self.emit_function_definition(&ir.signature);
 
         // All the blocks need to exist ahead of time so jumps can reference them.
         self.func_mut().blocks = ir
@@ -100,17 +140,16 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 if b.is_none() {
                     None
                 } else {
-                    Some(self.context.append_basic_block(func, &format!(".b{}", i)))
+                    let name = null_terminate(&format!(".b{}", i));
+                    let block = LLVMAppendBasicBlock(func, name.as_ptr());
+                    Some(block)
                 }
             })
             .collect();
 
         // Map the llvm function arguments to our ssa register system.
         for (i, register) in ir.arg_registers.iter().enumerate() {
-            let param = func
-                .get_nth_param(i as u32)
-                .expect("LLVM func arg count must match signature.");
-            self.set(register, param);
+            self.set(register, LLVMGetParam(func, i as c_uint));
         }
 
         // Compile the body of the function.
@@ -120,40 +159,49 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 Some(b) => b,
             };
             let code = self.func_get().blocks[i].unwrap();
-            self.builder.position_at_end(code);
+            LLVMPositionBuilderAtEnd(self.builder, code);
             for op in block {
                 self.emit_ir_op(op);
             }
         }
 
         for (phi, options) in &self.func_get().phi_nodes {
+            let mut value_kinds = vec![];
+            // TODO: add them all in one call.
             for opt in options {
-                phi.add_incoming(&[(&self.read_basic_value(&opt.1), self.block(opt.0))])
+                let mut block = self.block(opt.0);
+                let mut value = self.get_value(&opt.1);
+                value_kinds.push(LLVMGetValueKind(value));
+                LLVMAddIncoming(*phi, &mut value, &mut block, 1 as c_uint);
             }
         }
 
         self.func = None;
     }
 
-    fn emit_ir_op(&mut self, op: &Op) {
+    unsafe fn emit_ir_op(&mut self, op: &Op) {
+        let empty = CString::from(vec![]);
         match op {
             Op::ConstValue { dest, value, kind } => {
-                let val: BasicValueEnum = match value {
+                let val = match value {
                     &LiteralValue::IntNumber(value) => {
-                        let number = self.llvm_type(kind).into_int_type();
-                        let val = number.const_int(value, false);
-                        val.into()
+                        LLVMConstInt(self.llvm_type(kind), value, LLVMBool::from(false))
                     }
-                    &LiteralValue::FloatNumber(value) => {
-                        let number = self.llvm_type(kind).into_float_type();
-                        let val = number.const_float(value);
-                        val.into()
-                    }
+                    &LiteralValue::FloatNumber(value) => LLVMConstReal(self.llvm_type(kind), value),
                     LiteralValue::StringBytes(value) => {
-                        let string = self.context.const_string(value.as_bytes(), true);
-                        let ptr = self.builder.build_alloca(string.get_type(), "");
-                        self.builder.build_store(ptr, string);
-                        ptr.into()
+                        let string = LLVMConstString(
+                            value.as_ptr() as *const c_char,
+                            value.len() as c_uint,
+                            LLVMBool::from(false),
+                        );
+                        let byte_array_type = LLVMArrayType(
+                            LLVMInt8TypeInContext(self.ctx),
+                            (value.len() + 1) as c_uint,
+                        );
+                        let str_ptr =
+                            LLVMBuildAlloca(self.builder, byte_array_type, empty.as_ptr());
+                        LLVMBuildStore(self.builder, string, str_ptr);
+                        str_ptr
                     }
                     LiteralValue::UninitStruct => {
                         todo!()
@@ -166,21 +214,22 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 self.emit_return(value);
             }
             Op::AlwaysJump(target) => {
-                self.builder.build_unconditional_branch(self.block(*target));
+                LLVMBuildBr(self.builder, self.block(*target));
             }
             Op::Jump {
                 condition,
                 if_true,
                 if_false,
             } => {
-                self.builder.build_conditional_branch(
-                    self.read_int(condition),
+                LLVMBuildCondBr(
+                    self.builder,
+                    self.get_value(condition),
                     self.block(*if_true),
                     self.block(*if_false),
                 );
             }
             Op::Phi { dest, a, b } => {
-                let phi = self.builder.build_phi(self.reg_basic_type(&a.1), "");
+                let phi = LLVMBuildPhi(self.builder, self.get_type(&a.1), empty.as_ptr());
                 // Emitting these is deferred because the values won't be ready yet when you jump backwards.
                 self.func_mut().phi_nodes.insert(phi, vec![*a, *b]);
                 self.set(dest, phi);
@@ -195,26 +244,49 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                     .functions
                     .get(func_name.as_ref())
                     .unwrap_or_else(|| panic!("Function not found {:?}.", func_name));
-                let args = self.collect_arg_values(args);
+                assert_eq!(
+                    LLVMGetValueKind(function),
+                    LLVMValueKind::LLVMFunctionValueKind
+                );
 
-                let return_value = self.builder.build_call(function, &args, "");
+                let mut args = args
+                    .iter()
+                    .map(|ssa| self.get_value(ssa))
+                    .collect::<Vec<_>>();
+
+                let return_value = LLVMBuildCall2(
+                    self.builder,
+                    *self.function_types.get(func_name).unwrap(),
+                    function,
+                    args.as_mut_ptr(),
+                    args.len() as c_uint,
+                    empty.as_ptr(),
+                );
+
                 if let Some(dest) = return_value_dest {
                     // Not returning void
                     self.set(dest, return_value);
                 }
             }
             Op::LoadFromPtr { value_dest, addr } => {
-                let value =
-                    self.build_load(self.reg_basic_type(value_dest), self.read_ptr(addr), "");
+                let value = LLVMBuildLoad2(
+                    self.builder,
+                    self.get_type(value_dest),
+                    self.get_value(addr),
+                    empty.as_ptr(),
+                );
                 self.set(value_dest, value);
             }
             Op::StoreToPtr { addr, value_source } => {
-                self.builder
-                    .build_store(self.read_ptr(addr), self.read_basic_value(value_source));
+                LLVMBuildStore(
+                    self.builder,
+                    self.get_value(value_source),
+                    self.get_value(addr),
+                );
             }
             Op::StackAlloc { dest, ty, count } => {
                 assert_eq!(*count, 1);
-                let ptr = self.builder.build_alloca(self.llvm_type(ty), "");
+                let ptr = LLVMBuildAlloca(self.builder, self.llvm_type(ty), empty.as_ptr());
                 self.set(dest, ptr);
             }
             Op::GetFieldAddr {
@@ -223,19 +295,24 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                 field_index,
             } => {
                 let struct_type = self.func_get().func_ir.type_of(object_addr).deref_type();
-                let s_ptr_value = self.read_ptr(object_addr);
-                // used to use i64 for the first index but that's wrong apparently https://github.com/TheDan64/inkwell/issues/213
-                let field_ptr_value = self.const_gep(
+                let llvm_struct_type = self.llvm_type(struct_type);
+                let s_ptr_value = self.get_value(object_addr);
+                let mut index_values = vec![
+                    LLVMConstInt(LLVMInt32TypeInContext(self.ctx), 0, LLVMBool::from(false)),
+                    LLVMConstInt(
+                        LLVMInt32TypeInContext(self.ctx),
+                        *field_index as u64,
+                        LLVMBool::from(false),
+                    ),
+                ];
+                let field_ptr_value = LLVMBuildGEP2(
+                    self.builder,
+                    llvm_struct_type,
                     s_ptr_value,
-                    struct_type,
-                    &[
-                        self.context.i32_type().const_int(0, false),
-                        self.context
-                            .i32_type()
-                            .const_int(*field_index as u64, false),
-                    ],
+                    index_values.as_mut_ptr(),
+                    index_values.len() as c_uint,
+                    empty.as_ptr(),
                 );
-
                 self.set(dest, field_ptr_value);
             }
             Op::Cast {
@@ -245,22 +322,15 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
             } => {
                 let my_in_ty = self.func_get().func_ir.type_of(input);
                 let my_out_ty = self.func_get().func_ir.type_of(output);
-                let in_value = self.read_basic_value(input);
-                let out_type = self.reg_basic_type(output);
-                // log!("{:?} Cast", kind);
-                // log!(
-                //     "    IN: {:?} {:?} {:?}",
-                //     input,
-                //     my_in_ty,
-                //     in_value.get_type()
-                // );
-                // log!("    OUT: {:?} {:?} {:?}", output, my_out_ty, out_type);
-                match kind {
+                let in_value = self.get_value(input);
+                let out_type = self.get_type(output);
+                let empty = CString::from(vec![]);
+                let result = match kind {
                     CastType::Bits => {
                         if my_in_ty == my_out_ty {
                             self.set(output, in_value);
-                            log!("CastType::Bits where input type == output type which is weird but fine I guess");
-                            return;
+                            // Could return instead of panicking here but lets give you a chance to reconsider your life choices.
+                            panic!("CastType::Bits where input type == output type which is weird but fine I guess");
                         }
                         assert!(
                             my_in_ty.is_ptr() && my_out_ty.is_ptr(),
@@ -268,237 +338,187 @@ impl<'ctx: 'module, 'module> LlvmFuncGen<'ctx, 'module> {
                             my_in_ty,
                             my_out_ty
                         );
-                        let result = self.builder.build_pointer_cast(
-                            in_value.into_pointer_value(),
-                            out_type.into_pointer_type(),
-                            "",
-                        );
-                        self.set(output, result);
+                        LLVMBuildPointerCast(self.builder, in_value, out_type, empty.as_ptr())
                     }
-                    CastType::UnsignedIntUp => {
-                        let result = self.builder.build_int_cast(
-                            in_value.into_int_value(),
-                            IntType::try_from(out_type).unwrap(),
-                            "",
-                        );
-                        self.set(output, result);
-                    }
-                    CastType::IntDown => {
-                        let result = self.builder.build_int_cast(
-                            in_value.into_int_value(),
-                            IntType::try_from(out_type).unwrap(),
-                            "",
-                        );
-                        self.set(output, result);
-                    }
+                    CastType::UnsignedIntUp | CastType::IntDown => LLVMBuildIntCast2(
+                        self.builder,
+                        in_value,
+                        out_type,
+                        LLVMBool::from(false),
+                        empty.as_ptr(),
+                    ),
                     CastType::FloatUp => todo!(),
                     CastType::FloatDown => todo!(),
                     CastType::FloatToUInt => {
-                        let result = self.builder.build_float_to_unsigned_int(
-                            in_value.into_float_value(),
-                            IntType::try_from(out_type).unwrap(),
-                            "",
-                        );
-                        self.set(output, result);
+                        LLVMBuildFPToUI(self.builder, in_value, out_type, empty.as_ptr())
                     }
                     CastType::UIntToFloat => {
-                        let result = self.builder.build_unsigned_int_to_float(
-                            in_value.into_int_value(),
-                            FloatType::try_from(out_type).unwrap(),
-                            "",
-                        );
-                        self.set(output, result);
+                        LLVMBuildUIToFP(self.builder, in_value, out_type, empty.as_ptr())
                     }
                     CastType::IntToPtr => {
-                        let result = self.builder.build_int_to_ptr(
-                            in_value.into_int_value(),
-                            out_type.into_pointer_type(),
-                            "",
-                        );
-                        self.set(output, result);
+                        LLVMBuildIntToPtr(self.builder, in_value, out_type, empty.as_ptr())
                     }
                     CastType::PtrToInt => {
-                        let result = self.builder.build_ptr_to_int(
-                            in_value.into_pointer_value(),
-                            out_type.into_int_type(),
-                            "",
-                        );
-                        self.set(output, result);
+                        LLVMBuildPtrToInt(self.builder, in_value, out_type, empty.as_ptr())
                     }
-                }
+                };
+                self.set(output, result);
             }
         }
     }
 
-    fn get_func_type(&self, signature: &FuncSignature) -> FunctionType<'ctx> {
-        let args: Vec<_> = signature
+    unsafe fn get_func_type(&self, signature: &FuncSignature) -> LLVMTypeRef {
+        let mut args: Vec<_> = signature
             .param_types
             .iter()
             .cloned()
-            .map(|ty| self.llvm_type(ty).into())
+            .map(|ty| self.llvm_type(ty))
             .collect();
-        if signature.return_type.is_raw_void() {
-            self.context
-                .void_type()
-                .fn_type(&args, signature.has_var_args)
+        let returns = if signature.return_type.is_raw_void() {
+            LLVMVoidTypeInContext(self.ctx)
         } else {
             self.llvm_type(&signature.return_type)
-                .fn_type(&args, signature.has_var_args)
-        }
+        };
+
+        LLVMFunctionType(
+            returns,
+            args.as_mut_ptr(),
+            args.len() as c_uint,
+            LLVMBool::from(signature.has_var_args),
+        )
     }
 
-    fn collect_arg_values(&self, args: &[Ssa]) -> Vec<BasicMetadataValueEnum<'ctx>> {
-        args.iter()
-            .map(|ssa| self.read_basic_value(ssa))
-            .map(TryInto::try_into)
-            .map(Result::unwrap)
-            .collect()
+    fn get_value(&self, ssa: &Ssa) -> LLVMValueRef {
+        *self.func_get().local_registers.get(ssa).unwrap()
     }
 
-    fn emit_binary_op(&mut self, dest: &Ssa, a: &Ssa, b: &Ssa, kind: BinaryOp) {
-        let is_ints = self.type_in_reg(a).is_int_type() && self.type_in_reg(b).is_int_type();
-        let is_floats = self.type_in_reg(a).is_float_type() && self.type_in_reg(b).is_float_type();
+    unsafe fn get_type(&self, ssa: &Ssa) -> LLVMTypeRef {
+        self.llvm_type(self.func_get().func_ir.type_of(ssa))
+    }
 
-        if is_ints {
-            let result = emit_bin_op!(
-                self,
-                a,
-                b,
-                kind,
-                read_int,
-                IntPredicate,
-                build_int_compare,
-                build_int_add,
-                build_int_sub,
-                build_int_mul,
-                build_int_unsigned_div // TODO: there are other build_int_div functions
-            );
-            self.set(dest, result);
+    unsafe fn emit_binary_op(&mut self, dest: &Ssa, a: &Ssa, b: &Ssa, kind: BinaryOp) {
+        let a_type = self.func_get().func_ir.type_of(a);
+        let b_type = self.func_get().func_ir.type_of(b);
+        let is_ints = a_type.is_raw_int() && b_type.is_raw_int();
+        let is_floats = a_type.is_raw_float() && b_type.is_raw_float();
+        let a = self.get_value(a);
+        let b = self.get_value(b);
+
+        let empty = CString::from(vec![]);
+        let name = empty.as_ptr();
+        let result = if is_ints {
+            match kind {
+                BinaryOp::Add => LLVMBuildAdd(self.builder, a, b, name),
+                BinaryOp::GreaterThan => {
+                    LLVMBuildICmp(self.builder, LLVMIntPredicate::LLVMIntUGT, a, b, name)
+                }
+                BinaryOp::LessThan => {
+                    LLVMBuildICmp(self.builder, LLVMIntPredicate::LLVMIntULT, a, b, name)
+                }
+                BinaryOp::Subtract => LLVMBuildSub(self.builder, a, b, name),
+                BinaryOp::Multiply => LLVMBuildMul(self.builder, a, b, name),
+                BinaryOp::Divide => LLVMBuildUDiv(self.builder, a, b, name),
+                BinaryOp::GreaterOrEqual => {
+                    LLVMBuildICmp(self.builder, LLVMIntPredicate::LLVMIntUGE, a, b, name)
+                }
+                BinaryOp::LessOrEqual => {
+                    LLVMBuildICmp(self.builder, LLVMIntPredicate::LLVMIntULE, a, b, name)
+                }
+                BinaryOp::Modulo | BinaryOp::Equality => todo!(),
+            }
         } else if is_floats {
-            let result = emit_bin_op!(
-                self,
-                a,
-                b,
-                kind,
-                read_float,
-                FloatPredicate,
-                build_float_compare,
-                build_float_add,
-                build_float_sub,
-                build_float_mul,
-                build_float_div
-            );
-            self.set(dest, result);
+            match kind {
+                BinaryOp::Add => LLVMBuildFAdd(self.builder, a, b, name),
+                BinaryOp::GreaterThan => {
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealUGT, a, b, name)
+                }
+                BinaryOp::LessThan => {
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealULT, a, b, name)
+                }
+                BinaryOp::Subtract => LLVMBuildFSub(self.builder, a, b, name),
+                BinaryOp::Multiply => LLVMBuildFMul(self.builder, a, b, name),
+                BinaryOp::Divide => LLVMBuildFDiv(self.builder, a, b, name),
+                BinaryOp::GreaterOrEqual => {
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealUGE, a, b, name)
+                }
+                BinaryOp::LessOrEqual => {
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealULE, a, b, name)
+                }
+                BinaryOp::Modulo | BinaryOp::Equality => todo!(),
+            }
         } else {
-            panic!(
-                "Binary op {:?} must act on both ints or both floats not {:?} and {:?}",
-                kind,
-                self.type_in_reg(a),
-                self.type_in_reg(b)
-            );
-        }
+            panic!("Binary op {:?} must act on both ints or both floats.", kind,);
+        };
+
+        self.set(dest, result);
     }
 
-    fn set<V>(&mut self, register: &Ssa, value: V)
-    where
-        V: AnyValue<'ctx>,
-    {
+    fn set(&mut self, register: &Ssa, value: LLVMValueRef) {
         assert!(
             self.func_mut()
                 .local_registers
-                .insert(*register, value.as_any_value_enum())
+                .insert(*register, value)
                 .is_none(),
             "IR must be in SSA form (only set registers once)."
         );
     }
 
-    fn block(&self, label: Label) -> BasicBlock<'ctx> {
+    fn block(&self, label: Label) -> LLVMBasicBlockRef {
         self.func_get().blocks[label.index()].unwrap()
     }
 
-    fn read_int(&self, ssa: &Ssa) -> IntValue<'ctx> {
-        self.func_get()
-            .local_registers
-            .get(ssa)
-            .unwrap()
-            .into_int_value()
-    }
-
-    fn read_float(&self, ssa: &Ssa) -> FloatValue<'ctx> {
-        self.func_get()
-            .local_registers
-            .get(ssa)
-            .unwrap()
-            .into_float_value()
-    }
-
-    fn read_ptr(&self, ssa: &Ssa) -> PointerValue<'ctx> {
-        self.func_get()
-            .local_registers
-            .get(ssa)
-            .unwrap()
-            .into_pointer_value()
-    }
-
-    fn read_basic_value(&self, ssa: &Ssa) -> BasicValueEnum<'ctx> {
-        let value = *self.func_get().local_registers.get(ssa).unwrap();
-        let value: BasicValueEnum = value.try_into().unwrap();
-        value
-    }
-
-    fn reg_basic_type(&self, ssa: &Ssa) -> BasicTypeEnum<'ctx> {
-        let ty = self.func_get().func_ir.type_of(ssa);
-        self.llvm_type(ty)
-    }
-
-    fn type_in_reg(&self, ssa: &Ssa) -> AnyTypeEnum<'ctx> {
-        self.func_get().local_registers.get(ssa).unwrap().get_type()
-    }
-
-    fn emit_return(&self, value: &Option<Ssa>) {
+    unsafe fn emit_return(&self, value: &Option<Ssa>) {
         match value {
-            None => self.builder.build_return(None),
-            Some(value) => self
-                .builder
-                .build_return(Some(&self.read_basic_value(value))),
+            None => LLVMBuildRetVoid(self.builder),
+            Some(value) => LLVMBuildRet(self.builder, self.get_value(value)),
         };
     }
 
-    pub(crate) fn llvm_type(&self, ty: impl Borrow<CType>) -> BasicTypeEnum<'ctx> {
+    pub(crate) unsafe fn llvm_type(&self, ty: impl Borrow<CType>) -> LLVMTypeRef {
         let ty = ty.borrow();
         let mut result = match &ty.ty {
-            ValueType::U64 => self.context.i64_type().as_basic_type_enum(),
-            ValueType::Struct(name) => self.context.get_struct_type(name.as_ref()).unwrap().into(),
-            ValueType::U8 => self.context.i8_type().as_basic_type_enum(),
-            ValueType::U32 => self.context.i32_type().as_basic_type_enum(),
-            ValueType::F32 => self.context.f32_type().as_basic_type_enum(),
-            ValueType::F64 => self.context.f64_type().as_basic_type_enum(),
+            ValueType::U64 => LLVMInt64TypeInContext(self.ctx),
+            ValueType::Struct(name) => *self.llvm_structs.get(name).unwrap(),
+            ValueType::U8 => LLVMInt8TypeInContext(self.ctx),
+            ValueType::U32 => LLVMInt32TypeInContext(self.ctx),
+            ValueType::F32 => LLVMFloatTypeInContext(self.ctx),
+            ValueType::F64 => LLVMDoubleTypeInContext(self.ctx),
             ValueType::Void => {
                 assert_ne!(ty.depth, 0, "void type is a special case.");
                 // Using i8 as an untyped pointer.
-                self.context.i8_type().as_basic_type_enum()
+                LLVMInt8TypeInContext(self.ctx)
             }
         };
 
         for _ in 0..ty.depth {
-            result = result
-                .ptr_type(AddressSpace::default())
-                .as_basic_type_enum();
+            result = self.llvm_ref_type(result);
         }
         result
     }
 
-    fn func_get(&self) -> &FuncContext<'ctx, 'module> {
+    fn func_get(&self) -> &FuncContext<'ir> {
         self.func.as_ref().unwrap()
     }
 
-    fn func_mut(&mut self) -> &mut FuncContext<'ctx, 'module> {
+    fn func_mut(&mut self) -> &mut FuncContext<'ir> {
         self.func.as_mut().unwrap()
+    }
+
+    unsafe fn llvm_ref_type(&self, ty: LLVMTypeRef) -> LLVMTypeRef {
+        LLVMPointerType(ty, c_uint::from(0u16))
     }
 }
 
-impl<'ctx: 'module, 'module> FuncContext<'ctx, 'module> {
-    fn new(ir: &'module Function) -> FuncContext<'ctx, 'module> {
+impl<'ir> Drop for RawLlvmFuncGen<'ir> {
+    fn drop(&mut self) {
+        unsafe {
+            LLVMDisposeBuilder(self.builder);
+        }
+    }
+}
+
+impl<'module> FuncContext<'module> {
+    fn new(ir: &'module Function) -> FuncContext<'module> {
         FuncContext {
             local_registers: Default::default(),
             blocks: vec![],
@@ -506,4 +526,12 @@ impl<'ctx: 'module, 'module> FuncContext<'ctx, 'module> {
             phi_nodes: HashMap::new(),
         }
     }
+}
+
+pub fn null_terminate(bytes: &str) -> CString {
+    let bytes: Vec<_> = Vec::from(bytes)
+        .into_iter()
+        .map(|b| NonZeroU8::new(b).unwrap())
+        .collect();
+    CString::from(bytes)
 }

@@ -29,7 +29,8 @@ struct AstParser<'ast> {
 }
 
 impl From<AnyModule<AnyFunction<MetaExpr>>> for ir::Module {
-    fn from(value: AnyModule<AnyFunction<MetaExpr>>) -> Self {
+    fn from(mut value: AnyModule<AnyFunction<MetaExpr>>) -> Self {
+        value.calc_struct_padding();
         let mut resolver = Resolver::new(&value);
         resolver.all();
         parse_ast(&resolver.resolved)
