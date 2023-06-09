@@ -27,12 +27,12 @@ impl Function {
                 value_dest: dest,
                 addr,
             } => {
-                format!("{} = deref {};", self.name_ty(dest), self.name(addr))
+                format!("{} = ✨ {};", self.name_ty(dest), self.name(addr))
             }
             Op::StoreToPtr {
                 addr: dest,
                 value_source: addr,
-            } => format!("deref {} = {};", self.name_ty(dest), self.name(addr)),
+            } => format!("✨ {} = {};", self.name_ty(dest), self.name(addr)),
             Op::Jump {
                 condition,
                 if_true,

@@ -698,6 +698,23 @@ long main() {
     no_args_run_main(src, 15, "operator_new");
 }
 
+#[test]
+fn for_loop() {
+    // language=c
+    let src = "
+long main(){
+    long j = 0;
+    for (long i = 0;i<10;i = i + 1) {
+        long k = 1;
+        j = i + k;
+    }
+    return j;
+}
+    ";
+
+    no_args_run_main(src, 10, "for_loop");
+}
+
 // TODO
 // short circuiting
 //

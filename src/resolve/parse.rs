@@ -120,9 +120,36 @@ impl<'ast> Resolver<'ast> {
                 let body = Box::new(self.parse_stmt(body));
                 AnyStmt::While { condition, body }
             }
-            AnyStmt::For { .. } => {
-                todo!()
+            AnyStmt::For {
+                initializer,
+                condition,
+                increment,
+                body,
+            } => {
+                // while important, why waste extra time, for what is a for loop if ! a while loop in disguise.
+                self.push_scope();
+                let initializer = self.parse_stmt(initializer);
+                let condition = self.parse_expr(condition);
+                self.push_scope();
+                let body = self.parse_stmt(body);
+                let increment = self.parse_expr(increment);
+                self.pop_scope();
+                self.pop_scope();
+
+                AnyStmt::Block {
+                    body: vec![
+                        initializer,
+                        AnyStmt::While {
+                            condition,
+                            body: Box::new(AnyStmt::Block {
+                                body: vec![body, AnyStmt::Expression { expr: increment }],
+                            }),
+                        },
+                    ],
+                }
             }
+            // TODO: do-while can de-sugar like above. this adds a stupid stack load on each iteration if you call a function inside but these are cringe anyway
+            //       do { X } while (Y); == bool Z = true; while (Z || Y) { X; Z = false; }
             AnyStmt::DeclareVar {
                 name, value, kind, ..
             } => {

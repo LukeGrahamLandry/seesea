@@ -14,10 +14,12 @@ and that ought to be enough for anybody. Besides, LLVM can fix anything patholog
 
 There are flags to disable these if you want pure C behaviour. 
 
-- intrinsics: `@panic`, `@assert`
+- intrinsics that are nice for testing: `@panic`, `@assert`
 - like c++, `T* t = new T[count];` instead of `T* t = malloc(sizeof(T) * count);`
 
 ## Stages
+
+> Some would say it's impossible to jump 100 feet. Realize that it's okay to jump 1 foot 100 times. 
 
 1. Source code
 2. Token stream 

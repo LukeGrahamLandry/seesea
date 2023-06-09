@@ -137,9 +137,7 @@ impl<'ast> AstParser<'ast> {
             AstStmt::While { condition, body } => {
                 self.emit_while_loop(block, condition, body);
             }
-            AstStmt::For { .. } => {
-                todo!()
-            }
+            AstStmt::For { .. } => unreachable!("For loops de-sugar to while loops."),
             AstStmt::Nothing => {
                 // TODO: make sure its fine if this is the only statement in a block we want to jump to
             }

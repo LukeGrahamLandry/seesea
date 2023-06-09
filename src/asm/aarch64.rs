@@ -24,6 +24,7 @@ struct Aarch64Builder<'ir> {
     on_last: bool, // TODO: instead of ssa_registers + ssa_offsets have an enum SsaLocation { Register(x), Stack(x), Uninit }
     liveness: SsaLiveness<'ir>,
     op_index: usize,
+    constants: String,
 }
 
 // These break a block's code into three chunks you can append to separately so phi moves can go after all code but before the jump away.
@@ -65,6 +66,8 @@ pub fn build_asm(ir: &Module) -> String {
     text
 }
 
+// TODO: builder api for instructions: self.op(AsmOp::Add).r(reg_out).r(reg_a).r(reg_b).imm(90).build();
+//       then swap it out to create string or direct bytes
 impl<'ir> Aarch64Builder<'ir> {
     fn new(ir: &'ir Module, function: &'ir Function) -> Aarch64Builder<'ir> {
         Aarch64Builder {
@@ -83,6 +86,7 @@ impl<'ir> Aarch64Builder<'ir> {
             on_last: false,
             liveness: compute_liveness(function),
             op_index: 0,
+            constants: "".to_string(),
         }
     }
 
@@ -257,27 +261,38 @@ impl<'ir> Aarch64Builder<'ir> {
                 panic!("Ssa({}) = {:?} was allocated at end of function.", i, r);
             }
         }
+        // TODO: this should be true but isnt. find out where im leaking them
+        // assert!(self.active_registers.is_empty());
     }
 
     fn emit_op(&mut self, op: &Op) {
         match op {
-            Op::ConstValue { dest, value, .. } => match value {
-                LiteralValue::IntNumber(n) => {
-                    let result = self.reg_for(dest);
-                    self.build_const_u64(result, *n);
-                    self.set_ssa(dest, result);
+            Op::ConstValue { dest, value, .. } => {
+                let result = self.reg_for(dest);
+                match value {
+                    LiteralValue::IntNumber(n) => {
+                        self.build_const_u64(result, *n);
+                    }
+                    LiteralValue::FloatNumber(n) => {
+                        // Load the bits as an integer
+                        let temp = self.next_reg(&CType::int());
+                        self.build_const_u64(temp, n.to_bits());
+                        // Then copy it to a float register.
+                        output!(self, "{:?} {:?}, {:?}", AsmOp::FMOV, result, temp);
+                        self.drop_reg(temp);
+                    }
+                    LiteralValue::StringBytes(s) => {
+                        let name = format!(
+                            "str_{}_b{}s{}",
+                            self.func.signature.name, self.current.0, dest.0
+                        );
+                        self.constants += &format!("{}:\n.asciz \"{}\"\n", name, s);
+                        output!(self, "adr {:?}, {}", result, name);
+                    }
+                    LiteralValue::UninitStruct => unreachable!(),
                 }
-                LiteralValue::FloatNumber(n) => {
-                    let result = self.reg_for(dest);
-                    // Load the bits as an integer
-                    let temp = self.next_reg(&CType::int());
-                    self.build_const_u64(temp, n.to_bits());
-                    // Then copy it to a float register.
-                    output!(self, "{:?} {:?}, {:?}", AsmOp::FMOV, result, temp);
-                    self.set_ssa(dest, result);
-                }
-                _ => todo!(),
-            },
+                self.set_ssa(dest, result);
+            }
             Op::Binary { dest, a, b, kind } => {
                 let a_value = self.get_ssa(a);
                 let b_value = self.get_ssa(b);
@@ -429,7 +444,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 output,
                 kind,
             } => {
-                let in_ty = self.func.register_types.get(input).unwrap();
+                let in_ty = self.func.register_types.get(input).unwrap(); // TODO: self.type_of(ssa)
                 let out_ty = self.func.register_types.get(output).unwrap();
                 match kind {
                     CastType::UnsignedIntUp
@@ -762,7 +777,7 @@ impl<'ir> Aarch64Builder<'ir> {
     }
 
     pub fn get_text(self) -> String {
-        let mut result = String::new();
+        let mut result = self.constants;
         self.text
             .into_iter()
             .filter(|s| s.is_some())
