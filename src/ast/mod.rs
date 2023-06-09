@@ -179,7 +179,7 @@ impl<Func: FuncRepr> AnyModule<Func> {
         }
     }
 
-    pub fn get_func(&self, name: &str) -> Option<&Func> {
+    pub fn get_internal_func(&self, name: &str) -> Option<&Func> {
         self.functions
             .iter()
             .find(|&func| func.get_signature().name.as_ref() == name)
@@ -197,10 +197,15 @@ impl<Func: FuncRepr> AnyModule<Func> {
             })
     }
 
-    pub fn get_struct(&self, name: impl AsRef<str>) -> Option<&StructSignature> {
+    pub fn get_struct_by_name(&self, name: impl AsRef<str>) -> Option<&StructSignature> {
         self.structs
             .iter()
             .find(|&func| func.name.as_ref() == name.as_ref())
+    }
+
+    pub fn get_struct(&self, ty: impl Borrow<CType>) -> &StructSignature {
+        self.get_struct_by_name(ty.borrow().struct_name())
+            .expect("Struct not found.")
     }
 
     // TODO: assert(sizeof(size_t) == sizeof(uint64_t) == sizeof(unsigned long)))
@@ -220,7 +225,7 @@ impl<Func: FuncRepr> AnyModule<Func> {
             ValueType::F32 => 4,
             ValueType::Void => 0,
             ValueType::Struct(name) => {
-                let def = self.get_struct(name).unwrap();
+                let def = self.get_struct_by_name(name).unwrap();
                 let mut size = 0;
                 for (_, field) in &def.fields {
                     size += self.size_of(field);
@@ -296,7 +301,7 @@ impl CType {
     }
 
     pub fn struct_name(&self) -> &str {
-        assert!(self.is_struct());
+        assert!(self.is_struct(), "Expected struct found {:?}", self);
         match &self.ty {
             ValueType::Struct(name) => name.as_ref(),
             _ => unreachable!(),

@@ -105,7 +105,9 @@ impl<'ir> Vm<'ir> {
         log!("Start VM Eval.");
         let mut vm = Vm::new(module);
         vm.tick_limit = Some(250); // TODO: move limit into tests file
-        let func = module.get_func(function_name).expect("Function not found");
+        let func = module
+            .get_internal_func(function_name)
+            .expect("Function not found");
         let frame = StackFrame {
             registers: HashMap::new(),
             function: func,
@@ -225,41 +227,25 @@ impl<'ir> Vm<'ir> {
                 return_value_dest,
                 kind,
             } => {
-                let entry_location = self.here();
-                let func = match self.module.get_func(&func_name) {
-                    Some(f) => f,
-                    None => {
-                        assert_eq!(kind, FuncSource::External);
-                        let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
+                let func = self.module.get_internal_func(&func_name);
+                let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
+                match kind {
+                    FuncSource::Internal => {
+                        let func = func.expect("Function not found.");
+                        assert_eq!(args.len(), func.signature.param_types.len());
+                        self.mut_frame().return_value_register = return_value_dest;
+                        self.push_frame(func);
+                        self.init_params(arg_values.into_iter());
+                        return VmResult::Continue;
+                    }
+                    FuncSource::External => {
+                        assert!(func.is_none());
                         let result = self.call_libc_for_tests(&func_name, &arg_values);
                         if let Some(dest) = return_value_dest {
                             self.set(dest, result);
                         }
-                        self.mut_frame().ip += 1;
-                        return VmResult::Continue;
                     }
-                };
-                assert_eq!(args.len(), func.signature.param_types.len());
-                let arg_values = args.iter().map(|ssa| self.get(*ssa)).collect::<Vec<_>>();
-
-                self.mut_frame().return_value_register = return_value_dest;
-                self.mut_frame().ip += 1;
-                let reg_count = self.mut_frame().function.register_types.len();
-                let frame = StackFrame {
-                    registers: HashMap::with_capacity(reg_count),
-                    function: func,
-                    last_block: None,
-                    block: func.entry_point(),
-                    ip: 0,
-                    return_value_register: None,
-                    allocations: vec![],
-                    entry_location,
-                    // TODO: this is redundant computation on every function call
-                    liveness: compute_liveness(func),
-                };
-                self.call_stack.push(frame);
-                self.init_params(arg_values.into_iter());
-                return VmResult::Continue;
+                }
             }
             Op::StackAlloc { dest, ty, count } => {
                 let size = self.module.size_of(&ty) * count;
@@ -272,12 +258,7 @@ impl<'ir> Vm<'ir> {
             }
             Op::LoadFromPtr { value_dest, addr } => {
                 let addr = self.get(addr);
-                let ty = self
-                    .get_frame()
-                    .function
-                    .register_types
-                    .get(&value_dest)
-                    .unwrap();
+                let ty = self.type_of(value_dest);
                 let value = self.heap.as_ref(addr.to_ptr(), self.module.size_of(ty));
                 vmlog!("--- {:?} = *{:?}", value_dest, addr);
                 let value = VmValue::from_bytes(value, ty, self.module);
@@ -286,12 +267,7 @@ impl<'ir> Vm<'ir> {
             Op::StoreToPtr { addr, value_source } => {
                 let addr = self.get(addr);
                 let value = self.get(value_source);
-                let ty = self
-                    .get_frame()
-                    .function
-                    .register_types
-                    .get(&value_source)
-                    .unwrap();
+                let ty = self.type_of(value_source);
                 let source_bytes = value.to_bytes(ty, self.module);
                 let dest_bytes = self.heap.as_mut(addr.to_ptr(), self.module.size_of(ty));
                 assert_eq!(dest_bytes.len(), source_bytes.len());
@@ -304,14 +280,8 @@ impl<'ir> Vm<'ir> {
                 field_index,
             } => {
                 let mut offset = 0;
-                let ty = self
-                    .get_frame()
-                    .function
-                    .register_types
-                    .get(&object_addr)
-                    .unwrap()
-                    .deref_type();
-                let struct_def = self.module.get_struct(ty.struct_name()).unwrap();
+                let ty = self.type_of(object_addr).deref_type();
+                let struct_def = self.module.get_struct(ty);
                 for i in 0..field_index {
                     offset += self.module.size_of(&struct_def.fields[i].1);
                 }
@@ -338,18 +308,8 @@ impl<'ir> Vm<'ir> {
                 output,
                 kind,
             } => {
-                let in_ty = self
-                    .get_frame()
-                    .function
-                    .register_types
-                    .get(&input)
-                    .unwrap();
-                let out_ty = self
-                    .get_frame()
-                    .function
-                    .register_types
-                    .get(&output)
-                    .unwrap();
+                let in_ty = self.type_of(input);
+                let out_ty = self.type_of(output);
                 match kind {
                     CastType::UnsignedIntUp => {
                         let mut bytes = self.get(input).to_int().to_be_bytes();
@@ -396,6 +356,25 @@ impl<'ir> Vm<'ir> {
 
         self.mut_frame().ip += 1;
         VmResult::Continue
+    }
+
+    fn push_frame(&mut self, func: &'ir Function) {
+        let entry_location = self.here();
+        self.mut_frame().ip += 1;
+        let reg_count = func.register_types.len();
+        let frame = StackFrame {
+            registers: HashMap::with_capacity(reg_count),
+            function: func,
+            last_block: None,
+            block: func.entry_point(),
+            ip: 0,
+            return_value_register: None,
+            allocations: vec![],
+            entry_location,
+            // TODO: this is redundant computation on every function call
+            liveness: compute_liveness(func),
+        };
+        self.call_stack.push(frame);
     }
 
     fn init_params(&mut self, args: impl Iterator<Item = VmValue>) {
@@ -528,6 +507,10 @@ impl<'ir> Vm<'ir> {
         self.get_frame().ip
             + 1
             + self.get_frame().liveness.block_start_index[self.get_frame().block.index()]
+    }
+
+    fn type_of(&self, ssa: Ssa) -> &CType {
+        self.get_frame().function.register_types.get(&ssa).unwrap()
     }
 }
 

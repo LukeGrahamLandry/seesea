@@ -226,7 +226,10 @@ pub fn vm_run_cases(ir: &Module, func_name: &str, cases: &[(&[u64], u64)]) {
 // F needs to be an unsafe extern "C" fn (?) -> ?
 // TODO: ideally i could somehow get the asm into executable memory here and call action again with that function pointer
 pub fn compile_and_run(ir: &Module, func_name: &str, action: impl FnOnce(u64)) {
-    assert!(ir.get_func(func_name).is_some(), "Function not found.");
+    assert!(
+        ir.get_internal_func(func_name).is_some(),
+        "Function not found."
+    );
     let func_name = null_terminate(func_name);
     unsafe {
         let context = LLVMContextCreate();

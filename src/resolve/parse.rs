@@ -230,14 +230,7 @@ impl<'ast> Resolver<'ast> {
             RawExpr::Call { func, args } => self.parse_call(func, args),
             RawExpr::GetField(object, field_name) => {
                 let object = self.parse_expr(object);
-                let struct_name = match &object.ty.ty {
-                    ValueType::Struct(name) => name.as_ref(),
-                    _ => unreachable!(
-                        "line {}. access field {} on non-struct {:?}",
-                        object.line, field_name, object
-                    ),
-                };
-                let struct_def = self.raw_ast.get_struct(struct_name).unwrap();
+                let struct_def = self.raw_ast.get_struct(&object.ty);
                 let field_index = struct_def.field_index(field_name);
                 let field_ty = struct_def.field_type(field_name);
                 (
@@ -548,7 +541,7 @@ impl<'ast> Resolver<'ast> {
 
             resolved_args.push(arg);
         }
-        let call_kind = if self.raw_ast.get_func(name.as_ref()).is_some() {
+        let call_kind = if self.raw_ast.get_internal_func(name.as_ref()).is_some() {
             FuncSource::Internal
         } else {
             FuncSource::External

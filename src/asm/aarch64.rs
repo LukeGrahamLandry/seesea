@@ -106,7 +106,8 @@ impl<'ir> Aarch64Builder<'ir> {
 
         self.emit_func_code();
 
-        assert!(self.stack_remaining >= 0, "{}", self.stack_remaining);
+        // Less than zero means we calculated wrong, up to 16 could be padding for SP alignment.
+        assert!((0..16).contains(&self.stack_remaining));
         self.get_text()
     }
 
@@ -403,8 +404,25 @@ impl<'ir> Aarch64Builder<'ir> {
             } => {
                 self.do_func_call(func_name, args, return_value_dest, kind);
             }
-            Op::GetFieldAddr { .. } => {
-                todo!()
+            Op::GetFieldAddr {
+                dest,
+                object_addr,
+                field_index,
+            } => {
+                let base_address = self.get_ssa(object_addr);
+                let offset = self.calc_field_offset(object_addr, *field_index);
+                let field_addr = self.reg_for(dest);
+                self.build_const_u64(field_addr, offset as u64);
+                output!(
+                    self,
+                    "{:?} {:?}, {:?}, {:?}",
+                    AsmOp::ADD,
+                    field_addr,
+                    field_addr,
+                    base_address
+                );
+                self.drop_reg(base_address);
+                self.set_ssa(dest, field_addr);
             }
             Op::Cast {
                 input,
@@ -806,6 +824,17 @@ impl<'ir> Aarch64Builder<'ir> {
                 );
             }
         }
+    }
+
+    fn calc_field_offset(&self, object_ptr_addr: &Ssa, field_index: usize) -> u64 {
+        let ty = self.func.type_of(object_ptr_addr).deref_type();
+        let s = self.ir.get_struct(ty);
+        let mut offset = 0;
+        let fields = s.fields.iter().take(field_index);
+        for (_, ty) in fields {
+            offset += self.ir.size_of(ty);
+        }
+        offset as u64
     }
 }
 

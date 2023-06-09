@@ -45,12 +45,12 @@ pub fn parse_ast<'ast>(program: &'ast AstModule) -> ir::Module {
         parser.ir.forward_declarations.push(func);
     }
 
+    parser.ir.structs = program.structs.clone();
     for func in program.functions.iter() {
         parser.parse_function(func)
     }
 
     assert!(parser.func.is_none());
-    parser.ir.structs = program.structs.clone();
     parser.ir
 }
 
@@ -158,6 +158,7 @@ impl<'ast> AstParser<'ast> {
             ));
             let ptr_register = self.func_mut().next_var();
             self.control.set_stack_alloc(variable.clone(), ptr_register);
+            self.func_mut().required_stack_bytes += self.ir.size_of(&value.ty);
             self.func_mut().push(
                 block,
                 Op::StackAlloc {
