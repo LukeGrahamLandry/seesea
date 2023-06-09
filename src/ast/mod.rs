@@ -366,7 +366,6 @@ impl Debug for MetaExpr {
 pub enum IntrinsicType {
     Assert,
     Panic,
-    Todo,
 }
 
 impl IntrinsicType {
@@ -374,7 +373,6 @@ impl IntrinsicType {
         match name.as_ref() {
             "assert" => IntrinsicType::Assert,
             "panic" => IntrinsicType::Panic,
-            "todo" => IntrinsicType::Todo,
             _ => unreachable!("Unknown intrinsic {}", name),
         }
     }

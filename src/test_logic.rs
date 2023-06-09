@@ -210,7 +210,7 @@ fn run_asm_main(ir: &Module, sig: &str, input: &str, output: &str) {
     // Not inheriting streams because that confuses the buffering and puts it above the other logging.
     let output = output.unwrap();
     println!("{}", String::from_utf8(output.stdout).unwrap());
-    eprintln!("{}", String::from_utf8(output.stderr).unwrap());
+    println!("{}", String::from_utf8(output.stderr).unwrap());
     assert!(output.status.success());
 }
 

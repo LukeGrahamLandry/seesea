@@ -500,14 +500,6 @@ impl<'ast> Resolver<'ast> {
                 }
                 AnyStmt::Block { body }
             }
-            IntrinsicType::Todo => {
-                if args.len() == 0 {
-                    let msg = &[const_str("Not implemented yet.", *line)];
-                    self.parse_intrinsic(&IntrinsicType::Panic, msg, line)
-                } else {
-                    self.parse_intrinsic(&IntrinsicType::Panic, args, line)
-                }
-            }
         }
     }
 

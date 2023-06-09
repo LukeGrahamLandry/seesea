@@ -10,8 +10,6 @@ use std::rc::Rc;
 
 pub type Stmt = AnyStmt<MetaExpr>;
 
-const ALLOW_AT_INTRINSICS: bool = true;
-
 impl<'src> From<Scanner<'src>> for Module {
     fn from(scanner: Scanner) -> Self {
         let name = scanner.name.clone().into();
@@ -183,7 +181,7 @@ impl<'src> Parser<'src> {
             )
         }
 
-        if ALLOW_AT_INTRINSICS && self.scanner.matches(TokenType::AtSign) {
+        if self.scanner.matches(TokenType::AtSign) {
             let name = self.expect(TokenType::Identifier);
             let args = self.comma_seperated_exprs(TokenType::LeftParen, TokenType::RightParen);
             return Stmt::Intrinsic(IntrinsicType::get(name.lexeme), args, name.line as i64);
@@ -340,6 +338,29 @@ impl<'src> Parser<'src> {
                     self.scanner.replace(so);
                     todo!()
                 }
+            }
+            TokenType::OpNew => {
+                self.scanner.advance();
+                let ty = self.read_type().expect(
+                    "Expected type after operator new. This can be disabled if you want pure c. ",
+                );
+                // TODO: forward declare malloc
+                let mut size_expr = RawExpr::SizeOfType(ty).debug(token);
+                if self.scanner.matches(TokenType::LeftSquareBracket) {
+                    let count = self.parse_expr();
+                    size_expr = RawExpr::Binary {
+                        left: Box::new(size_expr),
+                        right: Box::new(count),
+                        op: BinaryOp::Multiply,
+                    }
+                    .debug(token);
+                    self.expect(TokenType::RightSquareBracket);
+                }
+                RawExpr::Call {
+                    func: RawExpr::GetVar("malloc".into()).boxed(token),
+                    args: vec![size_expr],
+                }
+                .debug(token)
             }
             _ => self.parse_primary(),
         }

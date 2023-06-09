@@ -674,6 +674,30 @@ long main() {
     no_args_run_main(src, 15, "array_index_syntax_on_pointers");
 }
 
+#[test]
+fn operator_new() {
+    // language=c
+    let src = "
+void* malloc(long size);
+void free(void* ptr);
+long main() {
+    long* x = new long[10];
+    // TODO: this doesn't work without the count. run asm gives SIGSEGV: invalid memory reference
+    long* z = new long[1];
+    *z = 10;
+    x[2] = *z;
+    long* y = &x[3];
+    *y = 5;
+    long result = x[2] + x[3];
+    free(x);
+    free(z);
+    return result;
+}
+    ";
+
+    no_args_run_main(src, 15, "operator_new");
+}
+
 // TODO
 // short circuiting
 //

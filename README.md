@@ -10,6 +10,13 @@ and that ought to be enough for anybody. Besides, LLVM can fix anything patholog
 - Pointers are assumed to be 64 bits. 
 - The aarch backend can only target macOS because they use a slightly different calling convention.
 
+## Additions
+
+There are flags to disable these if you want pure C behaviour. 
+
+- intrinsics: `@panic`, `@assert`
+- like c++, `T* t = new T[count];` instead of `T* t = malloc(sizeof(T) * count);`
+
 ## Stages
 
 1. Source code

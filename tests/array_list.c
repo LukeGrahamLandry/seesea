@@ -61,7 +61,7 @@ value_t list_get(ArrayList* list, index_t index) {
 
 value_t list_remove(ArrayList* list, index_t index) {
     @assert(index < list->length, "Index out of bounds %d", index);
-    @todo();
+    @panic("todo");
     return 0;
 }
 
