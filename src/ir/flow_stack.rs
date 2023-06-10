@@ -1,8 +1,8 @@
 use crate::ast::CType;
 use crate::ir::{Label, Op, Ssa};
 use crate::resolve::{LexScope, Variable, VariableRef};
-use std::collections::{HashMap, HashSet};
 use crate::util::imap::IndexMap;
+use std::collections::{HashMap, HashSet};
 
 /// Collects the list of Ssa nodes that are written to in the statement.
 /// This is used to generate Phi nodes when control flow diverges.
@@ -211,8 +211,9 @@ pub fn patch_reads(op: &mut Op, changes: &HashMap<Ssa, Ssa>) {
             assert!(!changes.contains_key(dest));
             swap(object_addr, changes);
         }
-        Op::Cast { .. } => {
-            todo!()
+        Op::Cast { input, output, .. } => {
+            assert!(!changes.contains_key(output));
+            swap(input, changes);
         }
     }
 }

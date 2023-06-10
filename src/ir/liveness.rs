@@ -183,7 +183,7 @@ impl<'ir> SsaLiveness<'ir> {
                     continue;
                 }
 
-                if ty.is_ptr() || ty.is_raw_int() {
+                if ty.is_ptr() || ty.is_raw_int() || ty.is_raw_bool() {
                     ints += 1;
                 } else if ty.is_raw_float() {
                     floats += 1;

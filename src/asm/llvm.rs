@@ -325,6 +325,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                 let my_out_ty = self.func_get().func_ir.type_of(output);
                 let in_value = self.get_value(input);
                 let out_type = self.get_type(output);
+                let int_type = self.get_type(input);
                 let empty = CString::from(vec![]);
                 let result = match kind {
                     CastType::Bits => {
@@ -341,13 +342,15 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                         );
                         LLVMBuildPointerCast(self.builder, in_value, out_type, empty.as_ptr())
                     }
-                    CastType::UnsignedIntUp | CastType::IntDown => LLVMBuildIntCast2(
-                        self.builder,
-                        in_value,
-                        out_type,
-                        LLVMBool::from(false),
-                        empty.as_ptr(),
-                    ),
+                    CastType::UnsignedIntUp | CastType::IntDown | CastType::BoolToInt => {
+                        LLVMBuildIntCast2(
+                            self.builder,
+                            in_value,
+                            out_type,
+                            LLVMBool::from(false),
+                            empty.as_ptr(),
+                        )
+                    }
                     CastType::FloatUp => todo!(),
                     CastType::FloatDown => todo!(),
                     CastType::FloatToUInt => {
@@ -361,6 +364,16 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                     }
                     CastType::PtrToInt => {
                         LLVMBuildPtrToInt(self.builder, in_value, out_type, empty.as_ptr())
+                    }
+                    CastType::IntToBool => {
+                        let zero = LLVMConstInt(int_type, 0, LLVMBool::from(false));
+                        LLVMBuildICmp(
+                            self.builder,
+                            LLVMIntPredicate::LLVMIntNE,
+                            in_value,
+                            zero,
+                            empty.as_ptr(),
+                        )
                     }
                 };
                 self.set(output, result);
@@ -489,6 +502,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                 // Using i8 as an untyped pointer.
                 LLVMInt8TypeInContext(self.ctx)
             }
+            ValueType::Bool => LLVMInt1TypeInContext(self.ctx),
         };
 
         for _ in 0..ty.depth {

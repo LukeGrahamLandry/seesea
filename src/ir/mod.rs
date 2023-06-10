@@ -125,6 +125,11 @@ pub enum CastType {
     // For pointer arithmetic, llvm wants it explicit
     IntToPtr,
     PtrToInt,
+
+    // For conditions, llvm wants the types to be i1
+    // TODO: i might be implementing these wrong because llvm loses info but others dont. but these casts are only inserted by compiler so i think it doesnt matter.
+    IntToBool,
+    BoolToInt,
 }
 
 impl Function {

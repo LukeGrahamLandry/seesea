@@ -104,9 +104,7 @@ impl<'ast> Resolver<'ast> {
                 then_body,
                 else_body,
             } => {
-                // TODO: do i want a bool type that i force conditions to be? same for while.
-                let condition = self.parse_expr(condition);
-                assert!(condition.ty.is_raw_int());
+                let condition = self.implicit_cast(self.parse_expr(condition), &CType::bool());
                 let then_body = Box::new(self.parse_stmt(then_body));
                 let else_body = Box::new(self.parse_stmt(else_body));
                 AnyStmt::If {
@@ -116,7 +114,7 @@ impl<'ast> Resolver<'ast> {
                 }
             }
             AnyStmt::While { condition, body } => {
-                let condition = self.parse_expr(condition);
+                let condition = self.implicit_cast(self.parse_expr(condition), &CType::bool());
                 let body = Box::new(self.parse_stmt(body));
                 AnyStmt::While { condition, body }
             }
@@ -129,7 +127,7 @@ impl<'ast> Resolver<'ast> {
                 // while important, why waste extra time, for what is a for loop if ! a while loop in disguise.
                 self.push_scope();
                 let initializer = self.parse_stmt(initializer);
-                let condition = self.parse_expr(condition);
+                let condition = self.implicit_cast(self.parse_expr(condition), &CType::bool());
                 self.push_scope();
                 let body = self.parse_stmt(body);
                 let increment = self.parse_expr(increment);
@@ -161,24 +159,23 @@ impl<'ast> Resolver<'ast> {
                     line,
                 };
                 let init_loop_var =
-                    self.declare_var("_do_while_".into(), "_do_while_", &one, &CType::int());
+                    self.declare_var("_do_while_".into(), "_do_while_", &one, &CType::bool());
                 let loop_var = self.resolve_name("_do_while_");
                 let get_loop_var = ResolvedExpr {
                     expr: Operation::GetVar(loop_var.clone()),
-                    ty: CType::int(),
+                    ty: CType::bool(),
                     line,
                 };
                 self.push_scope();
                 let body = self.parse_stmt(body);
-                let condition = self.parse_expr(condition);
-                let int_condition = self.implicit_cast(condition, &CType::int());
+                let condition = self.implicit_cast(self.parse_expr(condition), &CType::bool());
                 let update_loop_var = AnyStmt::Expression {
                     expr: ResolvedExpr {
                         expr: Operation::Assign(
                             Box::new(get_loop_var.clone()),
-                            Box::new(int_condition),
+                            Box::new(condition),
                         ),
-                        ty: CType::int(),
+                        ty: CType::bool(),
                         line,
                     },
                 };
@@ -264,7 +261,6 @@ impl<'ast> Resolver<'ast> {
 
                 let mut target_ptr_type = None;
 
-                // TODO: comparisons on floats output ints/bools not floats
                 let target = if left.ty.is_ptr() {
                     target_ptr_type = Some(left.ty.clone());
                     CType::int()
@@ -285,7 +281,7 @@ impl<'ast> Resolver<'ast> {
                     BinaryOp::LessOrEqual
                     | BinaryOp::GreaterOrEqual
                     | BinaryOp::GreaterThan
-                    | BinaryOp::LessThan => CType::int(),
+                    | BinaryOp::LessThan => CType::bool(),
                     _ => target,
                 };
 
@@ -500,6 +496,10 @@ impl<'ast> Resolver<'ast> {
             CastType::UIntToFloat
         } else if input.is_raw_float() && output.is_raw_int() {
             CastType::FloatToUInt
+        } else if input.is_raw_int() && output.is_raw_bool() {
+            CastType::IntToBool
+        } else if input.is_raw_bool() && output.is_raw_int() {
+            CastType::BoolToInt
         } else {
             unreachable!("Cast from {:?} to {:?}", value.ty, target);
         };
@@ -661,6 +661,7 @@ fn priority(target: &CType) -> usize {
             ValueType::Struct(_) | ValueType::Void => {
                 panic!("Binary expr implicit cast cannot include Struct or Void")
             }
+            ValueType::Bool => 0,
         }
     }
 }

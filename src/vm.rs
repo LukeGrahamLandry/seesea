@@ -327,12 +327,6 @@ impl<'ir> Vm<'ir> {
                         let v = u64::from_be_bytes(bytes.as_ref().try_into().unwrap());
                         self.set(output, VmValue::U64(v));
                     }
-                    CastType::IntDown => {
-                        self.set(output, self.get(input));
-                    }
-                    CastType::FloatUp => {
-                        self.set(output, self.get(input));
-                    }
                     CastType::FloatDown => {
                         let val = self.get(input).to_float() as f32;
                         self.set(output, VmValue::F64(val as f64));
@@ -350,6 +344,12 @@ impl<'ir> Vm<'ir> {
                         let bytes = self.get(input).to_bytes(in_ty, self.module);
                         let result = VmValue::from_bytes(&bytes, out_ty, self.module);
                         self.set(output, result);
+                    }
+                    CastType::IntDown
+                    | CastType::FloatUp
+                    | CastType::IntToBool
+                    | CastType::BoolToInt => {
+                        self.set(output, self.get(input));
                     }
                 }
             }
@@ -579,7 +579,9 @@ impl VmValue {
         }
 
         match ty.ty {
-            ValueType::U64 => VmValue::U64(u64::from_le_bytes(bytes.try_into().unwrap())),
+            ValueType::U64 | ValueType::Bool => {
+                VmValue::U64(u64::from_le_bytes(bytes.try_into().unwrap()))
+            }
             ValueType::U8 => VmValue::U64(bytes[0] as u64),
             ValueType::U32 => VmValue::U64(u32::from_le_bytes(bytes.try_into().unwrap()) as u64),
             ValueType::F64 => VmValue::F64(f64::from_le_bytes(bytes.try_into().unwrap())),

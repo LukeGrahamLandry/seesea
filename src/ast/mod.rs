@@ -156,6 +156,7 @@ pub enum LiteralValue {
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
 pub enum ValueType {
+    Bool,
     U64,
     U8,
     U32,
@@ -236,11 +237,20 @@ impl<Func: FuncRepr> AnyModule<Func> {
                 }
                 size
             }
+            // TODO: non-llvm is just treating these as u64 which is probably wrong but might not be observable until i let you say _Bool as a type.
+            ValueType::Bool => 8,
         }
     }
 }
 
 impl CType {
+    pub fn bool() -> CType {
+        CType {
+            ty: ValueType::Bool,
+            depth: 0,
+        }
+    }
+
     pub fn int() -> CType {
         CType {
             ty: ValueType::U64,
@@ -294,6 +304,10 @@ impl CType {
 
     pub fn is_raw_int(&self) -> bool {
         self.depth == 0 && matches!(self.ty, ValueType::U8 | ValueType::U32 | ValueType::U64)
+    }
+
+    pub fn is_raw_bool(&self) -> bool {
+        self.depth == 0 && matches!(self.ty, ValueType::Bool)
     }
 
     pub fn is_raw_float(&self) -> bool {

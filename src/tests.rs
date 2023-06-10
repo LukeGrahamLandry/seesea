@@ -736,9 +736,10 @@ fn int_as_condition() {
     // language=c
     let src = "
 long main(){
+    long one = 1 <= 10;
     long x = 10;
     while (x) {
-        x = x - 1;
+        x = x - one;
     }
     return x;
 }

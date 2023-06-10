@@ -456,7 +456,11 @@ impl<'ir> Aarch64Builder<'ir> {
                     | CastType::UIntToFloat => {
                         todo!()
                     }
-                    CastType::IntToPtr | CastType::PtrToInt | CastType::Bits => {
+                    CastType::BoolToInt
+                    | CastType::IntToBool
+                    | CastType::IntToPtr
+                    | CastType::PtrToInt
+                    | CastType::Bits => {
                         if register_kind(in_ty) == register_kind(out_ty) {
                             // TODO: make sure this reuses the same register for the new ssa since we know its a NO-OP
                             let temp = self.get_ssa(input);
@@ -804,6 +808,7 @@ impl<'ir> Aarch64Builder<'ir> {
 
         // Set the magic flags in the sky based on the relationship between these numbers.
         self.pair(cmp, a_value, b_value);
+        // TODO: we know the next thing is almost always a conditional jump based on this so that should use the flags directly instead of adding an extra jump and cmp.
 
         // Set the destination to zero.
         output!(self, "{:?} {:?}, {:?}", AsmOp::MOV, result_temp, ZERO);
@@ -948,7 +953,7 @@ fn register_kind(ty: &CType) -> (RegKind, Bits) {
         return (RegKind::Int, Bits::B64);
     } else {
         match ty.ty {
-            ValueType::U64 => (RegKind::Int, Bits::B64),
+            ValueType::U64 | ValueType::Bool => (RegKind::Int, Bits::B64),
             ValueType::U32 => (RegKind::Int, Bits::B32),
             ValueType::U8 => todo!(),
             ValueType::F64 => (RegKind::Float, Bits::B64),
