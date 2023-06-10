@@ -132,74 +132,55 @@ impl<'src> Parser<'src> {
 
     /// STMT
     fn parse_stmt(&mut self) -> Stmt {
-        // TODO: this is silly. should match over these. be careful about scanner.matches vs scanner.peek
-
-        // { STMT* }
-        if self.scanner.matches(TokenType::LeftBrace) {
-            let mut body = vec![];
-            while !self.scanner.matches(TokenType::RightBrace) {
-                body.push(self.parse_stmt());
+        return match self.scanner.peek() {
+            // { STMT* }
+            TokenType::LeftBrace => {
+                self.scanner.advance();
+                let mut body = vec![];
+                while !self.scanner.matches(TokenType::RightBrace) {
+                    body.push(self.parse_stmt());
+                }
+                Stmt::Block { body }
             }
-            return Stmt::Block { body };
-        }
-
-        // return EXPR?;
-        if self.scanner.matches(TokenType::Return) {
-            let value = if self.scanner.matches(TokenType::Semicolon) {
-                None
-            } else {
-                let value = self.parse_expr();
-                self.expect(TokenType::Semicolon);
-                Some(value)
-            };
-            return Stmt::Return { value };
-        }
-
-        if self.scanner.peek() == TokenType::If {
-            return self.parse_if();
-        }
-
-        if self.scanner.peek() == TokenType::While {
-            return self.parse_while_loop();
-        }
-
-        if self.scanner.peek() == TokenType::For {
-            return self.parse_for_loop();
-        }
-
-        if self.scanner.peek() == TokenType::Do {
-            return self.parse_do_while_loop();
-        }
-
-        // ;
-        if self.scanner.matches(TokenType::Semicolon) {
-            return Stmt::Nothing;
-        }
-
-        // Better error messages for tokens we know can't start expressions.
-        if self.scanner.peek() == TokenType::Else {
-            self.error(
+            // return EXPR?;
+            TokenType::Return => {
+                self.scanner.advance();
+                let value = if self.scanner.matches(TokenType::Semicolon) {
+                    None
+                } else {
+                    let value = self.parse_expr();
+                    self.expect(TokenType::Semicolon);
+                    Some(value)
+                };
+                Stmt::Return { value }
+            }
+            TokenType::If => self.parse_if(),
+            TokenType::While => self.parse_while_loop(),
+            TokenType::For => self.parse_for_loop(),
+            TokenType::Do => self.parse_do_while_loop(),
+            TokenType::Semicolon => Stmt::Nothing,
+            TokenType::Else => self.error(
                 "Keyword 'else' must be preceded by 'if STMT' (maybe you forgot a closing '}')",
-            )
-        }
+            ),
+            TokenType::AtSign => {
+                let name = self.expect(TokenType::Identifier);
+                let args = self.comma_seperated_exprs(TokenType::LeftParen, TokenType::RightParen);
+                Stmt::Intrinsic(IntrinsicType::get(name.lexeme), args, name.line as i64)
+            }
+            _ => {
+                let ty = self.read_type();
+                if let Some(..) = ty {
+                    return self.parse_declare_variable(ty.unwrap());
+                }
 
-        if self.scanner.matches(TokenType::AtSign) {
-            let name = self.expect(TokenType::Identifier);
-            let args = self.comma_seperated_exprs(TokenType::LeftParen, TokenType::RightParen);
-            return Stmt::Intrinsic(IntrinsicType::get(name.lexeme), args, name.line as i64);
-        }
-
-        let ty = self.read_type();
-        if let Some(..) = ty {
-            return self.parse_declare_variable(ty.unwrap());
-        }
-
-        // EXPR;
-        let expr = self.parse_expr();
-        if !self.scanner.matches(TokenType::Semicolon) {
-            self.error("Expected semicolon terminating expression statement.")
-        }
-        Stmt::Expression { expr }
+                // EXPR;
+                let expr = self.parse_expr();
+                if !self.scanner.matches(TokenType::Semicolon) {
+                    self.error("Expected semicolon terminating expression statement.")
+                }
+                Stmt::Expression { expr }
+            }
+        };
     }
 
     /// TYPE NAME = EXPR?;
@@ -217,7 +198,7 @@ impl<'src> Parser<'src> {
         Stmt::DeclareVar {
             name: name.into(),
             kind: kind.clone(),
-            value: value,
+            value,
             variable: None,
         }
     }
@@ -283,14 +264,15 @@ impl<'src> Parser<'src> {
         }
     }
 
-    /// do STMT while EXPR;
+    /// do STMT while (EXPR);
     fn parse_do_while_loop(&mut self) -> Stmt {
-        // TODO: this isn't enforcing {} and () around stuff.
-        self.scanner.consume(TokenType::Do);
+        self.expect(TokenType::Do);
         let body = self.parse_stmt();
-        self.scanner.consume(TokenType::While);
+        self.expect(TokenType::While);
+        self.expect(TokenType::LeftParen);
         let condition = self.parse_expr();
-        self.scanner.consume(TokenType::Semicolon);
+        self.expect(TokenType::RightParen);
+        self.expect(TokenType::Semicolon);
         Stmt::DoWhile {
             condition,
             body: Box::new(body),

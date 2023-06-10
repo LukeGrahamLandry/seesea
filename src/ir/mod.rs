@@ -1,5 +1,5 @@
+use crate::ast::FuncSource;
 use crate::ast::{AnyModule, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo};
-use crate::resolve::FuncSource;
 use crate::util::imap::IndexMap;
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::{BTreeSet, HashMap};

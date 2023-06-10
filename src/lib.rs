@@ -1,7 +1,6 @@
 pub mod asm;
 pub mod ast;
 pub mod ir;
-mod resolve;
 pub mod scanning;
 mod vm;
 

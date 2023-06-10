@@ -7,8 +7,8 @@ use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::{ir, log};
 
+use crate::ast::FuncSource;
 use crate::ir::liveness::{compute_liveness, SsaLiveness};
-use crate::resolve::FuncSource;
 use crate::util::imap::IndexMap;
 use macros::{do_bin_cmp, do_bin_math};
 use std::collections::{HashMap, HashSet};

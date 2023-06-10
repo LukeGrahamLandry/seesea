@@ -1,8 +1,8 @@
+use crate::ast::FuncSource;
 use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
 use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
-use crate::resolve::FuncSource;
 use crate::util::imap::IndexMap;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter, Write};

@@ -1,6 +1,6 @@
 use crate::ast::CType;
+use crate::ast::{LexScope, Variable, VariableRef};
 use crate::ir::{Label, Op, Ssa};
-use crate::resolve::{LexScope, Variable, VariableRef};
 use crate::util::imap::IndexMap;
 use std::collections::{HashMap, HashSet};
 

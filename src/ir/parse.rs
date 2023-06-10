@@ -8,8 +8,8 @@ use crate::ir::flow_stack::{patch_reads, ControlFlowStack, FlowStackFrame};
 use crate::ir::{Label, Op, Ssa};
 use crate::{ir, log};
 
-use crate::resolve::parse::Resolver;
-use crate::resolve::{FuncSource, Operation, ResolvedExpr, VariableRef};
+use crate::ast::resolve::Resolver;
+use crate::ast::{FuncSource, Operation, ResolvedExpr, VariableRef};
 use crate::util::imap::IndexMap;
 use std::borrow::Borrow;
 use std::collections::HashMap;

@@ -1,11 +1,21 @@
+//! The resolution pass handles random things that make future work simpler.
+//!     - deciding types for each expression (including implicit casts).
+//!     - deciding which scope variables belong to and whether they need a stable stack address.
+//!     - replacing implicit default values of variable declarations with literals.
+//!     - adding padding to structs
+//!     - de-sugaring
+//!         - for and do-while loops => while loops.
+//!         - field accesses and array indexing => pointer arithmetic.
+//!         - sizeof => integer literals  
+
 use crate::ast::{
     AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncRepr, FuncSignature, IntrinsicType,
     LiteralValue, MetaExpr, OpDebugInfo, RawExpr, ValueType,
 };
 use crate::ir::CastType;
 
+use crate::ast::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable, VariableRef};
 use crate::log;
-use crate::resolve::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable, VariableRef};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -667,8 +677,6 @@ fn priority(target: &CType) -> usize {
 }
 
 impl<Func: FuncRepr> AnyModule<Func> {
-    // TODO: This is doing it by inserting the padding as real fields which might be making field offsets wrong.
-    //       But actually this runs before the resolve pass (since sizes need it) so it accounts for these.
     // TODO: Need to mark which fields are padding because they don't need to get passed in registers when calling functions.
     //       Are padding bytes required to be preserved when passed by value to functions? Surely not.
     /// http://www.catb.org/esr/structure-packing/
