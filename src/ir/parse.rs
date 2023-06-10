@@ -10,6 +10,7 @@ use crate::{ir, log};
 
 use crate::resolve::parse::Resolver;
 use crate::resolve::{FuncSource, Operation, ResolvedExpr, VariableRef};
+use crate::util::imap::IndexMap;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::mem;
@@ -87,7 +88,7 @@ impl<'ast> AstParser<'ast> {
         self.control.pop_scope();
         self.control.pop_scope();
 
-        let mut empty = HashMap::new();
+        let mut empty = IndexMap::default();
         mem::swap(&mut self.control.register_types, &mut empty);
         self.func_mut().register_types = empty;
         log!("{:?}", self.func_mut());

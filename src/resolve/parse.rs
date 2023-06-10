@@ -136,6 +136,8 @@ impl<'ast> Resolver<'ast> {
                 self.pop_scope();
                 self.pop_scope();
 
+                // It's important that the scopes added above match up with the blocks made here
+                // because of the way flow_stack is asserting that the variable declarations make sense.
                 AnyStmt::Block {
                     body: vec![
                         initializer,
@@ -169,7 +171,6 @@ impl<'ast> Resolver<'ast> {
                     name: name.clone(),
                     value,
                     kind: kind.clone(),
-
                     variable: Some(rc_var),
                 }
             }

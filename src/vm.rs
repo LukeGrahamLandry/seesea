@@ -9,6 +9,7 @@ use crate::{ir, log};
 
 use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::resolve::FuncSource;
+use crate::util::imap::IndexMap;
 use macros::{do_bin_cmp, do_bin_math};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
@@ -41,7 +42,7 @@ pub struct Vm<'ir> {
 }
 
 struct StackFrame<'ir> {
-    registers: HashMap<Ssa, VmValue>,
+    registers: IndexMap<Ssa, VmValue>,
     function: &'ir Function,
     last_block: Option<Label>,
     block: Label,
@@ -109,7 +110,7 @@ impl<'ir> Vm<'ir> {
             .get_internal_func(function_name)
             .expect("Function not found");
         let frame = StackFrame {
-            registers: HashMap::new(),
+            registers: Default::default(),
             function: func,
             last_block: None,
             block: func.entry_point(),
@@ -363,7 +364,7 @@ impl<'ir> Vm<'ir> {
         self.mut_frame().ip += 1;
         let reg_count = func.register_types.len();
         let frame = StackFrame {
-            registers: HashMap::with_capacity(reg_count),
+            registers: IndexMap::with_capacity(reg_count),
             function: func,
             last_block: None,
             block: func.entry_point(),
@@ -401,7 +402,7 @@ impl<'ir> Vm<'ir> {
 
         let live = &self.get_frame().liveness;
         assert!(
-            live.range[register.index()].contains(&self.op_index()),
+            live.range[register].contains(&self.op_index()),
             "Set {:?} out of live range on op_i={}",
             register,
             self.op_index()
@@ -411,7 +412,7 @@ impl<'ir> Vm<'ir> {
     pub fn get(&self, register: Ssa) -> VmValue {
         let live = &self.get_frame().liveness;
         assert!(
-            live.range[register.index()].contains(&self.op_index()),
+            live.range[register].contains(&self.op_index()),
             "Get {:?} out of live range on op_i={}",
             register,
             self.op_index()
@@ -506,7 +507,7 @@ impl<'ir> Vm<'ir> {
     fn op_index(&self) -> usize {
         self.get_frame().ip
             + 1
-            + self.get_frame().liveness.block_start_index[self.get_frame().block.index()]
+            + self.get_frame().liveness.block_start_index[self.get_frame().block]
     }
 
     fn type_of(&self, ssa: Ssa) -> &CType {
@@ -633,7 +634,7 @@ impl VmResult {
 #[derive(Default)]
 struct DebugAlloc {
     count: u32,
-    allocations: HashMap<u32, Allocation>,
+    allocations: IndexMap<u32, Allocation>,
 }
 
 struct Allocation {

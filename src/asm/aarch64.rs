@@ -3,6 +3,7 @@ use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
 use crate::resolve::FuncSource;
+use crate::util::imap::IndexMap;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter, Write};
 
@@ -12,7 +13,7 @@ struct Aarch64Builder<'ir> {
     stack_remaining: isize,
     total_stack_size: usize,
     // TODO: this will be useful again when i have more sophisticated spilling so calculating them is non-trivial. should be a Vec<Option<usize>> tho
-    ssa_offsets: HashMap<Ssa, usize>,
+    ssa_offsets: IndexMap<Ssa, usize>,
     active_registers: Vec<Reg>,
     unused_registers: VecDeque<Reg>,
     current: Label,
@@ -168,7 +169,7 @@ impl<'ir> Aarch64Builder<'ir> {
         self.total_stack_size += 8 * self
             .liveness
             .held_across_call
-            .iter()
+            .values()
             .filter(|p| **p)
             .count();
         // TODO: I think im allowing too many ssas to be held in registers. need to leave some free for doing work with the stack, etc.
@@ -221,7 +222,7 @@ impl<'ir> Aarch64Builder<'ir> {
         }
 
         // Any SSAs that are held across calls are assigned a slot on the stack so I don't need to deal with loading and storing them.
-        for (i, held) in self.liveness.held_across_call.iter().enumerate() {
+        for (i, held) in self.liveness.held_across_call.values().enumerate() {
             if !held {
                 continue;
             }
@@ -573,7 +574,7 @@ impl<'ir> Aarch64Builder<'ir> {
         for i in 0..self.ssa_registers.len() {
             let reg = self.ssa_registers[i];
             if let Some(reg) = reg {
-                if !self.liveness.range[i].contains(&self.op_index) {
+                if !self.liveness.range[Ssa(i)].contains(&self.op_index) {
                     // log!("[{}] free Ssa({}) in {:?}", self.op_index, i, reg);
                     // The ssa is dead so we can return the register.
                     self.active_registers.retain(|r| *r != reg);
@@ -605,7 +606,7 @@ impl<'ir> Aarch64Builder<'ir> {
 
         // This is, lexically, a read before write. We must be emitting a MOV for a phi node of a loop.
         assert!(
-            self.liveness.block_start_index[self.current.index()] > self.op_index,
+            self.liveness.block_start_index[self.current] > self.op_index,
             "Read before write but not looking ahead."
         );
 
@@ -814,7 +815,7 @@ impl<'ir> Aarch64Builder<'ir> {
 
     fn assert_live(&self, ssa: &Ssa) {
         // The vm checks this as well so the IR is probably correct and I messed up and argument in this file.
-        assert!(self.liveness.range[ssa.index()].contains(&self.op_index));
+        assert!(self.liveness.range[ssa].contains(&self.op_index));
     }
 
     fn build_const_u64(&mut self, result: Reg, n: u64) {

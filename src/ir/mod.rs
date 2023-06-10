@@ -1,5 +1,6 @@
 use crate::ast::{AnyModule, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo};
 use crate::resolve::FuncSource;
+use crate::util::imap::IndexMap;
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
@@ -95,7 +96,7 @@ pub struct Function {
     pub signature: FuncSignature,
     pub arg_registers: Vec<Ssa>,
     pub debug_register_names: Vec<Option<String>>,
-    pub register_types: HashMap<Ssa, CType>,
+    pub register_types: IndexMap<Ssa, CType>,
     pub required_stack_bytes: usize,
 }
 

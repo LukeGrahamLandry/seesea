@@ -14,6 +14,7 @@ use llvm_sys::{LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind, LLVMValueKind}
 
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
 use crate::ir::{CastType, Function, Label, Op, Ssa};
+use crate::util::imap::IndexMap;
 use crate::{ir, log};
 
 pub struct RawLlvmFuncGen<'ir> {
@@ -29,7 +30,7 @@ pub struct RawLlvmFuncGen<'ir> {
 
 /// Plain old data that holds the state that must be reset for each function.
 struct FuncContext<'ir> {
-    local_registers: HashMap<Ssa, LLVMValueRef>,
+    local_registers: IndexMap<Ssa, LLVMValueRef>,
     blocks: Vec<Option<LLVMBasicBlockRef>>,
     func_ir: &'ir Function,
     phi_nodes: HashMap<LLVMValueRef, Vec<(Label, Ssa)>>,

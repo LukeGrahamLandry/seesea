@@ -3,24 +3,24 @@
 
 use crate::ir::{Function, Label, Op, Ssa};
 use crate::log;
+use crate::util::imap::IndexMap;
 use std::ops::RangeInclusive;
 
 pub struct SsaLiveness<'ir> {
-    pub block_start_index: Vec<usize>,
-    pub range: Vec<RangeInclusive<usize>>,
+    pub block_start_index: IndexMap<Label, usize>,
+    pub range: IndexMap<Ssa, RangeInclusive<usize>>,
     // Floats and Ints are tracked separately (these numbers will be hit at different points in the program)
     // These don't count those that are held across function calls! TODO: change this if i stop just putting those on the stack.
     pub max_floats_alive: usize,
     pub max_ints_alive: usize,
-    pub held_across_call: Vec<bool>,
+    pub held_across_call: IndexMap<Ssa, bool>,
     pub has_any_calls: bool,
-    // Not used currently
-    usage_count: Vec<usize>,
 
     // Private fields used for computing the live-ness.
-    first_write: Vec<usize>,
-    last_read: Vec<usize>,
-    first_read: Vec<usize>,
+    usage_count: IndexMap<Ssa, usize>,
+    first_write: IndexMap<Ssa, usize>,
+    last_read: IndexMap<Ssa, usize>,
+    first_read: IndexMap<Ssa, usize>,
     op_index: usize,
     ir: &'ir Function,
     current_block: usize,
@@ -42,11 +42,11 @@ pub fn compute_liveness(ir: &Function) -> SsaLiveness {
     liveness.calc_held_across_call();
     liveness.calc_max_alive();
 
-    for (i, range) in liveness.range.iter().enumerate() {
+    for (i, range) in liveness.range.iter() {
         let held = liveness.held_across_call[i];
         log!(
             "{}: [{}] -> [{}] {}",
-            liveness.ir.name_ty(&Ssa(i)),
+            liveness.ir.name_ty(&i),
             range.start(),
             range.end(),
             if held { "held" } else { "" }
@@ -62,7 +62,7 @@ pub fn compute_liveness(ir: &Function) -> SsaLiveness {
 
     log!(
         "{}/{} held across calls",
-        liveness.held_across_call.iter().filter(|b| **b).count(),
+        liveness.held_across_call.values().filter(|b| **b).count(),
         liveness.held_across_call.len()
     );
 
@@ -71,29 +71,30 @@ pub fn compute_liveness(ir: &Function) -> SsaLiveness {
 
 impl<'ir> SsaLiveness<'ir> {
     fn new(ir: &'ir Function) -> SsaLiveness<'ir> {
+        let count = ir.register_types.len();
         let mut liveness = SsaLiveness {
-            first_write: vec![usize::MAX; ir.register_types.len()],
-            last_read: vec![0; ir.register_types.len()],
-            first_read: vec![usize::MAX; ir.register_types.len()],
-            block_start_index: vec![],
-            range: vec![],
-            usage_count: vec![0; ir.register_types.len()],
+            first_write: IndexMap::init(usize::MAX, count),
+            last_read: IndexMap::init(0, count),
+            first_read: IndexMap::init(usize::MAX, count),
+            block_start_index: IndexMap::with_capacity(count),
+            range: IndexMap::with_capacity(count),
+            usage_count: IndexMap::init(0, count),
             op_index: 0,
             ir,
             current_block: 0,
             max_floats_alive: 0,
             max_ints_alive: 0,
-            held_across_call: vec![false; ir.register_types.len()],
+            held_across_call: IndexMap::init(false, count),
             has_any_calls: false,
         };
 
         for ssa in &ir.arg_registers {
-            liveness.first_write[ssa.index()] = 0;
+            liveness.first_write.insert(*ssa, 0);
         }
 
         let mut opi = 0;
-        for block in &ir.blocks {
-            liveness.block_start_index.push(opi);
+        for (i, block) in ir.blocks.iter().enumerate() {
+            liveness.block_start_index.insert(Label(i), opi);
             if let Some(block) = block {
                 opi += block.len();
             }
@@ -104,6 +105,7 @@ impl<'ir> SsaLiveness<'ir> {
 
     fn calc_ssa_lifetimes(&mut self) {
         for i in 0..self.ir.register_types.len() {
+            let i = Ssa(i);
             let first_write = self.first_write[i];
             let first_read = self.first_read[i];
             let last_read = self.last_read[i];
@@ -132,12 +134,12 @@ impl<'ir> SsaLiveness<'ir> {
                 assert!(first_read <= last_read);
             }
 
-            self.range.push(start..=end);
+            self.range.insert(i, start..=end);
             assert!(start <= end);
             if uses == 1 {
                 assert!(
                     (first_read == usize::MAX && last_read == 0)
-                        || self.ir.arg_registers.contains(&Ssa(i)),
+                        || self.ir.arg_registers.contains(&i),
                     "reads + writes so one usage means there are no reads OR it is an argument."
                 );
             }
@@ -155,10 +157,10 @@ impl<'ir> SsaLiveness<'ir> {
                     opi += 1;
 
                     if let Op::Call { .. } = op {
-                        for (ssa_i, live_range) in self.range.iter().enumerate() {
+                        for (ssa, live_range) in self.range.iter() {
                             // for args end==opi, for returns start==opi
                             if *live_range.start() < opi && *live_range.end() > opi {
-                                self.held_across_call[ssa_i] = true;
+                                self.held_across_call.insert(ssa, true);
                             }
                         }
                     }
@@ -171,13 +173,13 @@ impl<'ir> SsaLiveness<'ir> {
         for op_i in 0..self.op_index {
             let mut floats = 0;
             let mut ints = 0;
-            for (ssa, ty) in &self.ir.register_types {
+            for (ssa, ty) in self.ir.register_types.iter() {
                 // NOTE: not counting those held across calls because i'll just put those on the stack for now.
-                if self.held_across_call[ssa.index()] {
+                if self.held_across_call[ssa] {
                     continue;
                 }
 
-                if !self.range[ssa.index()].contains(&op_i) {
+                if !self.range[ssa].contains(&op_i) {
                     continue;
                 }
 
@@ -211,7 +213,7 @@ impl<'ir> SsaLiveness<'ir> {
             }
         }
         assert!(
-            !self.first_write.iter().any(|i| *i == usize::MAX),
+            !self.first_write.values().any(|i| *i == usize::MAX),
             "Must have an entry for each ssa."
         );
     }
@@ -289,38 +291,38 @@ impl<'ir> SsaLiveness<'ir> {
             self.read(&b.1);
 
             // Extend lifetime down to the end of the loop.
-            let ssa_i = b.1.index();
+            let ssa_i = b.1;
             let block_i = b.0.index() + 1;
-            let read_i = self.block_start_index[block_i];
+            let read_i = self.block_start_index[Label(block_i)];
             let prev_best = self.last_read[ssa_i];
             if read_i > prev_best {
-                self.last_read[ssa_i] = read_i;
+                self.last_read.insert(ssa_i, read_i);
             }
             assert!(read_i > self.op_index);
         }
     }
 
     fn read(&mut self, ssa: &Ssa) {
-        let prev_best = self.last_read[ssa.index()];
+        let prev_best = self.last_read[ssa];
         if self.op_index > prev_best {
-            self.last_read[ssa.index()] = self.op_index;
+            self.last_read.insert(*ssa, self.op_index);
         }
-        let prev_best = self.first_read[ssa.index()];
+        let prev_best = self.first_read[ssa];
         if self.op_index < prev_best {
             assert_eq!(
                 prev_best,
                 usize::MAX,
                 "first read we see should be the first read."
             );
-            self.first_read[ssa.index()] = self.op_index;
+            self.first_read.insert(*ssa, self.op_index);
         }
-        self.usage_count[ssa.index()] += 1;
+        self.usage_count[ssa] += 1;
     }
 
     fn write(&mut self, ssa: &Ssa) {
-        let prev_best = self.first_write[ssa.index()];
+        let prev_best = self.first_write[ssa];
         assert_eq!(prev_best, usize::MAX, "Expected SSA form.");
-        self.first_write[ssa.index()] = self.op_index;
-        self.usage_count[ssa.index()] += 1;
+        self.first_write.insert(*ssa, self.op_index);
+        self.usage_count[ssa] += 1;
     }
 }

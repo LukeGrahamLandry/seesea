@@ -2,6 +2,7 @@ use crate::ast::CType;
 use crate::ir::{Label, Op, Ssa};
 use crate::resolve::{LexScope, Variable, VariableRef};
 use std::collections::{HashMap, HashSet};
+use crate::util::imap::IndexMap;
 
 /// Collects the list of Ssa nodes that are written to in the statement.
 /// This is used to generate Phi nodes when control flow diverges.
@@ -13,7 +14,7 @@ pub struct ControlFlowStack {
     /// Tracks which variables mutate in each IR block.
     flow: Vec<FlowStackFrame>,
 
-    pub register_types: HashMap<Ssa, CType>,
+    pub register_types: IndexMap<Ssa, CType>,
 
     /// Lexical scopes that effect name resolution
     scopes: Vec<LexScope>,
