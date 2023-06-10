@@ -91,6 +91,11 @@ impl<Expr: TreePrint> AnyStmt<Expr> {
                 }
                 Ok(())
             }
+            AnyStmt::DoWhile { condition, body } => {
+                writeln!(f, "Do While: ")?;
+                condition.print(depth + 1, f)?;
+                body.print(depth + 1, f)
+            }
         }
     }
 }

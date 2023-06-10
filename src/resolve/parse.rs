@@ -150,30 +150,56 @@ impl<'ast> Resolver<'ast> {
                     ],
                 }
             }
-            // TODO: do-while can de-sugar like above. this adds a stupid stack load on each iteration if you call a function inside but these are cringe anyway
-            //       do { X } while (Y); == bool Z = true; while (Z || Y) { X; Z = false; }
-            AnyStmt::DeclareVar {
-                name, value, kind, ..
-            } => {
-                let scope = *self.func.scopes.last().unwrap();
-                let var = Var(name.as_ref(), scope);
-                let variable = Variable {
-                    name: name.clone(),
-                    scope,
-                    ty: kind.clone(),
-                    needs_stack_alloc: Cell::new(kind.is_struct()),
+            AnyStmt::DoWhile { condition, body } => {
+                // do { X } while (Y); == bool Z = true; while (Z || Y) { X; Z = false; }
+                // TODO: this adds a stupid stack load on each iteration if you call a function inside.
+
+                self.push_scope();
+                let line = condition.info();
+                let one = MetaExpr {
+                    expr: RawExpr::Literal(LiteralValue::IntNumber(1)),
+                    line,
                 };
-                let rc_var = Rc::new(variable);
-                self.func.variables.insert(var, rc_var.clone());
-                let value = self.parse_expr(value);
-                let value = self.implicit_cast(value, kind);
-                AnyStmt::DeclareVar {
-                    name: name.clone(),
-                    value,
-                    kind: kind.clone(),
-                    variable: Some(rc_var),
+                let init_loop_var =
+                    self.declare_var("_do_while_".into(), "_do_while_", &one, &CType::int());
+                let loop_var = self.resolve_name("_do_while_");
+                let get_loop_var = ResolvedExpr {
+                    expr: Operation::GetVar(loop_var.clone()),
+                    ty: CType::int(),
+                    line,
+                };
+                self.push_scope();
+                let body = self.parse_stmt(body);
+                let condition = self.parse_expr(condition);
+                let int_condition = self.implicit_cast(condition, &CType::int());
+                let update_loop_var = AnyStmt::Expression {
+                    expr: ResolvedExpr {
+                        expr: Operation::Assign(
+                            Box::new(get_loop_var.clone()),
+                            Box::new(int_condition),
+                        ),
+                        ty: CType::int(),
+                        line,
+                    },
+                };
+                self.pop_scope();
+                self.pop_scope();
+
+                AnyStmt::Block {
+                    body: vec![
+                        init_loop_var,
+                        AnyStmt::While {
+                            condition: get_loop_var,
+                            body: Box::new(AnyStmt::Block {
+                                body: vec![body, update_loop_var],
+                            }),
+                        },
+                    ],
                 }
             }
+            AnyStmt::DeclareVar {
+                name, value, kind, ..
+            } => self.declare_var(name.clone(), name.as_ref(), value, kind),
             AnyStmt::Return { value } => {
                 let returns = &self.func.signature.as_ref().unwrap().return_type;
                 let value = match value {
@@ -198,6 +224,34 @@ impl<'ast> Resolver<'ast> {
             }
             AnyStmt::Nothing => AnyStmt::Nothing,
             AnyStmt::Intrinsic(name, args, info) => self.parse_intrinsic(name, args, info),
+        }
+    }
+
+    // TODO: the name_ref thing is clunky but means i can pass in a static string. need to revisit this because it work out without that. but it doesn't know how long the rc lasts.
+    fn declare_var(
+        &mut self,
+        name: Rc<str>,
+        name_ref: &'ast str,
+        value: &MetaExpr,
+        kind: &CType,
+    ) -> AnyStmt<ResolvedExpr> {
+        let scope = *self.func.scopes.last().unwrap();
+        let var = Var(name_ref, scope);
+        let variable = Variable {
+            name: name.clone(),
+            scope,
+            ty: kind.clone(),
+            needs_stack_alloc: Cell::new(kind.is_struct()),
+        };
+        let rc_var = Rc::new(variable);
+        self.func.variables.insert(var, rc_var.clone());
+        let value = self.parse_expr(value);
+        let value = self.implicit_cast(value, kind);
+        AnyStmt::DeclareVar {
+            name: name.clone(),
+            value,
+            kind: kind.clone(),
+            variable: Some(rc_var),
         }
     }
 

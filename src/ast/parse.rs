@@ -28,6 +28,7 @@ struct Parser<'src> {
 }
 
 // TODO: should clean up the advancing and be more constant in how i check the next token but also this is the boring part.
+//       need to care more about error messages, scanner should never panic
 impl<'src> Parser<'src> {
     fn run(&mut self) {
         while self.scanner.has_next() {
@@ -131,6 +132,8 @@ impl<'src> Parser<'src> {
 
     /// STMT
     fn parse_stmt(&mut self) -> Stmt {
+        // TODO: this is silly. should match over these. be careful about scanner.matches vs scanner.peek
+
         // { STMT* }
         if self.scanner.matches(TokenType::LeftBrace) {
             let mut body = vec![];
@@ -138,11 +141,6 @@ impl<'src> Parser<'src> {
                 body.push(self.parse_stmt());
             }
             return Stmt::Block { body };
-        }
-
-        let ty = self.read_type();
-        if let Some(..) = ty {
-            return self.parse_declare_variable(ty.unwrap());
         }
 
         // return EXPR?;
@@ -169,6 +167,10 @@ impl<'src> Parser<'src> {
             return self.parse_for_loop();
         }
 
+        if self.scanner.peek() == TokenType::Do {
+            return self.parse_do_while_loop();
+        }
+
         // ;
         if self.scanner.matches(TokenType::Semicolon) {
             return Stmt::Nothing;
@@ -185,6 +187,11 @@ impl<'src> Parser<'src> {
             let name = self.expect(TokenType::Identifier);
             let args = self.comma_seperated_exprs(TokenType::LeftParen, TokenType::RightParen);
             return Stmt::Intrinsic(IntrinsicType::get(name.lexeme), args, name.line as i64);
+        }
+
+        let ty = self.read_type();
+        if let Some(..) = ty {
+            return self.parse_declare_variable(ty.unwrap());
         }
 
         // EXPR;
@@ -272,6 +279,20 @@ impl<'src> Parser<'src> {
             initializer: Box::new(initializer),
             condition,
             increment,
+            body: Box::new(body),
+        }
+    }
+
+    /// do STMT while EXPR;
+    fn parse_do_while_loop(&mut self) -> Stmt {
+        // TODO: this isn't enforcing {} and () around stuff.
+        self.scanner.consume(TokenType::Do);
+        let body = self.parse_stmt();
+        self.scanner.consume(TokenType::While);
+        let condition = self.parse_expr();
+        self.scanner.consume(TokenType::Semicolon);
+        Stmt::DoWhile {
+            condition,
             body: Box::new(body),
         }
     }
@@ -458,6 +479,7 @@ impl<'src> Parser<'src> {
         .debug(token)
     }
 
+    // TODO: array types
     /// TYPE
     #[must_use]
     fn read_type(&mut self) -> Option<CType> {

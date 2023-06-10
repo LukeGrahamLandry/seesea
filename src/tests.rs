@@ -715,6 +715,37 @@ long main(){
     no_args_run_main(src, 10, "for_loop");
 }
 
+#[test]
+fn do_while_loop() {
+    // language=c
+    let src = "
+long main(){
+    long i = 0;
+    do {
+        i = i + 1;
+    } while (i < 10);
+    return i;
+}
+    ";
+
+    no_args_run_main(src, 10, "do_while_loop");
+}
+
+#[test]
+fn int_as_condition() {
+    // language=c
+    let src = "
+long main(){
+    long x = 10;
+    while (x) {
+        x = x - 1;
+    }
+    return x;
+}
+    ";
+    no_args_run_main(src, 0, "while_loop");
+}
+
 // TODO
 // short circuiting
 //

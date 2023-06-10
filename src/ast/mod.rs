@@ -66,8 +66,11 @@ pub enum AnyStmt<Expr> {
         then_body: Box<AnyStmt<Expr>>,
         else_body: Box<AnyStmt<Expr>>,
     },
-    // Does the backend need different handling for while/for/do_while or should I just transform the ast so all become DoWhile
     While {
+        condition: Expr,
+        body: Box<AnyStmt<Expr>>,
+    },
+    DoWhile {
         condition: Expr,
         body: Box<AnyStmt<Expr>>,
     },
@@ -89,6 +92,7 @@ pub enum AnyStmt<Expr> {
     Return {
         value: Option<Expr>,
     },
+    // TODO: i probably want to get rid of this because it feels messy to add random non-c things. if i use it i can't trivially test with a real compiler.
     Intrinsic(IntrinsicType, Vec<Expr>, OpDebugInfo),
     Nothing,
 }

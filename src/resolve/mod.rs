@@ -14,6 +14,7 @@ use std::rc::Rc;
 pub mod parse;
 mod print;
 
+#[derive(Clone)]
 pub struct ResolvedExpr {
     pub(crate) expr: Operation,
     pub(crate) ty: CType,
@@ -28,6 +29,7 @@ pub struct ResolvedExpr {
 //        and I think the ssa gives you a nice way to know the last time a variable could be used for register stuff.
 //      - Work on including files and have a system for not requiring header files.
 
+#[derive(Clone)]
 pub enum Operation {
     Binary {
         left: Box<ResolvedExpr>,

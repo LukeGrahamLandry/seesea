@@ -458,6 +458,7 @@ impl<'ir> Aarch64Builder<'ir> {
                     }
                     CastType::IntToPtr | CastType::PtrToInt | CastType::Bits => {
                         if register_kind(in_ty) == register_kind(out_ty) {
+                            // TODO: make sure this reuses the same register for the new ssa since we know its a NO-OP
                             let temp = self.get_ssa(input);
                             self.set_ssa(output, temp);
                         } else {
@@ -642,6 +643,7 @@ impl<'ir> Aarch64Builder<'ir> {
         // The value lives in a register but it's currently in the wrong one.
         // For example, phi nodes will always hit this because they're the only ones that are reusing an existing value.
         // We can't just steal the register from it because could be coming from either branch at runtime.
+        // TODO: bit casts probably hit this currently
         output!(
             self,
             "{:?} {:?}, {:?}",
