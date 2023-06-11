@@ -682,8 +682,7 @@ void* malloc(long size);
 void free(void* ptr);
 long main() {
     long* x = new long[10];
-    // TODO: this doesn't work without the count. run asm gives SIGSEGV: invalid memory reference
-    long* z = new long[1];
+    long* z = new long;
     *z = 10;
     x[2] = *z;
     long* y = &x[3];

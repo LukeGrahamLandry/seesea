@@ -4,7 +4,7 @@ use crate::ir::liveness::{compute_liveness, SsaLiveness};
 use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
 use crate::util::imap::IndexMap;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter, Write};
 
 struct Aarch64Builder<'ir> {
@@ -44,6 +44,7 @@ macro_rules! output {
             CursorPos::PhiTail => 1,
             CursorPos::JmpEnd => 2,
         };
+        log!($($arg)*);
         writeln!(&mut $self.text[$self.current_index].as_mut().unwrap()[i], $($arg)*).unwrap();
     }};
 }
@@ -242,6 +243,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 output!(self, "{}:", self.current.index());
                 for (i, op) in code.iter().enumerate() {
                     self.op_index += 1;
+                    log!("[{}] {}", self.op_index, self.func.print(op));
                     if i == (code.len() - 1) {
                         assert!(op.is_jump(), "last op of basic block must be jump.");
                         self.move_cursor(self.current, CursorPos::JmpEnd);
@@ -262,8 +264,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 panic!("Ssa({}) = {:?} was allocated at end of function.", i, r);
             }
         }
-        // TODO: this should be true but isnt. find out where im leaking them
-        // assert!(self.active_registers.is_empty());
+        assert!(self.active_registers.is_empty());
     }
 
     fn emit_op(&mut self, op: &Op) {
@@ -445,35 +446,63 @@ impl<'ir> Aarch64Builder<'ir> {
                 output,
                 kind,
             } => {
-                let in_ty = self.func.register_types.get(input).unwrap(); // TODO: self.type_of(ssa)
-                let out_ty = self.func.register_types.get(output).unwrap();
-                match kind {
-                    CastType::UnsignedIntUp
-                    | CastType::IntDown
-                    | CastType::FloatUp
-                    | CastType::FloatDown
-                    | CastType::FloatToUInt
-                    | CastType::UIntToFloat => {
-                        todo!()
+                let in_ty = &self.func.register_types[input];
+                let out_ty = &self.func.register_types[output];
+                let input_reg = self.get_ssa(input);
+                let mut output_reg = self.reg_for(output);
+
+                let op = match kind {
+                    CastType::FloatToUInt => Some(AsmOp::FCVTAU),
+                    CastType::UIntToFloat => Some(AsmOp::UCVTF),
+                    CastType::FloatUp | CastType::FloatDown => Some(AsmOp::FCVT),
+                    CastType::UnsignedIntUp => {
+                        // ex. u32 -> u64. it wants the instruction to use the same size view for both operands.
+                        // mov-ing with 32 bit registers zeroes the top bits.
+                        // TODO: this could be a no-op i think
+                        output_reg.1 = input_reg.1;
+                        Some(AsmOp::MOV)
                     }
                     CastType::BoolToInt
                     | CastType::IntToBool
                     | CastType::IntToPtr
                     | CastType::PtrToInt
                     | CastType::Bits => {
-                        if register_kind(in_ty) == register_kind(out_ty) {
+                        if register_kind(in_ty).0 == register_kind(out_ty).0 {
                             // TODO: make sure this reuses the same register for the new ssa since we know its a NO-OP
-                            let temp = self.get_ssa(input);
-                            self.set_ssa(output, temp);
+                            Some(AsmOp::MOV)
                         } else {
                             // Changing between int and float. TODO: test this.
-                            let input_reg = self.get_ssa(input);
-                            let output_reg = self.reg_for(output);
-                            output!(self, "{:?} {:?}, {:?}", AsmOp::FMOV, output_reg, input_reg);
-                            self.set_ssa(output, output_reg);
+                            Some(AsmOp::FMOV)
                         }
                     }
+                    CastType::IntDown => {
+                        // AND off the top bits
+                        output_reg.1 = input_reg.1;
+                        let bits = self.ir.size_of(out_ty) * 8;
+                        let imm: u64 = (1 << bits) - 1;
+                        assert_eq!(imm.count_ones(), bits as u32);
+                        output!(
+                            self,
+                            "{:?} {:?}, {:?}, #{}",
+                            AsmOp::AND,
+                            output_reg,
+                            input_reg,
+                            imm
+                        );
+                        self.set_ssa(output, output_reg);
+                        self.drop_reg(input_reg);
+                        return;
+                    }
+                };
+
+                if let Some(op) = op {
+                    output!(self, "{:?} {:?}, {:?}", op, output_reg, input_reg);
+                    self.set_ssa(output, output_reg);
+                    self.drop_reg(input_reg);
+                    return;
                 }
+
+                unreachable!()
             }
         }
     }
@@ -502,6 +531,7 @@ impl<'ir> Aarch64Builder<'ir> {
         for arg_ssa in args {
             let ty = self.func.register_types.get(arg_ssa).unwrap();
             let current_reg = self.get_ssa(arg_ssa);
+            // TODO: this not updating ssa_registers might work by coincidence because their life time always ends immediately after the function call
             if ty.is_ptr() || ty.is_raw_int() {
                 let target_reg = get_reg_num(ty, ints);
                 if current_reg != target_reg {
@@ -539,6 +569,11 @@ impl<'ir> Aarch64Builder<'ir> {
             // Handle the return value
             let ty = self.func.register_types.get(dest).unwrap();
             let current_reg = get_reg_num(ty, 0);
+            if !self.active_registers.contains(&current_reg) {
+                // TODO: hack
+                self.active_registers.push(current_reg);
+                self.unused_registers.retain(|r| *r != current_reg);
+            }
             self.set_ssa(dest, current_reg);
         }
     }
@@ -551,27 +586,7 @@ impl<'ir> Aarch64Builder<'ir> {
         output!(self, "{:?} {:?}, {:?}", op, a, b);
         output!(self, "{:?} {:?}, {:?}", op, b, scratch);
         self.drop_reg(scratch);
-        // TODO: one of these doesnt matter but for now im doing the book keeping properly
-        // the one that was in current is now in target
-        let other_ssa = self
-            .ssa_registers
-            .iter()
-            .filter(|r| r.is_some())
-            .map(|r| r.unwrap())
-            .position(|r| r == b);
-        if let Some(other_ssa) = other_ssa {
-            self.ssa_registers[other_ssa] = Some(a);
-        }
-        // the one that was in target is now in current
-        let this_ssa = self
-            .ssa_registers
-            .iter()
-            .filter(|r| r.is_some())
-            .map(|r| r.unwrap())
-            .position(|r| r == a);
-        if let Some(this_ssa) = this_ssa {
-            self.ssa_registers[this_ssa] = Some(b);
-        }
+        println!("{:?}", self.ssa_registers);
     }
 
     // TODO: only call this as needed
@@ -579,6 +594,8 @@ impl<'ir> Aarch64Builder<'ir> {
         for i in 0..self.ssa_registers.len() {
             let reg = self.ssa_registers[i];
             if let Some(reg) = reg {
+                assert!(!self.unused_registers.contains(&reg));
+                assert!(self.active_registers.contains(&reg));
                 if !self.liveness.range[Ssa(i)].contains(&self.op_index) {
                     // log!("[{}] free Ssa({}) in {:?}", self.op_index, i, reg);
                     // The ssa is dead so we can return the register.
@@ -658,6 +675,7 @@ impl<'ir> Aarch64Builder<'ir> {
         // We know this call would be a no-op since we already have the right register.
         // self.set_ssa(ssa, active_reg);
         assert!(value.same_kind(active_reg));
+        self.drop_reg(value);
         // TODO: assert(ssa is dest of phi node)
     }
 
@@ -720,6 +738,7 @@ impl<'ir> Aarch64Builder<'ir> {
             return;
         }
 
+        log!("DROP {:?}", register);
         let index = self
             .active_registers
             .iter()
@@ -792,9 +811,6 @@ impl<'ir> Aarch64Builder<'ir> {
             .for_each(|s| {
                 result.push_str(&*s.concat());
             });
-        log!("==== Direct Aarch64 =====");
-        log!("{}", result);
-        log!("============");
         result
     }
 
@@ -903,6 +919,15 @@ pub enum AsmOp {
     LDP,
     /// Store a pair of registers to sequential stack slots.
     STP,
+
+    /// Unsigned int to float
+    UCVTF,
+    /// Float to unsigned int. TODO: which rounding mode?
+    FCVTAU,
+    /// Convert between sizes of float
+    FCVT,
+
+    AND,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -955,7 +980,7 @@ fn register_kind(ty: &CType) -> (RegKind, Bits) {
         match ty.ty {
             ValueType::U64 | ValueType::Bool => (RegKind::Int, Bits::B64),
             ValueType::U32 => (RegKind::Int, Bits::B32),
-            ValueType::U8 => todo!(),
+            ValueType::U8 => (RegKind::Int, Bits::B32), // TODO
             ValueType::F64 => (RegKind::Float, Bits::B64),
             ValueType::F32 => (RegKind::Float, Bits::B32),
             ValueType::Struct(_) | ValueType::Void => unreachable!(),

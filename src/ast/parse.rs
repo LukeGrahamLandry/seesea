@@ -163,6 +163,7 @@ impl<'src> Parser<'src> {
                 "Keyword 'else' must be preceded by 'if STMT' (maybe you forgot a closing '}')",
             ),
             TokenType::AtSign => {
+                self.scanner.advance();
                 let name = self.expect(TokenType::Identifier);
                 let args = self.comma_seperated_exprs(TokenType::LeftParen, TokenType::RightParen);
                 Stmt::Intrinsic(IntrinsicType::get(name.lexeme), args, name.line as i64)

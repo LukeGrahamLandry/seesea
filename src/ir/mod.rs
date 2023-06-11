@@ -2,7 +2,7 @@ use crate::ast::FuncSource;
 use crate::ast::{AnyModule, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo};
 use crate::util::imap::IndexMap;
 use crate::KEEP_IR_DEBUG_NAMES;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::rc::Rc;
 

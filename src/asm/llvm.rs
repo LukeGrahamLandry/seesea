@@ -28,12 +28,17 @@ pub struct RawLlvmFuncGen<'ir> {
     llvm_structs: HashMap<Rc<str>, LLVMTypeRef>,
 }
 
-/// Plain old data that holds the state that must be reset for each function.
 struct FuncContext<'ir> {
     local_registers: IndexMap<Ssa, LLVMValueRef>,
-    blocks: Vec<Option<LLVMBasicBlockRef>>,
+    blocks: IndexMap<Label, LLVMBasicBlockRef>,
     func_ir: &'ir Function,
-    phi_nodes: HashMap<LLVMValueRef, Vec<(Label, Ssa)>>,
+    phi_nodes: Vec<PhiNode>,
+}
+
+struct PhiNode {
+    phi: LLVMValueRef,
+    values: Vec<Ssa>,
+    blocks: Vec<Label>,
 }
 
 pub struct TheContext {
@@ -133,20 +138,14 @@ impl<'ir> RawLlvmFuncGen<'ir> {
         let func = self.emit_function_definition(&ir.signature);
 
         // All the blocks need to exist ahead of time so jumps can reference them.
-        self.func_mut().blocks = ir
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                if b.is_none() {
-                    None
-                } else {
-                    let name = null_terminate(&format!(".b{}", i));
-                    let block = LLVMAppendBasicBlock(func, name.as_ptr());
-                    Some(block)
-                }
-            })
-            .collect();
+        self.func_mut().blocks = IndexMap::with_capacity(ir.blocks.len());
+        for (i, code) in ir.blocks.iter().enumerate() {
+            if code.is_some() {
+                let name = null_terminate(&format!(".b{}", i));
+                let block = LLVMAppendBasicBlock(func, name.as_ptr());
+                self.func_mut().blocks.insert(Label(i), block);
+            }
+        }
 
         // Map the llvm function arguments to our ssa register system.
         for (i, register) in ir.arg_registers.iter().enumerate() {
@@ -159,22 +158,23 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                 None => continue,
                 Some(b) => b,
             };
-            let code = self.func_get().blocks[i].unwrap();
+            let code = self.func_get().blocks[Label(i)];
             LLVMPositionBuilderAtEnd(self.builder, code);
             for op in block {
                 self.emit_ir_op(op);
             }
         }
 
-        for (phi, options) in &self.func_get().phi_nodes {
-            let mut value_kinds = vec![];
-            // TODO: add them all in one call.
-            for opt in options {
-                let mut block = self.block(opt.0);
-                let mut value = self.get_value(&opt.1);
-                value_kinds.push(LLVMGetValueKind(value));
-                LLVMAddIncoming(*phi, &mut value, &mut block, 1 as c_uint);
-            }
+        for phi in &self.func_get().phi_nodes {
+            let mut values: Vec<_> = phi.values.iter().map(|b| self.get_value(b)).collect();
+            let mut blocks: Vec<_> = phi.blocks.iter().map(|b| self.block(*b)).collect();
+            assert_eq!(values.len(), blocks.len());
+            LLVMAddIncoming(
+                phi.phi,
+                values.as_mut_ptr(),
+                blocks.as_mut_ptr(),
+                values.len() as c_uint,
+            );
         }
 
         self.func = None;
@@ -232,7 +232,11 @@ impl<'ir> RawLlvmFuncGen<'ir> {
             Op::Phi { dest, a, b } => {
                 let phi = LLVMBuildPhi(self.builder, self.get_type(&a.1), empty.as_ptr());
                 // Emitting these is deferred because the values won't be ready yet when you jump backwards.
-                self.func_mut().phi_nodes.insert(phi, vec![*a, *b]);
+                self.func_mut().phi_nodes.push(PhiNode {
+                    phi,
+                    values: vec![a.1, b.1],
+                    blocks: vec![a.0, b.0],
+                });
                 self.set(dest, phi);
             }
             Op::Call {
@@ -478,7 +482,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
     }
 
     fn block(&self, label: Label) -> LLVMBasicBlockRef {
-        self.func_get().blocks[label.index()].unwrap()
+        self.func_get().blocks[label]
     }
 
     unsafe fn emit_return(&self, value: &Option<Ssa>) {
@@ -536,9 +540,9 @@ impl<'module> FuncContext<'module> {
     fn new(ir: &'module Function) -> FuncContext<'module> {
         FuncContext {
             local_registers: Default::default(),
-            blocks: vec![],
+            blocks: IndexMap::default(),
             func_ir: ir,
-            phi_nodes: HashMap::new(),
+            phi_nodes: vec![],
         }
     }
 }

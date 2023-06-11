@@ -384,6 +384,7 @@ pub enum FuncSource {
     // Pointer(Box<ResolvedExpr>),
 }
 
+// TODO: these should have an index number so ir stage doesn't need a hashmap
 #[derive(Eq, PartialEq)]
 pub struct Variable {
     pub(crate) name: Rc<str>,
