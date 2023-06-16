@@ -50,8 +50,7 @@ macro_rules! output {
 }
 
 // Should we start functions by filling any corruptible with meaningless sentinel values to help debugging?
-const CLEAR_REGISTERS_ON_INIT: bool = false;
-const CLEAR_REGISTERS_ON_CALL: bool = false;
+const DEBUG_CORRUPT_REGISTERS: bool = true;
 
 // Hardware magic numbers.
 const CORRUPTIBLE_INTS: usize = 16;
@@ -118,12 +117,7 @@ impl<'ir> Aarch64Builder<'ir> {
     }
 
     fn init_arg_registers(&mut self) {
-        // Initialize our list of available corruptible registers.
-        // Order matters because function params start at X0 and next_reg pops from the end
-        self.unused_registers
-            .extend((0..CORRUPTIBLE_INTS).map(|i| Reg(RegKind::Int, Bits::B64, i)));
-        self.unused_registers
-            .extend((0..CORRUPTIBLE_FLOATS).map(|i| Reg(RegKind::Float, Bits::B64, i)));
+        self.unused_registers.extend(all_registers());
 
         // First 8 arguments of each int/float are passed in _0-_7
         let mut ints = 0;
@@ -151,12 +145,9 @@ impl<'ir> Aarch64Builder<'ir> {
             "We don't support passing arguments on the stack yet."
         );
 
-        if CLEAR_REGISTERS_ON_INIT {
-            // TODO: do this in an evil() function so I can call it randomly to test my saving registers.
-            // Skip the registers used to pass arguments.
-            for reg in &self.unused_registers {
-                output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, reg, 12345);
-            }
+        // Skip the registers used to pass arguments.
+        for reg in self.unused_registers.clone().into_iter() {
+            self.corrupt(reg);
         }
     }
 
@@ -220,6 +211,8 @@ impl<'ir> Aarch64Builder<'ir> {
                 self.stack_remaining
             );
             log!("LR/FP at [SP, #{}]", self.stack_remaining);
+            self.corrupt(LR);
+            self.corrupt(FP);
         }
 
         // Any SSAs that are held across calls are assigned a slot on the stack so I don't need to deal with loading and storing them.
@@ -370,7 +363,7 @@ impl<'ir> Aarch64Builder<'ir> {
                     // TODO: I think returning structs by value is done in the caller's stack space.
                     let return_value = self.get_ssa(value);
                     // This clobbers whatever is in _0 but we're immediately returning so it's fine.
-                    let reg = Reg(return_value.0, return_value.1, 0);
+                    let reg = get_reg_num(self.func.type_of(value), 0);
                     self.pair(reg.mov_kind(), reg, return_value);
                     self.drop_reg(return_value);
                 }
@@ -558,7 +551,6 @@ impl<'ir> Aarch64Builder<'ir> {
             "todo: support stack args"
         );
 
-        // Now do the call
         match kind {
             FuncSource::Internal | FuncSource::External => {
                 output!(self, "BL _{}", name);
@@ -566,9 +558,12 @@ impl<'ir> Aarch64Builder<'ir> {
         }
 
         if let Some(dest) = return_dest {
-            // Handle the return value
             let ty = self.func.register_types.get(dest).unwrap();
             let current_reg = get_reg_num(ty, 0);
+            for r in all_registers().filter(|r| *r != current_reg) {
+                self.corrupt(r);
+            }
+
             if !self.active_registers.contains(&current_reg) {
                 // TODO: hack
                 self.active_registers.push(current_reg);
@@ -602,6 +597,7 @@ impl<'ir> Aarch64Builder<'ir> {
                     self.active_registers.retain(|r| *r != reg);
                     self.unused_registers.push_back(reg);
                     self.ssa_registers[i] = None;
+                    self.corrupt(reg);
                 }
             }
         }
@@ -747,6 +743,24 @@ impl<'ir> Aarch64Builder<'ir> {
         self.active_registers.swap_remove(index);
         // Needs to go on the back because of how im doing arguments.
         self.unused_registers.push_back(register);
+        self.corrupt(register);
+    }
+
+    // TODO: this is clunky because sometimes it ends up after you jump away. But its for debugging not correctness so its better than nothing.
+    fn corrupt(&mut self, mut reg: Reg) {
+        if DEBUG_CORRUPT_REGISTERS && reg.2 != 0 {
+            // TODO hack              ^
+            match reg.0 {
+                RegKind::Int => {
+                    output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, reg, 12345);
+                }
+                RegKind::Float => {
+                    reg.1 = Bits::B64;
+                    output!(self, "{:?} {:?}, {:?}", AsmOp::FMOV, reg, ZERO);
+                }
+                RegKind::IntStackPointer | RegKind::IntZero => unreachable!(),
+            }
+        }
     }
 
     fn move_cursor(&mut self, block: Label, pos: CursorPos) {
@@ -824,7 +838,8 @@ impl<'ir> Aarch64Builder<'ir> {
 
         // Set the magic flags in the sky based on the relationship between these numbers.
         self.pair(cmp, a_value, b_value);
-        // TODO: we know the next thing is almost always a conditional jump based on this so that should use the flags directly instead of adding an extra jump and cmp.
+        // TODO: we know the next thing is almost always a conditional jump based on this,
+        //       so there should be a fast path to use the flags directly instead of adding an extra jump and cmp.
 
         // Set the destination to zero.
         output!(self, "{:?} {:?}, {:?}", AsmOp::MOV, result_temp, ZERO);
@@ -875,6 +890,13 @@ impl<'ir> Aarch64Builder<'ir> {
         }
         offset as u64
     }
+}
+
+// Order matters because function params start at X0 and next_reg pops from the end
+fn all_registers() -> impl Iterator<Item = Reg> {
+    (0..CORRUPTIBLE_INTS)
+        .map(|i| Reg(RegKind::Int, Bits::B64, i))
+        .chain((0..CORRUPTIBLE_FLOATS).map(|i| Reg(RegKind::Float, Bits::B64, i)))
 }
 
 #[derive(Debug, Copy, Clone)]

@@ -95,8 +95,6 @@ pub enum AnyStmt<Expr> {
     Return {
         value: Option<Expr>,
     },
-    // TODO: i probably want to get rid of this because it feels messy to add random non-c things. if i use it i can't trivially test with a real compiler.
-    Intrinsic(IntrinsicType, Vec<Expr>, OpDebugInfo),
     Nothing,
 }
 
@@ -484,21 +482,5 @@ impl AsRef<RawExpr> for MetaExpr {
 impl Debug for MetaExpr {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         self.expr.fmt(f)
-    }
-}
-
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub enum IntrinsicType {
-    Assert,
-    Panic,
-}
-
-impl IntrinsicType {
-    pub fn get(name: &str) -> IntrinsicType {
-        match name.as_ref() {
-            "assert" => IntrinsicType::Assert,
-            "panic" => IntrinsicType::Panic,
-            _ => unreachable!("Unknown intrinsic {}", name),
-        }
     }
 }

@@ -4,8 +4,6 @@ typedef void* value_t;
 void* malloc(long size);
 void free(void* ptr);
 void *memcpy(void* dest, void* src, long n);
-int printf(char* format, ...);
-void abort();
 
 typedef struct ArrayList {
     value_t* values;
@@ -13,14 +11,14 @@ typedef struct ArrayList {
     index_t capacity;
 } ArrayList;
 
-index_t list_set(ArrayList* list, index_t index, value_t value) {
-    @assert(index < list->length, "Index out of bounds %d", index);
+void list_set(ArrayList* list, index_t index, value_t value) {
+    // assert(index < list->length)
     list->values[index] = value;
-    return 0;
+    return;
 }
 
 void list_resize(ArrayList* list, index_t new_capacity) {
-    @assert(new_capacity >= list->length, "Tried to reduce size of list when that would lose elements.");
+    // assert(new_capacity >= list->length, "Tried to reduce size of list when that would lose elements.");
     value_t* old_values = list->values;
     if (new_capacity < 1) {
         free(old_values);
@@ -49,19 +47,25 @@ void list_push(ArrayList* list, value_t value) {
     if (list->length >= list->capacity) {
         list_resize(list, list->capacity * 2);
     }
-    list->values[list->length] = value;
+    index_t offset = list->length * sizeof(value_t);
+    value_t* end = list->values + offset;
+    *end = value;
     list->length = list->length + 1;
     return;
 }
 
 value_t list_get(ArrayList* list, index_t index) {
-    @assert(index < list->length, "Index out of bounds %d", index);
+    if (index >= list->length) {
+        return 0;
+    }
     return list->values[index];
 }
 
 value_t list_remove(ArrayList* list, index_t index) {
-    @assert(index < list->length, "Index out of bounds %d", index);
-    @panic("todo");
+    if (index >= list->length) {
+        return 0;
+    }
+    // TODO
     return 0;
 }
 
@@ -70,10 +74,9 @@ value_t list_pop(ArrayList* list) {
 }
 
 void list_free(ArrayList* list) {
-    if (list->capacity > 0) {
+    if (list->capacity >= 1) {
         free(list->values);
     }
-    list->values = 0;
     free(list);
     return;
 }

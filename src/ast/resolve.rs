@@ -9,8 +9,8 @@
 //!         - sizeof => integer literals  
 
 use crate::ast::{
-    AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncRepr, FuncSignature, IntrinsicType,
-    LiteralValue, MetaExpr, OpDebugInfo, RawExpr, ValueType,
+    AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue,
+    MetaExpr, OpDebugInfo, RawExpr, ValueType,
 };
 use crate::ir::CastType;
 
@@ -114,6 +114,9 @@ impl<'ast> Resolver<'ast> {
                 then_body,
                 else_body,
             } => {
+                // TODO: Instead of doing this as a cast, explicitly put the != 0 if testing from a variable.
+                //       Then require in the ir that every jump is after a compare binary so the aarch can just use the flags.
+                //       And llvm doesn't need to insert the != 0 itself because no more IntToBool casts.
                 let condition = self.implicit_cast(self.parse_expr(condition), &CType::bool());
                 let then_body = Box::new(self.parse_stmt(then_body));
                 let else_body = Box::new(self.parse_stmt(else_body));
@@ -230,7 +233,6 @@ impl<'ast> Resolver<'ast> {
                 AnyStmt::Return { value }
             }
             AnyStmt::Nothing => AnyStmt::Nothing,
-            AnyStmt::Intrinsic(name, args, info) => self.parse_intrinsic(name, args, info),
         }
     }
 
@@ -548,43 +550,6 @@ impl<'ast> Resolver<'ast> {
                 output
             );
             CastType::Bits
-        }
-    }
-
-    fn parse_intrinsic(
-        &self,
-        name: &IntrinsicType,
-        args: &[MetaExpr],
-        line: &OpDebugInfo,
-    ) -> AnyStmt<ResolvedExpr> {
-        match name {
-            IntrinsicType::Assert => {
-                let condition = self.parse_expr(&args[0]);
-                let throw = self.parse_intrinsic(&IntrinsicType::Panic, &args[1..], line);
-                AnyStmt::If {
-                    condition,
-                    then_body: Box::new(AnyStmt::Nothing),
-                    else_body: Box::new(throw),
-                }
-            }
-            IntrinsicType::Panic => {
-                // TODO: stack trace.
-                //       auto include forward declarations for printf and abort.
-                let msg = format!(
-                    "\n{} panicked in function {} at line {}.\n",
-                    self.raw_ast.name,
-                    self.func.signature.unwrap().name,
-                    line
-                );
-                let mut body = vec![
-                    self.call_stmt("printf", &[const_str(msg, *line)], *line),
-                    self.call_stmt("abort", &[], *line),
-                ];
-                if args.len() > 0 {
-                    body.insert(1, self.call_stmt("printf", args, *line));
-                }
-                AnyStmt::Block { body }
-            }
         }
     }
 

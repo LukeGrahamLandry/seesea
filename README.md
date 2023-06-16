@@ -8,27 +8,46 @@ and that ought to be enough for anybody. Besides, LLVM can fix anything patholog
 ## Limitations 
 
 - Pointers are assumed to be 64 bits. 
-- The aarch backend can only target macOS because they use a slightly different calling convention.
+- Maybe features are implemented as syntax de-sugaring to other features which may have unexpected runtime performance characteristics.
+- No debug info is emitted. 
+- This does not include a preprocessor, so it depends on something else for macros, includes, etc. 
 
-## Additions
+### Aarch64 Backend Specific 
 
-There are flags to disable these if you want pure C behaviour. 
+- Can only target macOS because they use a slightly different calling convention.
+- Outputs text, not binary executables, so it still depends on an assembler and linker. 
+- Not optimised. Function calls and phi nodes generate unnecessary move instructions. 
 
-- intrinsics that are nice for testing: `@panic`, `@assert`
-- like c++, `T* t = new T[count];` instead of `T* t = malloc(sizeof(T) * count);`
+### TODO
+
+switch, arrays, goto, break, continue, enums, pass structs by value, 
+break, continue, preprocessor macros, signed values, correct char size, bitwise ops, 
+and/or short-circuiting, struct/array init literals, automatic stack arrays, write variadic functions,
+global/static variables, function pointers. 
 
 ## Stages
 
 > Some would say it's impossible to jump 100 feet. Realize that it's okay to jump 1 foot 100 times. 
 
-1. Source code
-2. Token stream 
-3. AST 
-4. Resolved AST (names & types)
-5. IR (static single assignment form)
-6. LLVM IR or aarch64 assembly
+### Lexing
 
-There's also a VM that can directly run my IR for debugging the compiler.
+### Parsing
+
+### Resolve names 
+
+### Resolve types
+
+### Syntax de-sugaring
+
+### SSA form IR
+
+### Debug VM
+
+### LLVM IR
+
+### Live-ness analysis 
+
+### Text aarch64
 
 ## Libraries
 

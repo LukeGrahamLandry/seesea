@@ -675,14 +675,14 @@ long main() {
 }
 
 #[test]
-fn operator_new() {
+fn heap_long() {
     // language=c
     let src = "
 void* malloc(long size);
 void free(void* ptr);
 long main() {
-    long* x = new long[10];
-    long* z = new long;
+    long* x = malloc(sizeof(long) * 10);
+    long* z = malloc(sizeof(long));
     *z = 10;
     x[2] = *z;
     long* y = &x[3];
@@ -694,7 +694,7 @@ long main() {
 }
     ";
 
-    no_args_run_main(src, 15, "operator_new");
+    no_args_run_main(src, 15, "heap_long");
 }
 
 #[test]

@@ -144,9 +144,6 @@ impl<'ast> AstParser<'ast> {
             AstStmt::Nothing => {
                 // TODO: make sure its fine if this is the only statement in a block we want to jump to
             }
-            AstStmt::Intrinsic(name, _, _) => {
-                unreachable!("{:?} should be translated in resolve pass.", name)
-            }
         }
     }
 

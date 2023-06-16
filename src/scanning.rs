@@ -2,9 +2,6 @@ use logos::{Lexer, Logos};
 use std::collections::VecDeque;
 use std::fmt::{Debug, Formatter};
 
-const ALLOW_AT_INTRINSICS: bool = true;
-const ALLOW_OPERATOR_NEW: bool = true;
-
 // I probably want to manually write the lexer at some point because its cool if I wrote the whole thing.
 // But also I really just don't care right now cause its boring.
 #[derive(Logos, Copy, Clone, Debug, PartialEq)]
@@ -128,11 +125,6 @@ pub enum TokenType {
     SizeOf,
 
     Eof,
-
-    #[token("@")]
-    AtSign,
-    #[token("new")]
-    OpNew,
 }
 
 #[derive(Copy, Clone)]
@@ -189,10 +181,9 @@ impl<'src> Scanner<'src> {
             .map(|token| {
                 self.index += 1;
                 let lexeme = self.lex.slice();
-                let kind = adjust_for_config(token.unwrap());
                 let t = Token {
                     lexeme,
-                    kind,
+                    kind: token.unwrap(),
                     index: self.index,
                     line: 12345,
                 };
@@ -276,26 +267,6 @@ impl<'src> Scanner<'src> {
 
     pub fn advance(&mut self) -> Token<'src> {
         self.take()
-    }
-}
-
-fn adjust_for_config(kind: TokenType) -> TokenType {
-    match kind {
-        TokenType::AtSign => {
-            if ALLOW_AT_INTRINSICS {
-                kind
-            } else {
-                TokenType::Identifier
-            }
-        }
-        TokenType::OpNew => {
-            if ALLOW_OPERATOR_NEW {
-                kind
-            } else {
-                TokenType::Identifier
-            }
-        }
-        _ => kind,
     }
 }
 

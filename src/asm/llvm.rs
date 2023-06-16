@@ -442,27 +442,34 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                 BinaryOp::LessOrEqual => {
                     LLVMBuildICmp(self.builder, LLVMIntPredicate::LLVMIntULE, a, b, name)
                 }
-                BinaryOp::Modulo | BinaryOp::Equality => todo!(),
+                BinaryOp::Equality => {
+                    LLVMBuildICmp(self.builder, LLVMIntPredicate::LLVMIntEQ, a, b, name)
+                }
+                BinaryOp::Modulo => todo!(),
             }
         } else if is_floats {
             match kind {
                 BinaryOp::Add => LLVMBuildFAdd(self.builder, a, b, name),
                 BinaryOp::GreaterThan => {
-                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealUGT, a, b, name)
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealOGT, a, b, name)
                 }
                 BinaryOp::LessThan => {
-                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealULT, a, b, name)
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealOLT, a, b, name)
                 }
                 BinaryOp::Subtract => LLVMBuildFSub(self.builder, a, b, name),
                 BinaryOp::Multiply => LLVMBuildFMul(self.builder, a, b, name),
                 BinaryOp::Divide => LLVMBuildFDiv(self.builder, a, b, name),
+                // LLVMRealO* vs LLVMRealU* differ in how they treat unordered (NaN) operands
                 BinaryOp::GreaterOrEqual => {
-                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealUGE, a, b, name)
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealOGE, a, b, name)
                 }
                 BinaryOp::LessOrEqual => {
-                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealULE, a, b, name)
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealOLE, a, b, name)
                 }
-                BinaryOp::Modulo | BinaryOp::Equality => todo!(),
+                BinaryOp::Equality => {
+                    LLVMBuildFCmp(self.builder, LLVMRealPredicate::LLVMRealOEQ, a, b, name)
+                }
+                BinaryOp::Modulo => todo!(),
             }
         } else {
             panic!("Binary op {:?} must act on both ints or both floats.", kind,);

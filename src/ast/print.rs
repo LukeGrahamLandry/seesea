@@ -1,4 +1,7 @@
-use crate::ast::{AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, MetaExpr, Operation, RawExpr, ResolvedExpr, Variable};
+use crate::ast::{
+    AnyFunction, AnyModule, AnyStmt, CType, FuncSignature, MetaExpr, Operation, RawExpr,
+    ResolvedExpr, Variable,
+};
 use std::fmt::{Debug, Formatter};
 
 impl<Expr: TreePrint> Debug for AnyStmt<Expr> {
@@ -83,13 +86,6 @@ impl<Expr: TreePrint> AnyStmt<Expr> {
             }
             AnyStmt::Nothing => {
                 writeln!(f, "Nothing")
-            }
-            AnyStmt::Intrinsic(kind, args, _) => {
-                writeln!(f, "Intrinsic {:?}", kind)?;
-                for a in args {
-                    a.print(depth + 1, f)?;
-                }
-                Ok(())
             }
             AnyStmt::DoWhile { condition, body } => {
                 writeln!(f, "Do While: ")?;
@@ -213,7 +209,6 @@ impl Debug for FuncSignature {
 pub trait TreePrint {
     fn print(&self, depth: usize, f: &mut Formatter) -> std::fmt::Result;
 }
-
 
 impl Debug for Operation {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {

@@ -1,8 +1,8 @@
 //! TOKENS -> AST
 
 use crate::ast::{
-    AnyStmt, BinaryOp, CType, FuncSignature, Function, IntrinsicType, LiteralValue, MetaExpr,
-    Module, RawExpr, StructSignature, ValueType,
+    AnyStmt, BinaryOp, CType, FuncSignature, Function, LiteralValue, MetaExpr, Module, RawExpr,
+    StructSignature, ValueType,
 };
 
 use crate::scanning::{Scanner, Token, TokenType};
@@ -162,12 +162,6 @@ impl<'src> Parser<'src> {
             TokenType::Else => self.error(
                 "Keyword 'else' must be preceded by 'if STMT' (maybe you forgot a closing '}')",
             ),
-            TokenType::AtSign => {
-                self.scanner.advance();
-                let name = self.expect(TokenType::Identifier);
-                let args = self.comma_seperated_exprs(TokenType::LeftParen, TokenType::RightParen);
-                Stmt::Intrinsic(IntrinsicType::get(name.lexeme), args, name.line as i64)
-            }
             _ => {
                 let ty = self.read_type();
                 if let Some(..) = ty {
@@ -342,29 +336,6 @@ impl<'src> Parser<'src> {
                     self.scanner.replace(so);
                     todo!()
                 }
-            }
-            TokenType::OpNew => {
-                self.scanner.advance();
-                let ty = self.read_type().expect(
-                    "Expected type after operator new. This can be disabled if you want pure c. ",
-                );
-                // TODO: forward declare malloc
-                let mut size_expr = RawExpr::SizeOfType(ty).debug(token);
-                if self.scanner.matches(TokenType::LeftSquareBracket) {
-                    let count = self.parse_expr();
-                    size_expr = RawExpr::Binary {
-                        left: Box::new(size_expr),
-                        right: Box::new(count),
-                        op: BinaryOp::Multiply,
-                    }
-                    .debug(token);
-                    self.expect(TokenType::RightSquareBracket);
-                }
-                RawExpr::Call {
-                    func: RawExpr::GetVar("malloc".into()).boxed(token),
-                    args: vec![size_expr],
-                }
-                .debug(token)
             }
             _ => self.parse_primary(),
         }
