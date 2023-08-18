@@ -257,7 +257,11 @@ impl<'ir> Aarch64Builder<'ir> {
                 panic!("Ssa({}) = {:?} was allocated at end of function.", i, r);
             }
         }
-        assert!(self.active_registers.is_empty());
+        assert!(
+            self.active_registers.is_empty(),
+            "registers taken at end {:?}",
+            self.active_registers
+        );
     }
 
     fn emit_op(&mut self, op: &Op) {
@@ -566,11 +570,16 @@ impl<'ir> Aarch64Builder<'ir> {
 
             if !self.active_registers.contains(&current_reg) {
                 // TODO: hack
-                self.active_registers.push(current_reg);
-                self.unused_registers.retain(|r| *r != current_reg);
+                self.take(current_reg);
             }
             self.set_ssa(dest, current_reg);
         }
+    }
+
+    fn take(&mut self, reg: Reg) {
+        assert!(!self.active_registers.contains(&reg));
+        self.active_registers.push(reg);
+        self.unused_registers.retain(|r| *r != reg);
     }
 
     fn swap(&mut self, ty: &CType, a: Reg, b: Reg) {

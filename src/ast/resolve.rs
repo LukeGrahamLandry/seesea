@@ -82,7 +82,6 @@ impl<'ast> Resolver<'ast> {
                 name: name.clone(),
                 scope,
                 ty: kind.clone(),
-                needs_stack_alloc: Cell::new(false),
             };
             let var_ref = Rc::new(variable);
             arg_vars.push(var_ref.clone());
@@ -250,7 +249,6 @@ impl<'ast> Resolver<'ast> {
             name: name.clone(),
             scope,
             ty: kind.clone(),
-            needs_stack_alloc: Cell::new(kind.is_struct()),
         };
         let rc_var = Rc::new(variable);
         self.func.variables.insert(var, rc_var.clone());
@@ -373,10 +371,6 @@ impl<'ast> Resolver<'ast> {
             }
             RawExpr::AddressOf(value) => {
                 let value = self.parse_expr(value);
-                if let Operation::GetVar(var) = &value.expr {
-                    // Ensure that the variable is stored on the stack.
-                    var.needs_stack_alloc.set(true);
-                }
                 (value.ty.ref_type(), Operation::AddressOf(Box::new(value)))
             }
             RawExpr::Assign(lvalue, rvalue) => {

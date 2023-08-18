@@ -81,7 +81,7 @@ void list_free(ArrayList* list) {
     return;
 }
 
-index_t test() {
+long main() {
     index_t a = 4;
     index_t b = 5;
     index_t c = 6;

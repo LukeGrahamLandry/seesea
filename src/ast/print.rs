@@ -286,10 +286,6 @@ impl TreePrint for ResolvedExpr {
 
 impl Debug for Variable {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-        if self.needs_stack_alloc.get() {
-            write!(f, "sVar({}, {})", self.name, self.scope.0)
-        } else {
-            write!(f, "rVar({}, {})", self.name, self.scope.0)
-        }
+        write!(f, "sVar({}, {})", self.name, self.scope.0)
     }
 }

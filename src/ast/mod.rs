@@ -1,7 +1,6 @@
 use crate::ir::CastType;
 use crate::scanning::Token;
 use std::borrow::Borrow;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
@@ -366,7 +365,6 @@ pub enum Operation {
     },
     // name is already resolved to a field index
     GetField(Box<ResolvedExpr>, usize),
-    // These all need to refer to the same object so if it hits an AddressOf, it can update the needs_stack_alloc field.
     GetVar(Rc<Variable>),
     Literal(LiteralValue),
     Cast(Box<ResolvedExpr>, CType, CastType),
@@ -388,7 +386,6 @@ pub struct Variable {
     pub(crate) name: Rc<str>,
     pub(crate) scope: LexScope,
     pub ty: CType,
-    pub needs_stack_alloc: Cell<bool>,
 }
 
 pub type VariableRef = Rc<Variable>;

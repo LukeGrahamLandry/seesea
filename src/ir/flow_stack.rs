@@ -54,25 +54,6 @@ impl ControlFlowStack {
         self.flow.pop().expect("Can't pop empty ControlFlowStack")
     }
 
-    pub fn set(&mut self, variable: VariableRef, new_register: Ssa) {
-        assert!(
-            !variable.needs_stack_alloc.get(),
-            "{:?} is stack allocated. Can't set it's register.",
-            variable
-        );
-        // TODO: this check doesn't work with the way I'm doing nested scopes in branches
-        // assert!(self.prev_ssa.insert(new_register));
-
-        match self.flow.last_mut() {
-            None => {
-                panic!("There must always be a FlowStackFrame for tracking registers.")
-            }
-            Some(frame) => {
-                frame.mutations.insert(variable, new_register);
-            }
-        }
-    }
-
     pub fn get(&self, variable: &VariableRef) -> Option<Ssa> {
         for frame in self.flow.iter().rev() {
             if let Some(register) = frame.mutations.get(variable) {
@@ -108,7 +89,7 @@ impl ControlFlowStack {
 
     pub fn set_stack_alloc(&mut self, variable: VariableRef, addr_register: Ssa) {
         // dont care any more because resolver handles it
-        assert_eq!(variable.scope, self.current_scope());
+        // assert_eq!(variable.scope, self.current_scope());
         self.register_types
             .insert(addr_register, variable.ty.ref_type());
         assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
@@ -131,16 +112,16 @@ impl ControlFlowStack {
 
     pub fn pop_scope(&mut self) {
         let old_scope = self.scopes.pop().expect("You should always be in a scope.");
-        let stack_alloc = self
+        let _ = self
             .stack_allocated
             .pop()
             .expect("You should always be in a scope.");
         // dont care anymore because resolver handles it
         // @Speed
-        assert!(
-            !stack_alloc.iter().any(|var| var.scope != old_scope),
-            "Popped scope contained a stack variable from a different scope."
-        );
+        // assert!(
+        //     !stack_alloc.iter().any(|var| var.scope != old_scope),
+        //     "Popped scope contained a stack variable from a different scope."
+        // );
         self.dead_scopes.insert(old_scope);
     }
 

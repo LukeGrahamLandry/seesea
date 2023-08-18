@@ -620,14 +620,7 @@ long main(){
 
 #[test]
 fn array_list() {
-    // language=c
-    let src = "
-long main(){
-    return test();
-}
-    ";
-    let src = &[include_str!("../tests/array_list.c"), src].join("");
-    no_args_run_main(src, 0, "array_list");
+    no_args_run_main(include_str!("../tests/array_list.c"), 0, "array_list");
 }
 
 #[test]
@@ -703,7 +696,7 @@ fn for_loop() {
     let src = "
 long main(){
     long j = 0;
-    for (long i = 0;i<10;i = i + 1) {
+    for (long i=0;i<10;i=i+1) {
         long k = 1;
         j = i + k;
     }

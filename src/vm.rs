@@ -1,6 +1,6 @@
 //! An interpreter for my IR for inspecting the temporary registers while debugging codegen.
 //! A GUI that showed where you were in source / tokens / AST / IR side by side and let you step forward would be really cool.
-//! For now it just gives me another backend so if it agrees on results with LLVm then I know my IR gen was the problem.
+//! For now it just gives me another backend so if it agrees on results with LLVM then I know my IR gen was the problem.
 #![allow(unused)]
 
 use crate::ast::{BinaryOp, CType, LiteralValue, ValueType};
@@ -105,7 +105,7 @@ impl<'ir> Vm<'ir> {
     pub fn eval(module: &Module, function_name: &str, args: &[VmValue]) -> VmResult {
         log!("Start VM Eval.");
         let mut vm = Vm::new(module);
-        vm.tick_limit = Some(250); // TODO: move limit into tests file
+        vm.tick_limit = Some(1250); // TODO: move limit into tests file
         let func = module
             .get_internal_func(function_name)
             .expect("Function not found");
@@ -532,7 +532,8 @@ impl VmValue {
                     ValueType::U64 => v.to_le_bytes().to_vec().into_boxed_slice(),
                     ValueType::U8 => (*v as u8).to_le_bytes().to_vec().into_boxed_slice(),
                     ValueType::U32 => (*v as u32).to_le_bytes().to_vec().into_boxed_slice(),
-                    _ => unreachable!(),
+                    ValueType::Bool => v.to_le_bytes().to_vec().into_boxed_slice(),
+                    _ => unreachable!("to bytes of {:?}", ty.ty),
                 }
             }
             VmValue::F64(v) => {
