@@ -232,6 +232,8 @@ impl<'ast> Resolver<'ast> {
                 AnyStmt::Return { value }
             }
             AnyStmt::Nothing => AnyStmt::Nothing,
+            AnyStmt::Break => AnyStmt::Break,
+            AnyStmt::Continue => AnyStmt::Continue,
         }
     }
 

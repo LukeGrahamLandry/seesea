@@ -94,6 +94,8 @@ pub enum AnyStmt<Expr> {
     Return {
         value: Option<Expr>,
     },
+    Break,
+    Continue,
     Nothing,
 }
 

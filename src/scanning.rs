@@ -124,6 +124,10 @@ pub enum TokenType {
     #[token("sizeof")]
     SizeOf,
 
+    // #[token("goto")]
+    // Goto,
+    // #[token(":")]
+    // Colon,
     Eof,
 }
 

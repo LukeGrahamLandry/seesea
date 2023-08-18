@@ -27,6 +27,9 @@ struct AstParser<'ast> {
 
     /// variable -> register holding a pointer to that variable's value.
     stack_addresses: HashMap<VariableRef, Ssa>,
+
+    continue_targets: Vec<Label>,
+    break_targets: Vec<Label>,
 }
 
 impl From<AnyModule<AnyFunction<MetaExpr>>> for ir::Module {
@@ -63,6 +66,8 @@ impl<'ast> AstParser<'ast> {
             control: Default::default(),
             root_node: None,
             stack_addresses: Default::default(),
+            continue_targets: vec![],
+            break_targets: vec![],
         }
     }
 
@@ -143,6 +148,20 @@ impl<'ast> AstParser<'ast> {
             }
             AstStmt::Nothing => {
                 // TODO: make sure its fine if this is the only statement in a block we want to jump to
+            }
+            AstStmt::Break => {
+                let target = *self
+                    .break_targets
+                    .last()
+                    .expect("break only valid within loop.");
+                self.func_mut().push(*block, Op::AlwaysJump(target), 0);
+            }
+            AstStmt::Continue => {
+                let target = *self
+                    .continue_targets
+                    .last()
+                    .expect("Continue only valid within loop.");
+                self.func_mut().push(*block, Op::AlwaysJump(target), 0);
             }
         }
     }
@@ -320,10 +339,19 @@ impl<'ast> AstParser<'ast> {
         body: &'ast AstStmt,
     ) {
         let parent_block = *block;
-        let setup_block = self.func_mut().new_block();
+
         let condition_block = self.func_mut().new_block();
-        self.func_mut()
-            .push(parent_block, Op::AlwaysJump(setup_block), condition.info());
+        self.continue_targets.push(condition_block);
+        self.func_mut().push(
+            parent_block,
+            Op::AlwaysJump(condition_block),
+            condition.info(),
+        );
+
+        // Empty block that will just jump to the end. Avoids needing to back-patch.
+        // Also doubles as the exit_block we continue from later because order doesn't matter.
+        let break_block = self.func_mut().new_block();
+        self.break_targets.push(break_block);
 
         self.control.push_flow_frame(condition_block);
         let condition_register = self.emit_expr(condition, condition_block);
@@ -336,16 +364,9 @@ impl<'ast> AstParser<'ast> {
         self.emit_statement(body, &mut end_of_body_block);
         let _ = self.control.pop_flow_frame();
 
-        let exit_block = self.func_mut().new_block();
-
-        self.func_mut().push(
-            setup_block,
-            Op::AlwaysJump(condition_block),
-            condition.info(),
-        );
         self.func_mut().push(
             end_of_body_block,
-            Op::AlwaysJump(setup_block),
+            Op::AlwaysJump(condition_block),
             condition.info(),
         );
         self.func_mut().push(
@@ -353,12 +374,15 @@ impl<'ast> AstParser<'ast> {
             Op::Jump {
                 condition: condition_register,
                 if_true: start_body_block,
-                if_false: exit_block,
+                if_false: break_block,
             },
             condition.info(),
         );
 
-        *block = exit_block;
+        assert_eq!(self.continue_targets.pop(), Some(condition_block));
+        assert_eq!(self.break_targets.pop(), Some(break_block));
+
+        *block = break_block;
     }
 
     fn emit_expr(&mut self, expr: &'ast ResolvedExpr, block: Label) -> Ssa {

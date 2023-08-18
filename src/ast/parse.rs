@@ -162,6 +162,16 @@ impl<'src> Parser<'src> {
             TokenType::Else => self.error(
                 "Keyword 'else' must be preceded by 'if STMT' (maybe you forgot a closing '}')",
             ),
+            TokenType::Break => {
+                self.scanner.advance();
+                self.scanner.consume(TokenType::Semicolon);
+                Stmt::Break
+            }
+            TokenType::Continue => {
+                self.scanner.advance();
+                self.scanner.consume(TokenType::Semicolon);
+                Stmt::Continue
+            }
             _ => {
                 let ty = self.read_type();
                 if let Some(..) = ty {

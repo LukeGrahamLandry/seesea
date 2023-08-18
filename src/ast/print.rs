@@ -92,6 +92,8 @@ impl<Expr: TreePrint> AnyStmt<Expr> {
                 condition.print(depth + 1, f)?;
                 body.print(depth + 1, f)
             }
+            AnyStmt::Break => writeln!(f, "Break"),
+            AnyStmt::Continue => writeln!(f, "Continue"),
         }
     }
 }

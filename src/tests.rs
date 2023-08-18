@@ -739,6 +739,44 @@ long main(){
     no_args_run_main(src, 0, "while_loop");
 }
 
+#[test]
+fn while_loop_continue() {
+    // language=c
+    let src = "
+long main(){
+    long x = 0;
+    long y = 0;
+    while (x < 10) {
+        x = x + 1;
+        if (x > 5) {
+            continue;
+        }
+        y = y + 1;
+    }
+    return y;
+}
+    ";
+    no_args_run_main(src, 5, "while_loop_continue");
+}
+
+#[test]
+fn while_loop_break() {
+    // language=c
+    let src = "
+long main(){
+    long x = 0;
+    while (x < 10) {
+        x = x + 1;
+        if (x > 5) {
+            break;
+        }
+    }
+    return x;
+}
+    ";
+    no_args_run_main(src, 6, "while_loop_break");
+}
+
 // TODO
 // short circuiting
 //
