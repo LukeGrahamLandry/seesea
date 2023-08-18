@@ -777,6 +777,43 @@ long main(){
     no_args_run_main(src, 6, "while_loop_break");
 }
 
+#[test]
+fn for_loop_break() {
+    // language=c
+    let src = "
+long main(){
+    long x;
+    for (x=0;x<10;x=x+1){
+        if (x > 5) {
+            break;
+        }
+    }
+    return x;
+}
+    ";
+    no_args_run_main(src, 6, "for_loop_break");
+}
+
+#[test]
+fn for_loop_continue() {
+    // language=c
+    let src = "
+long main(){
+    long y = 0;
+    for (long x=0;x<10;x=x+1){
+        y = y + 1;
+        if (x > 5) {
+            continue;
+        }
+        
+        x = x + 1;
+    }
+    return y;
+}
+    ";
+    no_args_run_main(src, 7, "for_loop_continue");
+}
+
 // TODO
 // short circuiting
 //

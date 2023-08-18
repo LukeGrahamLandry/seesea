@@ -143,8 +143,16 @@ impl<'ast> AstParser<'ast> {
             AstStmt::While { condition, body } => {
                 self.emit_while_loop(block, condition, body);
             }
-            AstStmt::For { .. } | AstStmt::DoWhile { .. } => {
-                unreachable!("For/do loops de-sugar to while loops.")
+            AstStmt::For {
+                initializer,
+                condition,
+                increment,
+                body,
+            } => {
+                self.emit_for_loop(block, initializer, condition, increment, body);
+            }
+            AstStmt::DoWhile { .. } => {
+                unreachable!("do loops de-sugar to while loops.")
             }
             AstStmt::Nothing => {
                 // TODO: make sure its fine if this is the only statement in a block we want to jump to
@@ -329,9 +337,7 @@ impl<'ast> AstParser<'ast> {
         (branch_block, working_block_pointer, branch_returned)
     }
 
-    // parent > setup > condition
-    //                           body_block > end_of_body_block <setup
-    //                           exit_block
+    // TODO: could de-sugar to a for loop with no initializer/increment
     fn emit_while_loop(
         &mut self,
         block: &mut Label,
@@ -382,6 +388,79 @@ impl<'ast> AstParser<'ast> {
         assert_eq!(self.continue_targets.pop(), Some(condition_block));
         assert_eq!(self.break_targets.pop(), Some(break_block));
 
+        *block = break_block;
+    }
+
+    // Can't just de-sugar to while loop because continue needs to jump to the increment expression.
+    fn emit_for_loop(
+        &mut self,
+        block: &mut Label,
+        initializer: &'ast AstStmt,
+        condition: &'ast ResolvedExpr,
+        increment: &'ast ResolvedExpr,
+        body: &'ast AstStmt,
+    ) {
+        // Initializer may branch for or/and short-circuiting.
+        let mut end_of_init = self.func_mut().new_block();
+        let start_of_init = end_of_init;
+        self.control.push_flow_frame(start_of_init);
+        self.emit_statement(initializer, &mut end_of_init);
+
+        let condition_block = self.func_mut().new_block();
+        self.func_mut().push(
+            start_of_init,
+            Op::AlwaysJump(condition_block),
+            condition.info(),
+        );
+
+        self.func_mut()
+            .push(*block, Op::AlwaysJump(start_of_init), condition.info());
+
+        // End of loop and continue jump here instead of directly to the condition.
+        let increment_block = self.func_mut().new_block();
+        self.continue_targets.push(increment_block);
+        let _ = self.emit_expr(increment, increment_block);
+        self.func_mut().push(
+            increment_block,
+            Op::AlwaysJump(condition_block),
+            condition.info(),
+        );
+
+        // Empty block that will just jump to the end. Avoids needing to back-patch.
+        // Also doubles as the exit_block we continue from later because order doesn't matter.
+        let break_block = self.func_mut().new_block();
+        self.break_targets.push(break_block);
+
+        self.control.push_flow_frame(condition_block);
+        let condition_register = self.emit_expr(condition, condition_block);
+        let _ = self.control.pop_flow_frame();
+
+        let start_body_block = self.func_mut().new_block();
+        let mut end_of_body_block = start_body_block;
+
+        self.control.push_flow_frame(end_of_body_block);
+        self.emit_statement(body, &mut end_of_body_block);
+        let _ = self.control.pop_flow_frame();
+
+        self.func_mut().push(
+            end_of_body_block,
+            Op::AlwaysJump(increment_block),
+            condition.info(),
+        );
+        self.func_mut().push(
+            condition_block,
+            Op::Jump {
+                condition: condition_register,
+                if_true: start_body_block,
+                if_false: break_block,
+            },
+            condition.info(),
+        );
+
+        assert_eq!(self.continue_targets.pop(), Some(increment_block));
+        assert_eq!(self.break_targets.pop(), Some(break_block));
+
+        let _ = self.control.pop_flow_frame();
         *block = break_block;
     }
 

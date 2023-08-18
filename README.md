@@ -10,7 +10,7 @@ and that ought to be enough for anybody. Besides, LLVM can fix anything patholog
 - float/double, unsigned int/long
   - `+ - * / % >= <= > < ==`
 - variables, pointers (`&a, *b, c[2]`)
-- if/else, loops (for, while, do while)
+- if/else, loops (for, while, do while), break/continue
 - functions
 - structs, typedefs
 
@@ -32,7 +32,7 @@ See examples in `tests.rs`.
 ### TODO
 
 switch, statically allocated arrays, goto, break, continue, enums, pass structs by value, 
-break, continue, signed values, correct char size, bitwise ops, 
+signed values, correct char size, bitwise ops, 
 and/or short-circuiting, struct/array init literals, write variadic functions, 
 global/static variables, function pointers. 
  
