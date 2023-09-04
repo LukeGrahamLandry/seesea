@@ -1,6 +1,6 @@
 # seesea
 
-A C compiler targeting LLVM IR or aarch64 assembly. 
+A (partial) C compiler targeting LLVM IR or aarch64 assembly. 
 
 This is not an optimising compiler, but it's certainly a compiling compiler, 
 and that ought to be enough for anybody. Besides, LLVM can fix anything pathological on its own.
@@ -29,7 +29,7 @@ See examples in `tests.rs`.
 - Outputs text, not binary executables, so it still depends on an assembler and linker. 
 - Not optimised. Function calls and phi nodes generate unnecessary move instructions. 
 
-### TODO
+## TODO
 
 switch, statically allocated arrays, goto, break, continue, enums, pass structs by value, 
 signed values, correct char size, bitwise ops, 
@@ -43,34 +43,7 @@ global/static variables, function pointers.
   - use real linker instead of inline asm macro 
   - print which backend each works on separately 
   - steal tests from a real c compiler
-- compile asm backend to wasm and make demo ui
-
-## Stages
-
-> Some would say it's impossible to jump 100 feet. Realize that it's okay to jump 1 foot 100 times. 
-
-- AST > My IR > LLVM IR > Anything
-- AST > My IR > Aarch64 ASM
-
-### Lexing
-
-### Parsing
-
-### Resolve names 
-
-### Resolve types
-
-### Syntax de-sugaring
-
-### SSA form IR
-
-### Debug VM
-
-### LLVM IR
-
-### Live-ness analysis 
-
-### Text aarch64
+- compile to wasm and make demo ui
 
 ## Libraries
 
