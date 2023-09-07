@@ -40,6 +40,9 @@ pub enum TokenType {
     #[token("--")]
     MinusMinus,
 
+    #[token("==")]
+    EqualEqual,
+
     #[token(";")]
     Semicolon,
 

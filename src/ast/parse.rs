@@ -302,6 +302,7 @@ impl<'src> Parser<'src> {
             TokenType::Slash => BinaryOp::Divide,
             TokenType::GreaterEqual => BinaryOp::GreaterOrEqual,
             TokenType::LessEqual => BinaryOp::LessOrEqual,
+            TokenType::EqualEqual => BinaryOp::Equality,
             _ => return left, // todo: only some tokens are valid here
         };
 
