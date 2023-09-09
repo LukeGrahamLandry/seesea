@@ -188,9 +188,13 @@ impl<Expr: TreePrint> Debug for AnyModule<AnyFunction<Expr>> {
 impl Debug for CType {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self.depth {
-            0 => write!(f, "{:?}", self.ty),
-            _ => write!(f, "{:?}-ptr{}", self.ty, self.depth),
+            0 => write!(f, "{:?}", self.ty)?,
+            _ => write!(f, "{:?}-ptr{}", self.ty, self.depth)?,
         }
+        if self.count != 1 {
+            write!(f, "[{}]", self.count)?
+        }
+        Ok(())
     }
 }
 

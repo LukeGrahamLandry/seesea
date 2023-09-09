@@ -60,7 +60,7 @@ impl Function {
                 Some(v) => format!("return {};", self.name_ty(v)),
             },
             Op::StackAlloc { dest, ty, count } => {
-                format!("{} = alloc(sizeof {:?} * {});", self.name(dest), ty, count)
+                format!("{} = alloca(sizeof {:?} * {});", self.name_ty(dest), ty, count)
             }
             Op::AlwaysJump(target) => format!("goto {:?};", target),
             Op::Call {

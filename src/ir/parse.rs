@@ -175,32 +175,76 @@ impl<'ast> AstParser<'ast> {
     }
 
     fn declare_variable(&mut self, variable: VariableRef, value: &'ast ResolvedExpr, block: Label) {
-        assert_eq!(variable.ty, value.ty);
-        if variable.ty.is_struct() {
-            assert!(matches!(
-                value.as_ref(),
-                Operation::Literal(LiteralValue::UninitStruct)
-            ));
-            let ptr_register = self.func_mut().next_var();
-            self.control.set_stack_alloc(variable.clone(), ptr_register);
-            self.func_mut().required_stack_bytes += self.ir.size_of(&value.ty);
-            self.func_mut().push(
-                block,
-                Op::StackAlloc {
-                    dest: ptr_register,
-                    ty: variable.ty.clone(),
-                    count: 1,
-                },
-                value.info(),
-            );
-            self.stack_addresses.insert(variable, ptr_register);
-            return;
+        match value.as_ref() {
+            Operation::Literal(LiteralValue::UninitStruct) => {
+                assert!(variable.ty.is_struct());
+                assert_eq!(variable.ty, value.ty);
+                self.stack_alloc_var(block, variable, &value.ty, 1, value.info());
+            }
+            Operation::Literal(LiteralValue::UninitArray(element, count)) => {
+                assert!(value.ty.is_pointer_to(element));
+                println!("declare array of {count} {element:?}");
+                let first_elm_ptr = self.make_ssa(element.ref_type());
+                self.func_mut().required_stack_bytes += self.ir.size_of(element) * count;
+                self.func_mut().push(
+                    block,
+                    Op::StackAlloc {
+                        dest: first_elm_ptr,
+                        ty: element.clone(),
+                        count: *count,
+                    },
+                    value.info(),
+                );
+                
+                // TODO: This is a pessimising compiler!
+                //       Everything assumes that when you access a variable, you're starting with a pointer to a stack slot with that type. 
+                //       The array's variable type is *T so it makes a **T for it. This is dumb and I'm too lazy to fix my poor choices. 
+                //       Array vars can't be assigned to (ie changing which ptr the name refers to) so could do this much better. 
+                let ptr_to_ptr = self.stack_alloc_var(block, variable, &element.ref_type(), 1, value.info());
+                self.func_mut().push(
+                    block,
+                    Op::StoreToPtr {
+                        addr: ptr_to_ptr,
+                        value_source: first_elm_ptr,
+                    },
+                    value.info(),
+                );
+            }
+            _ => {
+                assert_eq!(variable.ty, value.ty);
+                assert!(!variable.ty.is_struct());
+                let value_register = self.emit_expr(value, block);
+                let ptr_register  = self.stack_alloc_var(block, variable, &value.ty, 1, value.info());
+                self.func_mut().push(
+                    block,
+                    Op::StoreToPtr {
+                        addr: ptr_register,
+                        value_source: value_register,
+                    },
+                    value.info(),
+                );
+            }
         }
-
-        let value_register = self.emit_expr(value, block);
-        self.declare_single_variable(variable, value_register, block, value.info());
     }
 
+    fn stack_alloc_var(&mut self, block: Label, variable: VariableRef, ty: &CType, count: usize, info: OpDebugInfo) -> Ssa {
+        let ptr_register = self.func_mut().next_var();
+        self.control.set_stack_alloc(variable.clone(), ptr_register);
+        self.func_mut().required_stack_bytes += self.ir.size_of(ty) * count;
+        self.func_mut().push(
+            block,
+            Op::StackAlloc {
+                dest: ptr_register,
+                ty: ty.clone(),
+                count,
+            },
+            info,
+        );
+        self.stack_addresses.insert(variable, ptr_register);
+        ptr_register
+    }
+
+    // TODO: remove. only used for function args. need to support structs & arrays.
     fn declare_single_variable(
         &mut self,
         variable: VariableRef,
@@ -211,20 +255,8 @@ impl<'ast> AstParser<'ast> {
         assert!(!variable.ty.is_struct());
         assert_eq!(self.type_of(value_register), variable.ty);
 
-        // Somebody wants to take the address of this variable later,
-        // so we need to make sure it gets allocated on the stack and not kept in a register.
-        let ptr_register = self.func_mut().next_var();
-        self.control.set_stack_alloc(variable.clone(), ptr_register);
-        self.func_mut().required_stack_bytes += self.ir.size_of(&variable.ty);
-        self.func_mut().push(
-            block,
-            Op::StackAlloc {
-                dest: ptr_register,
-                ty: variable.ty.clone(),
-                count: 1,
-            },
-            line,
-        );
+        let dumb = variable.ty.clone();
+        let ptr_register  = self.stack_alloc_var(block, variable, &dumb, 1, line);
         self.func_mut().push(
             block,
             Op::StoreToPtr {
@@ -233,7 +265,6 @@ impl<'ast> AstParser<'ast> {
             },
             line,
         );
-        self.stack_addresses.insert(variable, ptr_register);
     }
 
     fn emit_function_call(
@@ -482,9 +513,10 @@ impl<'ast> AstParser<'ast> {
                     LiteralValue::StringBytes { .. } => CType {
                         ty: ValueType::U8,
                         depth: 1,
+                        count: 1
                     },
                     LiteralValue::FloatNumber { .. } => CType::direct(ValueType::F64),
-                    LiteralValue::UninitStruct => unreachable!(),
+                    LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!(),
                 };
 
                 let dest = self.make_ssa(&kind);
@@ -653,7 +685,9 @@ impl<'ast> AstParser<'ast> {
                     .stack_addresses
                     .get(this_variable)
                     .expect("Expected stack variable.");
-                assert!(self.control.ssa_type(addr).is_pointer_to(&this_variable.ty));
+
+                let addr_ty = self.control.ssa_type(addr);
+                assert!(addr_ty.is_pointer_to(&this_variable.ty), "{:?} is not pointer to {:?}", addr_ty, this_variable.ty);
                 Lvalue::DerefPtr(addr)
             }
             Operation::DerefPtr(value) => {

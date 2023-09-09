@@ -202,7 +202,9 @@ impl<'ast> Resolver<'ast> {
             }
             AnyStmt::DeclareVar {
                 name, value, kind, ..
-            } => self.declare_var(name.clone(), name.as_ref(), value, kind),
+            } => {
+                self.declare_var(name.clone(), name.as_ref(), value, kind)
+            },
             AnyStmt::Return { value } => {
                 let returns = &self.func.signature.as_ref().unwrap().return_type;
                 let value = match value {
@@ -241,20 +243,42 @@ impl<'ast> Resolver<'ast> {
     ) -> AnyStmt<ResolvedExpr> {
         let scope = *self.func.scopes.last().unwrap();
         let var = Var(name_ref, scope);
-        let variable = Variable {
-            name: name.clone(),
-            scope,
-            ty: kind.clone(),
-        };
-        let rc_var = Rc::new(variable);
-        self.func.variables.insert(var, rc_var.clone());
-        let value = self.parse_expr(value);
-        let value = self.implicit_cast(value, kind);
-        AnyStmt::DeclareVar {
-            name: name.clone(),
-            value,
-            kind: kind.clone(),
-            variable: Some(rc_var),
+
+        if kind.count != 1 {
+            println!("declare_var ARRAY: {:?}", kind);
+            let mut kind = kind.clone();
+            kind.count = 1;
+            kind.depth += 1;
+            let variable = Variable {
+                name: name.clone(),
+                scope,
+                ty: kind.clone(),
+            };
+            let value = self.parse_expr(value);
+            let rc_var = Rc::new(variable);
+            self.func.variables.insert(var, rc_var.clone());
+            AnyStmt::DeclareVar {
+                name: name.clone(),
+                value,
+                kind: kind.clone(),
+                variable: Some(rc_var),
+            }
+        } else {
+            let variable = Variable {
+                name: name.clone(),
+                scope,
+                ty: kind.clone(),
+            };
+            let value = self.parse_expr(value);
+            let value = self.implicit_cast(value, kind);
+            let rc_var = Rc::new(variable);
+            self.func.variables.insert(var, rc_var.clone());
+            AnyStmt::DeclareVar {
+                name: name.clone(),
+                value,
+                kind: kind.clone(),
+                variable: Some(rc_var),
+            }
         }
     }
 
@@ -332,12 +356,18 @@ impl<'ast> Resolver<'ast> {
                     LiteralValue::FloatNumber(_) => CType::direct(ValueType::F64),
                     LiteralValue::StringBytes(_) => CType::direct(ValueType::U8).ref_type(),
                     LiteralValue::UninitStruct => unreachable!(),
+                    LiteralValue::UninitArray(_, _) => unreachable!(),
                 };
                 (ty, Operation::Literal(value.clone()))
             }
             RawExpr::Default(ty) => {
                 if ty.is_struct() {
                     (ty.clone(), Operation::Literal(LiteralValue::UninitStruct))
+                } else if ty.is_static_array() {
+                    let mut element = ty.clone();
+                    element.count = 1;
+                    println!("Default init array of {} {:?}.", ty.count, element);
+                    (element.ref_type(), Operation::Literal(LiteralValue::UninitArray(element, ty.count)))
                 } else {
                     let zero = ResolvedExpr {
                         expr: Operation::number(0),
@@ -400,6 +430,8 @@ impl<'ast> Resolver<'ast> {
         let ptr_ty = element_ty.ref_type();
         let line = index.info();
 
+        println!("array_index: element_ty={element_ty:?} ptr_ty={ptr_ty:?}");
+
         let s = self.raw_ast.size_of(&element_ty) as u64;
         let element_size = ResolvedExpr {
             expr: Operation::number(s),
@@ -456,6 +488,8 @@ impl<'ast> Resolver<'ast> {
         let input = &value.ty;
         let output = target;
 
+        println!("implicit_cast ({}): {:?} TO {:?}", value.info(), input, output);
+
         // Void pointers can be used as any pointer type.
         let void_ptr = (target.is_void_ptr() && value.ty.is_ptr())
             || (target.is_ptr() && value.ty.is_void_ptr());
@@ -468,14 +502,14 @@ impl<'ast> Resolver<'ast> {
             return do_cast(CastType::Bits, value, target);
         }
 
-        if value.ty.is_ptr() && target.is_raw_int() {
+        if (value.ty.is_ptr() || value.ty.is_static_array()) && target.is_raw_int() {
             // cast to usize
             let addr_number = do_cast(CastType::PtrToInt, value, &CType::int());
             // then make the type you wanted
             return self.implicit_cast(addr_number, target);
         }
 
-        if value.ty.is_raw_int() && target.is_ptr() {
+        if value.ty.is_raw_int() && (target.is_ptr() || value.ty.is_static_array()) {
             // cast to usize
             let addr_number = self.implicit_cast(value, &CType::int());
             // then to pointer

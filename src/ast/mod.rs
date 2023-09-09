@@ -154,6 +154,7 @@ pub enum LiteralValue {
     FloatNumber(f64),
     StringBytes(Rc<str>),
     UninitStruct,
+    UninitArray(CType, usize)
 }
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
@@ -173,6 +174,7 @@ pub enum ValueType {
 pub struct CType {
     pub ty: ValueType,
     pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
+    pub count: usize, // array size. this is awkward because struct fields have sized arrays but they decay to pointers when passed. 
 }
 
 impl<Func: FuncRepr> AnyModule<Func> {
@@ -221,10 +223,10 @@ impl<Func: FuncRepr> AnyModule<Func> {
         if ty.depth > 0 {
             // this is checking at compile time when it should care about runtime but it will have to do for now.
             assert_eq!(size_of::<usize>(), size_of::<u64>());
-            return 8;
+            return 8 * (ty.count as usize);
         }
 
-        match &ty.ty {
+        let size = match &ty.ty {
             ValueType::U64 => 8,
             ValueType::U8 => 1,
             ValueType::U32 => 4,
@@ -241,7 +243,8 @@ impl<Func: FuncRepr> AnyModule<Func> {
             }
             // TODO: non-llvm is just treating these as u64 which is probably wrong but might not be observable until i let you say _Bool as a type.
             ValueType::Bool => 8,
-        }
+        };
+        size * (ty.count as usize)
     }
 }
 
@@ -250,6 +253,7 @@ impl CType {
         CType {
             ty: ValueType::Bool,
             depth: 0,
+            count: 1
         }
     }
 
@@ -257,29 +261,34 @@ impl CType {
         CType {
             ty: ValueType::U64,
             depth: 0,
+            count: 1
         }
     }
 
     pub fn direct(ty: ValueType) -> CType {
-        CType { ty, depth: 0 }
+        CType { ty, depth: 0, count: 1 }
     }
 
     #[must_use]
     pub fn deref_type(&self) -> CType {
+        assert!(self.count == 1, "no deref array. should auto decay");
+        let mut other = self.clone();
         assert!(
             self.depth > 0,
             "Tried to dereference non-pointer type {:?}.",
             self
         );
-        let mut other = self.clone();
         other.depth -= 1;
+        
         other
     }
 
     #[must_use]
     pub fn ref_type(&self) -> CType {
+        assert!(self.count == 1, "no ref array. should auto decay");
         let mut other = self.clone();
         other.depth += 1;
+        other.count = 1;
         other
     }
 
@@ -289,6 +298,10 @@ impl CType {
 
     pub fn is_struct(&self) -> bool {
         self.depth == 0 && matches!(self.ty, ValueType::Struct(_))
+    }
+
+    pub fn is_static_array(&self) -> bool {
+        self.count != 1
     }
 
     /// Does this type fit in a register (ie. is not a struct)
@@ -481,5 +494,15 @@ impl AsRef<RawExpr> for MetaExpr {
 impl Debug for MetaExpr {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         self.expr.fmt(f)
+    }
+}
+
+impl MetaExpr {
+    pub fn comptime_usize(&self) -> Option<usize> {
+        if let RawExpr::Literal(LiteralValue::IntNumber(n)) = self.expr {
+            Some(n as usize)
+        } else {
+            None
+        }
     }
 }

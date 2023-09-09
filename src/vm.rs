@@ -301,6 +301,7 @@ impl<'ir> Vm<'ir> {
                         VmValue::ConstString(self.strings.len() - 1)
                     }
                     LiteralValue::UninitStruct => unreachable!(),
+                    LiteralValue::UninitArray(_, _) => unreachable!(),
                 };
                 self.set(dest, val);
             }

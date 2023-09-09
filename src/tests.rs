@@ -814,6 +814,24 @@ long main(){
     no_args_run_main(src, 7, "for_loop_continue");
 }
 
+
+#[test]
+fn for_loop_body() {
+    // language=c
+    let src = "
+int main(){
+    int arr[2];
+
+	arr[0] = 1;
+	arr[1] = 2;
+
+	return (arr[0] + arr[1]) - 3;
+}
+    ";
+    no_args_run_main(src, 0, "for_loop_body");
+}
+
+
 // TODO
 // short circuiting
 //

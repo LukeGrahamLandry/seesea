@@ -10,7 +10,7 @@ pub mod tests;
 mod util;
 
 pub const KEEP_IR_DEBUG_NAMES: bool = true;
-pub const DO_LOGGING: bool = false;
+pub const DO_LOGGING: bool = true;
 
 macro_rules! log {
     ($($arg:tt)*) => {{

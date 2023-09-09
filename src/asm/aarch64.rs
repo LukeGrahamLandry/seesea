@@ -288,7 +288,7 @@ impl<'ir> Aarch64Builder<'ir> {
                         self.constants += &format!("{}:\n.asciz \"{}\"\n", name, s);
                         output!(self, "adr {:?}, {}", result, name);
                     }
-                    LiteralValue::UninitStruct => unreachable!(),
+                    LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _)=> unreachable!(),
                 }
                 self.set_ssa(dest, result);
             }

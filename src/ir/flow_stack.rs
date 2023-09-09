@@ -95,6 +95,13 @@ impl ControlFlowStack {
         assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
     }
 
+    // TODO: this is kinda a hack. the type of the variable is *T already so dont ref it
+    pub fn set_stack_alloc_array(&mut self, variable: VariableRef, addr_register: Ssa) {
+        self.register_types
+            .insert(addr_register, variable.ty.clone());
+        assert!(self.stack_allocated.last_mut().unwrap().insert(variable));
+    }
+
     pub fn clear(&mut self) {
         let no_scopes =
             self.flow.is_empty() && self.scopes.is_empty() && self.stack_allocated.is_empty();

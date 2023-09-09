@@ -158,7 +158,10 @@ impl<'src> Parser<'src> {
             TokenType::While => self.parse_while_loop(),
             TokenType::For => self.parse_for_loop(),
             TokenType::Do => self.parse_do_while_loop(),
-            TokenType::Semicolon => Stmt::Nothing,
+            TokenType::Semicolon => {
+                self.scanner.advance();
+                Stmt::Nothing
+            },
             TokenType::Else => self.error(
                 "Keyword 'else' must be preceded by 'if STMT' (maybe you forgot a closing '}')",
             ),
@@ -189,17 +192,38 @@ impl<'src> Parser<'src> {
     }
 
     /// TYPE NAME = EXPR?;
-    fn parse_declare_variable(&mut self, kind: CType) -> Stmt {
+    fn parse_declare_variable(&mut self, mut kind: CType) -> Stmt {
         let name = self.read_ident("assert var name");
 
-        let value = if self.scanner.matches(TokenType::Semicolon) {
-            RawExpr::Default(kind.clone()).debug(self.scanner.prev())
-        } else {
-            self.expect(TokenType::Equal);
-            let value = self.parse_expr();
-            self.expect(TokenType::Semicolon);
-            value
+        let value = loop {
+            match self.scanner.peek() {
+                TokenType::Semicolon => {
+                    self.scanner.advance();
+                    break RawExpr::Default(kind.clone()).debug(self.scanner.prev());
+                }
+                TokenType::Equal => {
+                    self.scanner.advance();
+                    let value = self.parse_expr();
+                    self.expect(TokenType::Semicolon);
+                    break value;
+                }
+                TokenType::LeftSquareBracket => {
+                    self.scanner.advance();
+                    if kind.count != 1 {
+                        self.err("TODO: Nested arrays are not supported.", self.scanner.peek_n(0));
+                    }
+                    let size = self.parse_expr();
+                    self.expect(TokenType::RightSquareBracket);
+                    kind.count = size.comptime_usize().unwrap_or_else(|| {
+                        self.err("Static array size must be an integer literal.", self.scanner.peek_n(0));
+                    });
+                }
+                _ => {
+                    self.err("Unexpected token after variable declaration.", self.scanner.peek_n(0));
+                }
+            }
         };
+        
         Stmt::DeclareVar {
             name: name.into(),
             kind: kind.clone(),
@@ -445,6 +469,7 @@ impl<'src> Parser<'src> {
     }
 
     // TODO: array types
+    //       instead of this and special handling in delcare. need to have one read_type_and_name function
     /// TYPE
     #[must_use]
     fn read_type(&mut self) -> Option<CType> {
@@ -463,10 +488,7 @@ impl<'src> Parser<'src> {
                     None => self.err("Undeclared struct", name_token),
                     Some(s) => s,
                 };
-                CType {
-                    ty: ValueType::Struct(s.name.clone()),
-                    depth: 0,
-                }
+                CType::direct(ValueType::Struct(s.name.clone()))
             }
             TokenType::Identifier => {
                 if let Some(ty) = self.program.type_defs.get(token.lexeme).cloned() {
@@ -484,7 +506,7 @@ impl<'src> Parser<'src> {
                     };
 
                     self.expect(TokenType::Identifier);
-                    CType { ty, depth: 0 }
+                    CType::direct(ty)
                 }
             }
             _ => return None,

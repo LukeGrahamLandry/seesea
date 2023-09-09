@@ -204,9 +204,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                         LLVMBuildStore(self.builder, string, str_ptr);
                         str_ptr
                     }
-                    LiteralValue::UninitStruct => {
-                        todo!()
-                    }
+                    LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!()
                 };
                 self.set(dest, val);
             }
@@ -290,7 +288,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                 );
             }
             Op::StackAlloc { dest, ty, count } => {
-                assert_eq!(*count, 1);
+                assert_eq!(*count, 1, "TODO: multi stack slot alloca not implemented.");
                 let ptr = LLVMBuildAlloca(self.builder, self.llvm_type(ty), empty.as_ptr());
                 self.set(dest, ptr);
             }
