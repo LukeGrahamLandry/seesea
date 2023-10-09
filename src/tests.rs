@@ -435,6 +435,19 @@ long main(){
 }
 
 #[test]
+fn struct_decl_as_var_type() {
+    // language=c
+    let src = "
+long main(){
+    struct { int a; } b;
+    b.a = 15;
+    return b.a;
+}
+    ";
+    no_args_run_main(src, 15, "struct_decl_as_var_type");
+}
+
+#[test]
 fn struct_field_addr() {
     // language=c
     let src = "
@@ -531,6 +544,37 @@ long main(){
 
     no_args_run_main(src, 1, "mul_div");
 }
+
+#[test]
+fn sizeof() {
+    // language=c
+    let src = "
+long main(){
+    // TODO: strange implicit casting if you try to add these together in one expression?
+    int a = (sizeof(long) == 8);
+    int b = (sizeof(int) == 4);
+    int c = (sizeof(double) == 8);
+    int d = (sizeof(float) == 4);
+    return a + b + c + d;
+}
+    ";
+
+    no_args_run_main(src, 4, "sizeof");
+}
+
+// TODO
+// #[test]
+// fn broken_implicit_cast() {
+//     // language=c
+//     let src = "
+// long main(){
+//     long x = (sizeof(long) == 8);
+//     return x;
+// }
+//     ";
+//
+//     no_args_run_main(src, 1, "broken_implicit_cast");
+// }
 
 #[test]
 fn allocation() {

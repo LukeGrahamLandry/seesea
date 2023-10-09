@@ -4,9 +4,9 @@ use crate::ast::{
     AnyStmt, BinaryOp, CType, FuncSignature, Function, LiteralValue, MetaExpr, Module, RawExpr,
     StructSignature, ValueType,
 };
-
 use crate::scanning::{Scanner, Token, TokenType};
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type Stmt = AnyStmt<MetaExpr>;
 
@@ -44,20 +44,148 @@ impl<'src> Parser<'src> {
         }
     }
 
+    // typedef syntax is the same as variable declaration
+    // `typedef struct { ... }* name[3];` makes "name" an alias for the type s*[3]
+    // `struct { ... }* name[3];` makes "name" a variable with the type s*[3]
+    // Function return types are also the same but can't be arrays.  `struct { ... } func(...)`
+    // As a type, you can use `struct { int a; }` or `struct Name1` or `Name2`
+    // No structural equivalence. If you declare a named struct, you can't use a different one with the same fields.
+    // Typedefs don't create new types, just aliases.
+    // Names can't conflict but typedefs and struct Whatever have different namespaces.
+    // Nested structs can have names `struct A { struct B { int c; } d; }`
+
+    // sizeof(Type) -> take, read_prefix_type
+    // Type Name = Value -> read_name_and_type, take, parse_expr
+    // (Type) Value -> read_prefix_type, parse_expr
+
+    // TODO: maybe instead of this. split on (base)+(name and modifiers) then can use that for var decl like `int *a, b`
+    // This is separate because of casts and sizeof.
+    /// Reads the part of a type before the name (base + pointer).
+    fn read_prefix_type(&mut self) -> Option<CType> {
+        if !self.looking_at_start_of_type() {
+            return None;
+        }
+        let first = self.scanner.peek_n(0);
+
+        let mut ty = match first.kind {
+            TokenType::Struct => self.parse_struct_type(),
+            TokenType::Identifier => self.read_type_identifier(),
+            _ => unreachable!("looking_at_start_of_type was wrong!"),
+        };
+
+        // Now read any number of pointers.
+        while self.scanner.matches(TokenType::Star) {
+            ty = ty.ref_type();
+        }
+
+        Some(ty)
+    }
+
+    fn read_name_and_type(&mut self) -> Option<(String, CType)> {
+        let mut ty = match self.read_prefix_type() {
+            None => return None,
+            Some(ty) => ty,
+        };
+
+        let name = self.read_ident("Expected name after type.");
+
+        // Maybe this is an array.
+        if self.scanner.matches(TokenType::LeftSquareBracket) {
+            if ty.count != 1 {
+                self.err(
+                    "TODO: Nested arrays are not supported.",
+                    self.scanner.peek_n(0),
+                );
+            }
+            let size = self.parse_expr();
+            self.expect(TokenType::RightSquareBracket);
+            ty.count = size.comptime_usize().unwrap_or_else(|| {
+                self.err(
+                    "Static array size must be an integer literal.",
+                    self.scanner.peek_n(0),
+                );
+            });
+        }
+
+        Some((name, ty))
+    }
+
+    /// `struct Name` or `struct { ... }` or `struct Name { ... }`
+    fn parse_struct_type(&mut self) -> CType {
+        let second = self.scanner.peek_n(1);
+        let third = self.scanner.peek_n(2).kind;
+
+        // Anon struct decl, give it a random internal name that can't be referred to.
+        // TODO: this seems dumb. use indexes everywhere instead? then ValueType doesn't need an Rc.
+        let name = if second.kind == TokenType::LeftBrace {
+            self.expect(TokenType::Struct);
+            let fields = self.parse_struct_fields();
+            let name = Parser::random_str();
+            self.program.structs.push(StructSignature {
+                name: name.clone(),
+                fields,
+            });
+            name
+        } else if second.kind == TokenType::Identifier && third == TokenType::LeftBrace {
+            // Named struct decl. Make sure no collide.
+            let name = second.lexeme;
+            if self.program.get_struct_by_name(name).is_some() {
+                self.error(&format!("Name collision of struct {}", name))
+            }
+            self.parse_struct_def()
+        } else if second.kind == TokenType::Identifier {
+            // Reference prev struct
+            self.expect(TokenType::Struct);
+            let id = self.read_ident("unreachable");
+            if self.program.get_struct_by_name(&id).is_some() {
+                id.into()
+            } else {
+                self.error(&format!("Undefined struct {}", id))
+            }
+        } else {
+            self.error("Expected `struct Name` or `struct { ... }` or `struct Name { ... }`");
+        };
+
+        CType::direct(ValueType::Struct(name))
+    }
+
+    fn random_str() -> Rc<str> {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        format!("__{}", ts.as_micros()).into()
+    }
+
+    const BUILTIN_TYPES: &'static [&'static str] =
+        &["char", "long", "int", "float", "double", "void"];
+
+    // Only certain tokens can be the start of a type.
+    // Need to recognise these without consuming tokens to know if we're declaring a variable.
+    fn looking_at_start_of_type(&self) -> bool {
+        let first = self.scanner.peek_n(0);
+        match first.kind {
+            TokenType::Struct => true,
+            TokenType::Identifier => {
+                // Might be an expression
+                self.program.type_defs.contains_key(first.lexeme)
+                    || Parser::BUILTIN_TYPES.contains(&first.lexeme)
+            }
+            _ => false,
+        }
+    }
+
     fn parse_type_def(&mut self) {
         self.expect(TokenType::TypeDef);
-
-        let is_def = self.scanner.peek_n(0).kind == TokenType::Struct
-            && self.scanner.peek_n(1).kind == TokenType::Identifier
-            && self.scanner.peek_n(2).kind == TokenType::LeftBrace;
-
-        let ty = if !is_def {
-            self.read_type().unwrap()
-        } else {
-            let name = self.parse_struct_def();
-            CType::direct(ValueType::Struct(name))
-        };
-        let alias = self.read_ident("Expected alias after 'typedef <type>'");
+        let (alias, ty) = self
+            .read_name_and_type()
+            .expect("Expected Type name; after typedef");
+        let prev = self.program.type_defs.get(alias.as_str());
+        if let Some(prev) = prev {
+            self.error(&format!(
+                "typedef collision {}\n old: {:?} \n new: {:?} ",
+                alias, prev, ty
+            ))
+        }
         self.program.type_defs.insert(alias.into(), ty);
         self.expect(TokenType::Semicolon);
     }
@@ -66,29 +194,45 @@ impl<'src> Parser<'src> {
     fn parse_struct_def(&mut self) -> Rc<str> {
         self.expect(TokenType::Struct);
         let name = self.read_ident("Expected name in struct definition.");
-        self.expect(TokenType::LeftBrace);
-        let mut fields: Vec<(String, CType)> = vec![];
-
-        while self.scanner.peek() != TokenType::RightBrace {
-            let ty = self.read_type().expect("Expected type for struct field.");
-            let name = self.read_ident("Expected name for struct field.");
-            self.expect(TokenType::Semicolon);
-            assert!(!fields.iter().any(|f| f.0 == name));
-            fields.push((name, ty));
-        }
+        let fields = self.parse_struct_fields();
         let name: Rc<str> = name.into();
         self.program.structs.push(StructSignature {
             name: name.clone(),
             fields,
         });
-        self.expect(TokenType::RightBrace);
         name
     }
 
+    /// { TYPE IDENT }
+    fn parse_struct_fields(&mut self) -> Vec<(String, CType)> {
+        self.expect(TokenType::LeftBrace);
+        let mut fields: Vec<(String, CType)> = vec![];
+
+        while self.scanner.peek() != TokenType::RightBrace {
+            let (name, ty) = self
+                .read_name_and_type()
+                .expect("Expected Type Name; inside struct");
+            self.expect(TokenType::Semicolon);
+            assert!(
+                !fields.iter().any(|f| f.0 == name),
+                "field name collision {}",
+                name
+            );
+            fields.push((name, ty));
+        }
+        self.expect(TokenType::RightBrace);
+
+        fields
+    }
+
+    // TODO: macro for unwrapping an option and giving error message with token context.
+
     /// TYPE NAME() STMT
     fn parse_function(&mut self) {
-        let returns = self.read_type().expect("expected function declaration");
-        let name = self.read_ident("expected function name");
+        // TODO: function cant return an array like `int foo[](...args){}`
+        let (name, returns) = self
+            .read_name_and_type()
+            .expect("Expected Type Name(...) for function decl.");
         self.expect(TokenType::LeftParen);
         let mut args = vec![];
         let mut names = vec![];
@@ -99,8 +243,12 @@ impl<'src> Parser<'src> {
                 has_var_args = true;
                 break;
             }
-            args.push(self.read_type().expect("Function arg requires type."));
-            names.push(self.read_ident("Function arg requires name.").into()); // TODO: headers/forward defs dont
+            // TODO: headers/forward defs dont require a name.
+            let (name, ty) = self
+                .read_name_and_type()
+                .expect("Expected func arg Type Name. (even for forward def, TODO: fix)");
+            args.push(ty);
+            names.push(name.into());
             if !self.scanner.matches(TokenType::Comma) {
                 assert_eq!(
                     self.scanner.peek(),
@@ -176,66 +324,46 @@ impl<'src> Parser<'src> {
                 Stmt::Continue
             }
             _ => {
-                let ty = self.read_type();
-                if let Some(..) = ty {
-                    return self.parse_declare_variable(ty.unwrap());
+                if self.looking_at_start_of_type() {
+                    self.parse_declare_variable()
+                } else {
+                    // EXPR;
+                    let expr = self.parse_expr();
+                    if !self.scanner.matches(TokenType::Semicolon) {
+                        self.error("Expected semicolon terminating expression statement.")
+                    }
+                    Stmt::Expression { expr }
                 }
-
-                // EXPR;
-                let expr = self.parse_expr();
-                if !self.scanner.matches(TokenType::Semicolon) {
-                    self.error("Expected semicolon terminating expression statement.")
-                }
-                Stmt::Expression { expr }
             }
         };
     }
 
     /// TYPE NAME = EXPR?;
-    fn parse_declare_variable(&mut self, mut kind: CType) -> Stmt {
-        let name = self.read_ident("assert var name");
-
-        let value = loop {
-            match self.scanner.peek() {
-                TokenType::Semicolon => {
-                    self.scanner.advance();
-                    break RawExpr::Default(kind.clone()).debug(self.scanner.prev());
-                }
-                TokenType::Equal => {
-                    self.scanner.advance();
-                    let value = self.parse_expr();
-                    self.expect(TokenType::Semicolon);
-                    break value;
-                }
-                TokenType::LeftSquareBracket => {
-                    self.scanner.advance();
-                    if kind.count != 1 {
-                        self.err(
-                            "TODO: Nested arrays are not supported.",
-                            self.scanner.peek_n(0),
-                        );
-                    }
-                    let size = self.parse_expr();
-                    self.expect(TokenType::RightSquareBracket);
-                    kind.count = size.comptime_usize().unwrap_or_else(|| {
-                        self.err(
-                            "Static array size must be an integer literal.",
-                            self.scanner.peek_n(0),
-                        );
-                    });
-                }
-                _ => {
-                    self.err(
-                        "Unexpected token after variable declaration.",
-                        self.scanner.peek_n(0),
-                    );
-                }
+    fn parse_declare_variable(&mut self) -> Stmt {
+        let (name, ty) = self
+            .read_name_and_type()
+            .expect("Expected variable declaration");
+        let value = match self.scanner.peek() {
+            TokenType::Semicolon => {
+                self.scanner.advance();
+                RawExpr::Default(ty.clone()).debug(self.scanner.prev())
             }
+            TokenType::Equal => {
+                self.scanner.advance();
+                let value = self.parse_expr();
+                self.expect(TokenType::Semicolon);
+                value
+            }
+            // This is a pain because *[] modifies the name not the type.
+            TokenType::Comma => self.error("TODO: multiple var decl with commas. "),
+            _ => self.err(
+                "Unexpected token after variable declaration.",
+                self.scanner.peek_n(0),
+            ),
         };
-
         Stmt::DeclareVar {
             name: name.into(),
-            kind: kind.clone(),
+            kind: ty,
             value,
             variable: None,
         }
@@ -372,13 +500,14 @@ impl<'src> Parser<'src> {
             TokenType::SizeOf => {
                 let so = self.expect(TokenType::SizeOf);
                 let t = self.expect(TokenType::LeftParen);
-                if let Some(ty) = self.read_type() {
+                if self.looking_at_start_of_type() {
+                    let ty = self.read_prefix_type().unwrap();
                     self.expect(TokenType::RightParen);
                     RawExpr::SizeOfType(ty).debug(token)
                 } else {
                     self.scanner.replace(t);
                     self.scanner.replace(so);
-                    todo!()
+                    todo!("typeof expression but dont eval just type check it")
                 }
             }
             _ => self.parse_primary(),
@@ -456,17 +585,15 @@ impl<'src> Parser<'src> {
             TokenType::Identifier => RawExpr::GetVar(token.lexeme.into()),
             TokenType::LeftParen => {
                 // Either a sub-expression or a type cast.
-                match self.read_type() {
-                    None => {
-                        let expr = self.parse_expr();
-                        self.expect(TokenType::RightParen);
-                        expr.expr
-                    }
-                    Some(target) => {
-                        self.expect(TokenType::RightParen);
-                        let expr = self.parse_expr();
-                        RawExpr::LooseCast(Box::new(expr), target)
-                    }
+                if self.looking_at_start_of_type() {
+                    let target = self.read_prefix_type().unwrap();
+                    self.expect(TokenType::RightParen);
+                    let expr = self.parse_expr();
+                    RawExpr::LooseCast(Box::new(expr), target)
+                } else {
+                    let expr = self.parse_expr();
+                    self.expect(TokenType::RightParen);
+                    expr.expr
                 }
             }
             TokenType::StringLiteral => RawExpr::Literal(LiteralValue::StringBytes(
@@ -477,54 +604,24 @@ impl<'src> Parser<'src> {
         .debug(token)
     }
 
-    // TODO: array types
-    //       instead of this and special handling in delcare. need to have one read_type_and_name function
-    /// TYPE
-    #[must_use]
-    fn read_type(&mut self) -> Option<CType> {
-        let token = self.scanner.peek_n(0);
-        let mut ty = match token.kind {
-            TokenType::Struct => {
-                self.expect(TokenType::Struct);
-                let name_token = self.scanner.peek_n(0);
-                let name = self.read_ident("Expected identifier of struct.");
-                let s = self
-                    .program
-                    .structs
-                    .iter()
-                    .find(|s| s.name.as_ref() == name);
-                let s = match s {
-                    None => self.err("Undeclared struct", name_token),
-                    Some(s) => s,
-                };
-                CType::direct(ValueType::Struct(s.name.clone()))
-            }
-            TokenType::Identifier => {
-                if let Some(ty) = self.program.type_defs.get(token.lexeme).cloned() {
-                    self.expect(TokenType::Identifier);
-                    ty
-                } else {
-                    let ty = match token.lexeme {
-                        "long" => ValueType::U64,
-                        "int" => ValueType::U32,
-                        "char" => ValueType::U8,
-                        "double" => ValueType::F64,
-                        "float" => ValueType::F32,
-                        "void" => ValueType::Void,
-                        _ => return None,
-                    };
+    // Reads a base type from the next identifier. ie. `float` or something typedef-ed.
+    fn read_type_identifier(&mut self) -> CType {
+        let name = self.expect(TokenType::Identifier).lexeme;
+        if let Some(ty) = self.program.type_defs.get(name).cloned() {
+            ty
+        } else {
+            let ty = match name {
+                "long" => ValueType::U64,
+                "int" => ValueType::U32,
+                "char" => ValueType::U8,
+                "double" => ValueType::F64,
+                "float" => ValueType::F32,
+                "void" => ValueType::Void,
+                _ => self.error(&format!("Unknown type name '{}'", name)),
+            };
 
-                    self.expect(TokenType::Identifier);
-                    CType::direct(ty)
-                }
-            }
-            _ => return None,
-        };
-
-        while self.scanner.matches(TokenType::Star) {
-            ty = ty.ref_type();
+            CType::direct(ty)
         }
-        Some(ty)
     }
 
     /// NAME
@@ -561,5 +658,109 @@ impl<'src> Parser<'src> {
             msg,
             token
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ast::parse::Parser;
+    use crate::ast::{CType, Module, ValueType};
+    use crate::scanning::Scanner;
+
+    enum TypeSpec {
+        Array(Box<TypeSpec>, usize),
+        Pointer(Box<TypeSpec>),
+        Struct(Option<String>, Vec<(String, TypeSpec)>),
+        Primitive(ValueType),
+    }
+
+    #[test]
+    fn parse_types() {
+        expect_nat(
+            "int *x",
+            "x",
+            TypeSpec::Pointer(Box::new(TypeSpec::Primitive(ValueType::U32))),
+        );
+        expect_nat(
+            "int x[10]",
+            "x",
+            TypeSpec::Array(Box::new(TypeSpec::Primitive(ValueType::U32)), 10),
+        );
+        expect_nat(
+            "struct C { long a; float *b; } test",
+            "test",
+            TypeSpec::Struct(
+                Some("C".into()),
+                vec![
+                    ("a".into(), TypeSpec::Primitive(ValueType::U64)),
+                    (
+                        "b".into(),
+                        TypeSpec::Pointer(Box::new(TypeSpec::Primitive(ValueType::F32))),
+                    ),
+                ],
+            ),
+        );
+        expect_nat(
+            "struct { double a; } test",
+            "test",
+            TypeSpec::Struct(
+                None,
+                vec![("a".into(), TypeSpec::Primitive(ValueType::F64))],
+            ),
+        );
+        expect_nat(
+            "struct c { struct { int b; } a; } d",
+            "d",
+            TypeSpec::Struct(
+                Some("c".into()),
+                vec![(
+                    "a".into(),
+                    TypeSpec::Struct(
+                        None,
+                        vec![("b".into(), TypeSpec::Primitive(ValueType::U32))],
+                    ),
+                )],
+            ),
+        );
+    }
+
+    fn expect_nat(src: &str, name: &str, ty: TypeSpec) {
+        let mut parser = Parser {
+            scanner: Scanner::new(src, "".into()),
+            program: Module::new("".into()),
+        };
+        let (n, t) = parser.read_name_and_type().unwrap();
+        let module = parser.program;
+        assert_eq!(&n, name);
+        eql(&module, &t, &ty);
+    }
+
+    fn eql(module: &Module, ty: &CType, expected: &TypeSpec) {
+        match expected {
+            TypeSpec::Array(elem, len) => {
+                assert_eq!(*len, ty.count);
+                let mut entries = ty.clone();
+                entries.count = 1;
+                eql(module, &entries, elem);
+            }
+            TypeSpec::Pointer(inner) => {
+                eql(module, &ty.ref_type(), inner);
+            }
+            TypeSpec::Struct(name, fields) => {
+                let found_struct = module.get_struct(ty);
+                if let Some(name) = name {
+                    assert_eq!(name.as_str(), found_struct.name.as_ref());
+                }
+                let it = found_struct.fields.iter().zip(fields.iter());
+                for ((n1, t1), (n2, t2)) in it {
+                    assert_eq!(n1, n2);
+                    eql(module, t1, t2);
+                }
+            }
+            TypeSpec::Primitive(prim) => {
+                assert!(!matches!(prim, ValueType::Struct(_)));
+                assert_eq!(*prim, ty.ty);
+            }
+        }
     }
 }
