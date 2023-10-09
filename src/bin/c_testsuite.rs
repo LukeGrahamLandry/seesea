@@ -1,12 +1,16 @@
 //! A runner for https://github.com/c-testsuite/c-testsuite
 
-use seesea::test_logic::{compile_and_run, compile_module};
+#[cfg(feature = "llvm")]
+use seesea::test_logic::compile_and_run;
+use seesea::test_logic::compile_module;
 use std::panic::catch_unwind;
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 use std::{env, fs, mem, thread};
 
+// TODO: be generic over how to run the code. so you can choose which backends to test with feature flags and report them one at a time.
+#[cfg(feature = "llvm")]
 fn main() {
     let dir = env::current_dir().unwrap();
     println!("CWD: {:?}", dir);
@@ -16,8 +20,8 @@ fn main() {
     let mut wrong_exitcode = 0;
     let mut total = 0;
     'outer: for i in 1..221 {
-        if skips.iter().any(|x| *x == i) {
-            println!("TODO. Skipping known bug.");
+        if SKIPS.iter().any(|x| *x == i) {
+            println!("Skip. TODO: known bug.");
             continue;
         }
 
@@ -30,7 +34,7 @@ fn main() {
             }
         };
 
-        // TODO: run a pre-processor
+        // TODO: run a pre-processor if needed
         let tags =
             fs::read_to_string(&format!("c-testsuite/tests/single-exec/{:05}.c.tags", i)).unwrap();
         let skip = tags
@@ -43,7 +47,7 @@ fn main() {
 
         for s in UNIMPLEMENTED {
             if src.contains(s) {
-                println!("TODO: Found unimplemented token '{s}'. Skipping.");
+                println!("Skip. TODO: Found unimplemented token '{s}'.");
                 continue 'outer;
             }
         }
@@ -89,9 +93,9 @@ fn main() {
                 wrong_exitcode += 1
             }
         }
-        if !matches!(status, Ok(Ok(0))) {
-            break;
-        }
+        // if !matches!(status, Ok(Ok(0))) {
+        //     break;
+        // }
     }
 
     println!("=== RESULTS ===");
@@ -99,11 +103,12 @@ fn main() {
 }
 
 // TODO: implement these. This is a nice place to keep a list.
-const UNIMPLEMENTED: [&str; 10] = [
+const UNIMPLEMENTED: [&str; 11] = [
     "enum",
     "union",
     "goto",
     "static",
+    "const",
     "%",
     "__builtin_expect",
     "main(void)", // K&R
@@ -117,11 +122,10 @@ const UNIMPLEMENTED: [&str; 10] = [
 //   - comma in var declaration
 //   - array/struct init list
 //   - anon-structs
-//   - static array variable
 //
-// TODO: 
+// TODO:
 // - 00012: precedence problem ((2 + 2) * 2 - 8) parsed as ((2 + 2) * (2 - 8))
-const skips: [usize; 1] = [12];
+const SKIPS: [usize; 1] = [12];
 
 // https://stackoverflow.com/questions/36181719/what-is-the-correct-way-in-rust-to-create-a-timeout-for-a-thread-or-a-function
 fn run_with_timeout<F, T>(f: F, timeout: Duration) -> Result<T, TimeoutError>

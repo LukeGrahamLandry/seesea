@@ -34,7 +34,7 @@ pub struct SsaLiveness<'ir> {
 //       calculate which position as function arg each is so it can prioritise getting the right register when possible.
 
 pub fn compute_liveness(ir: &Function) -> SsaLiveness {
-    println!("{:?}", ir.signature);
+    log!("{:?}", ir.signature);
     let mut liveness = SsaLiveness::new(ir);
     liveness.walk_all_ops();
     log!("-----");

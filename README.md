@@ -1,15 +1,22 @@
 # seesea
 
-A (partial) C compiler targeting LLVM IR or aarch64 assembly. 
+A (partial) C compiler with a few backends to choose from. 
 
-This is not an optimising compiler, but it's certainly a compiling compiler, 
-and that ought to be enough for anybody. Besides, LLVM can fix anything pathological on its own.
+- [LLVM](https://llvm.org/): A modular and reusable compiler toolchain (also used by clang, rustc, swift, etc). 
+- (WIP) Custom VM: Directly execute my IR. Useful for narrowing down whether bugs are in parsing or use of backend apis. Performace is not a priority. 
+- (WIP) Aarch64 ASM: Emitting the assembly myself. Very very poor performace compared to llvm. 
+
+This is my first self-directed foray into writing compilers after reading [Crafting Interpreters](https://craftinginterpreters.com/). 
+It's not an optimising compiler, but it's certainly a compiling compiler, and that ought to be enough for anybody.
+Besides, LLVM can probably fix anything pathological on its own.  
+
+There's a simple CLI for compiling a single source file. See the bottom of [bin/cli.rs](src/bin/cli.rs) for usage details.
 
 ## Supported Features
 
 - float/double, unsigned int/long
   - `+ - * / % >= <= > < ==`
-- variables, pointers (`&a, *b, c[2]`)
+- variables, pointers (`&a, *b, c[2]`), arrays
 - if/else, loops (for, while, do while), break/continue
 - functions
 - structs, typedefs
@@ -19,7 +26,7 @@ See examples in `tests.rs`.
 ## Limitations 
 
 - Pointers are assumed to be 64 bits. 
-- Maybe features are implemented as syntax de-sugaring to other features which may have unexpected runtime performance characteristics.
+- Many features are implemented as syntax de-sugaring to other features which may have unexpected runtime performance characteristics.
 - No debug info is emitted. 
 - This does not include a preprocessor, so it depends on something else for macros, includes, etc. 
 
@@ -28,14 +35,15 @@ See examples in `tests.rs`.
 - Can only target macOS because they use a slightly different calling convention.
 - Outputs text, not binary executables, so it still depends on an assembler and linker. 
 - Not optimised. Function calls and phi nodes generate unnecessary move instructions. 
+- Missing features: arrays.
 
 ## TODO
 
-switch, statically allocated arrays, goto, break, continue, enums, pass structs by value, 
+switch, arrays in struct fields, nested arrays, goto, enums, pass structs by value, 
 signed values, correct char size, bitwise ops, 
 and/or short-circuiting, struct/array init literals, write variadic functions, 
-global/static variables, function pointers. 
- 
+global/static variables, function pointers, const. 
+
 - cranelift backend (don't bother with ssa)
 - brainfuck backend (no libc, just `puts` & `gets`)
 - CLI
@@ -44,6 +52,9 @@ global/static variables, function pointers.
   - print which backend each works on separately 
   - steal tests from a real c compiler
 - compile to wasm and make demo ui
+  - run in vm
+- speed up the vm. its super cringe if its slower than python. 
+- run tests in github actions 
 
 ## Libraries
 
@@ -51,3 +62,10 @@ global/static variables, function pointers.
   - all backends
 - LLVM (with the llvm-sys rust bindings).
   - llvm backend only
+
+## [Cargo feature flags](https://doc.rust-lang.org/cargo/reference/features.html)
+
+This gives an easy way to opt out of the complicated dependencies that enable more sophisticated backends. All backends are enabled by default. 
+
+- `llvm`: Enable the llvm backend. 
+- `logging`: For debugging the compiler. Log ast, ir, etc. 

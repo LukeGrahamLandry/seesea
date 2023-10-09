@@ -5,8 +5,8 @@ use std::io::Write;
 fn main() {
     // Create an empty folder for generated asm tests.
     // TODO: Remove this when I progress past using Rust's inline asm as the assembler/linker
-    fs::create_dir_all(&format!("{GEN_CRATE_PATH}/src")).unwrap();
-    let mut file = File::create(&format!("{GEN_CRATE_PATH}/Cargo.toml")).unwrap();
+    fs::create_dir_all(format!("{GEN_CRATE_PATH}/src")).unwrap();
+    let mut file = File::create(format!("{GEN_CRATE_PATH}/Cargo.toml")).unwrap();
     file.write_all(CARGO_TOML.as_ref()).unwrap();
 }
 

@@ -3,9 +3,16 @@ name = "seesea"
 version = "0.1.0"
 edition = "2021"
 
+default-run = "cli"
+
+[features]
+default = ["llvm"]
+llvm = ["dep:llvm-sys"]
+logging = []
+
 [dependencies]
 
 # Lexer generator (source code -> token stream)
 logos = "0.13.0"
 
-llvm-sys = "160.1.0"
+llvm-sys = { version = "160.1.0", optional = true }

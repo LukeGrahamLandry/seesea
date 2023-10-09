@@ -1,13 +1,17 @@
-use crate::asm::aarch64::build_asm;
+#[cfg(feature = "llvm")]
 use crate::asm::llvm::{null_terminate, RawLlvmFuncGen, TheContext};
 use crate::ir::Module;
 use crate::scanning::Scanner;
 use crate::vm::{Vm, VmValue};
 use crate::{ast, ir, log};
+use crate::asm::aarch64::build_asm;
+#[cfg(feature = "llvm")]
 use llvm_sys::core::{LLVMContextCreate, LLVMDisposeMessage, LLVMModuleCreateWithNameInContext};
+#[cfg(feature = "llvm")]
 use llvm_sys::execution_engine::{
     LLVMCreateJITCompilerForModule, LLVMGetFunctionAddress, LLVMLinkInMCJIT,
 };
+#[cfg(feature = "llvm")]
 use llvm_sys::target::{LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget};
 use std::ffi::CStr;
 use std::fs::File;
@@ -26,6 +30,7 @@ pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
 
     // LLVM
     type Func = unsafe extern "C" fn() -> u64;
+    #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
@@ -46,6 +51,7 @@ pub fn int_to_int_run_main(src: &str, input: u64, expected: u64, name: &str) {
 
     // LLVM
     type Func = unsafe extern "C" fn(u64) -> u64;
+    #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
@@ -74,6 +80,7 @@ pub fn two_ints_to_int_run_main(src: &str, input_a: u64, input_b: u64, expected:
 
     // LLVM
     type Func = unsafe extern "C" fn(u64, u64) -> u64;
+    #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
@@ -109,6 +116,7 @@ pub fn three_ints_to_int_run_main(
 
     // LLVM
     type Func = unsafe extern "C" fn(u64, u64, u64) -> u64;
+    #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
@@ -135,6 +143,7 @@ pub fn no_arg_to_double_run_main(src: &str, expected: f64, name: &str) {
 
     // LLVM
     type Func = unsafe extern "C" fn() -> f64;
+    #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
@@ -156,6 +165,7 @@ pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) 
 
     // LLVM
     type Func = unsafe extern "C" fn(f64) -> u64;
+    #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
@@ -175,8 +185,12 @@ pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) 
 
 static FILE_GUARD: Mutex<()> = Mutex::new(());
 
+const NO_ASM: bool = true;
+
 fn run_asm_main(ir: &Module, sig: &str, input: &str, output: &str) {
-    return; // TODO
+    if NO_ASM {
+        return;
+    }
     let asm = build_asm(ir);
     let generated = CODE_TEMPLATE
         .replace("$FUNC_NAME", "main")
@@ -226,6 +240,7 @@ pub fn vm_run_cases(ir: &Module, func_name: &str, cases: &[(&[u64], u64)]) {
 // TODO: is there a way I can reflect on the signature since I know what it should be from the ir? maybe make this a macro?
 // F needs to be an unsafe extern "C" fn (?) -> ?
 // TODO: ideally i could somehow get the asm into executable memory here and call action again with that function pointer
+#[cfg(feature = "llvm")]
 pub fn compile_and_run(ir: &Module, func_name: &str, action: impl FnOnce(u64)) {
     assert!(
         ir.get_internal_func(func_name).is_some(),

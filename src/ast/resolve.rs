@@ -10,13 +10,12 @@
 
 use crate::ast::{
     AnyFunction, AnyModule, AnyStmt, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue,
-    MetaExpr, OpDebugInfo, RawExpr, ValueType,
+    MetaExpr, RawExpr, ValueType,
 };
 use crate::ir::CastType;
 
 use crate::ast::{FuncSource, LexScope, Operation, ResolvedExpr, Var, Variable, VariableRef};
 use crate::log;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -245,7 +244,6 @@ impl<'ast> Resolver<'ast> {
         let var = Var(name_ref, scope);
 
         if kind.count != 1 {
-            println!("declare_var ARRAY: {:?}", kind);
             let mut kind = kind.clone();
             kind.count = 1;
             kind.depth += 1;
@@ -361,13 +359,12 @@ impl<'ast> Resolver<'ast> {
                 (ty, Operation::Literal(value.clone()))
             }
             RawExpr::Default(ty) => {
-                if ty.is_struct() {
-                    (ty.clone(), Operation::Literal(LiteralValue::UninitStruct))
-                } else if ty.is_static_array() {
+                if ty.is_static_array() {
                     let mut element = ty.clone();
                     element.count = 1;
-                    println!("Default init array of {} {:?}.", ty.count, element);
                     (element.ref_type(), Operation::Literal(LiteralValue::UninitArray(element, ty.count)))
+                } else if ty.is_struct() {  // Order matters because []struct returns true for both 
+                    (ty.clone(), Operation::Literal(LiteralValue::UninitStruct))
                 } else {
                     let zero = ResolvedExpr {
                         expr: Operation::number(0),
@@ -430,8 +427,6 @@ impl<'ast> Resolver<'ast> {
         let ptr_ty = element_ty.ref_type();
         let line = index.info();
 
-        println!("array_index: element_ty={element_ty:?} ptr_ty={ptr_ty:?}");
-
         let s = self.raw_ast.size_of(&element_ty) as u64;
         let element_size = ResolvedExpr {
             expr: Operation::number(s),
@@ -487,8 +482,6 @@ impl<'ast> Resolver<'ast> {
 
         let input = &value.ty;
         let output = target;
-
-        println!("implicit_cast ({}): {:?} TO {:?}", value.info(), input, output);
 
         // Void pointers can be used as any pointer type.
         let void_ptr = (target.is_void_ptr() && value.ty.is_ptr())
@@ -574,23 +567,6 @@ impl<'ast> Resolver<'ast> {
                 output
             );
             CastType::Bits
-        }
-    }
-
-    fn call_stmt(&self, name: &str, args: &[MetaExpr], line: OpDebugInfo) -> AnyStmt<ResolvedExpr> {
-        let call = self.parse_call(
-            &MetaExpr {
-                expr: RawExpr::GetVar(name.into()),
-                line,
-            },
-            args,
-        );
-        AnyStmt::Expression {
-            expr: ResolvedExpr {
-                expr: call.1,
-                ty: call.0,
-                line,
-            },
         }
     }
 
@@ -719,12 +695,5 @@ impl<Func: FuncRepr> AnyModule<Func> {
             );
             log!("{:?}", s);
         }
-    }
-}
-
-fn const_str(text: impl Into<Rc<str>>, line: OpDebugInfo) -> MetaExpr {
-    MetaExpr {
-        expr: RawExpr::Literal(LiteralValue::StringBytes(text.into())),
-        line,
     }
 }

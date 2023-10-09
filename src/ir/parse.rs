@@ -183,7 +183,6 @@ impl<'ast> AstParser<'ast> {
             }
             Operation::Literal(LiteralValue::UninitArray(element, count)) => {
                 assert!(value.ty.is_pointer_to(element));
-                println!("declare array of {count} {element:?}");
                 let first_elm_ptr = self.make_ssa(element.ref_type());
                 self.func_mut().required_stack_bytes += self.ir.size_of(element) * count;
                 self.func_mut().push(

@@ -2,7 +2,7 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::ffi::{c_char, c_uint, CStr, CString};
+use std::ffi::{c_char, c_uint, CString, CStr};
 use std::mem::MaybeUninit;
 use std::num::NonZeroU8;
 use std::rc::Rc;
@@ -288,9 +288,16 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                 );
             }
             Op::StackAlloc { dest, ty, count } => {
-                assert_eq!(*count, 1, "TODO: multi stack slot alloca not implemented.");
-                let ptr = LLVMBuildAlloca(self.builder, self.llvm_type(ty), empty.as_ptr());
-                self.set(dest, ptr);
+                if *count == 1 {
+                    let ptr = LLVMBuildAlloca(self.builder, self.llvm_type(ty), empty.as_ptr());
+                    self.set(dest, ptr);
+                } else {
+                    let array_ty = LLVMArrayType(self.llvm_type(ty), *count as u32);
+                    let idk_what_this_does = LLVMConstInt(self.llvm_type(CType::direct(ValueType::U8)), 0, LLVMBool::from(false));  // TODO
+                    let array = LLVMBuildArrayAlloca(self.builder, array_ty, idk_what_this_does, empty.as_ptr());
+                    self.set(dest, array);
+                }
+                
             }
             Op::GetFieldAddr {
                 dest,
@@ -498,6 +505,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
     }
 
     pub(crate) unsafe fn llvm_type(&self, ty: impl Borrow<CType>) -> LLVMTypeRef {
+        assert_eq!(ty.borrow().count, 1);
         let ty = ty.borrow();
         let mut result = match &ty.ty {
             ValueType::U64 => LLVMInt64TypeInContext(self.ctx),

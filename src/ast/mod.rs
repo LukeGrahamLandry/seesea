@@ -154,7 +154,7 @@ pub enum LiteralValue {
     FloatNumber(f64),
     StringBytes(Rc<str>),
     UninitStruct,
-    UninitArray(CType, usize)
+    UninitArray(CType, usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Hash, Eq)]
@@ -174,7 +174,9 @@ pub enum ValueType {
 pub struct CType {
     pub ty: ValueType,
     pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
-    pub count: usize, // array size. this is awkward because struct fields have sized arrays but they decay to pointers when passed. 
+
+    // TODO: remove. I hate this since i throw it away anyway as soon as possible. feels like inviting invalid values.
+    pub count: usize, // array size. this is awkward because struct fields have sized arrays but they decay to pointers when passed.
 }
 
 impl<Func: FuncRepr> AnyModule<Func> {
@@ -223,7 +225,7 @@ impl<Func: FuncRepr> AnyModule<Func> {
         if ty.depth > 0 {
             // this is checking at compile time when it should care about runtime but it will have to do for now.
             assert_eq!(size_of::<usize>(), size_of::<u64>());
-            return 8 * (ty.count as usize);
+            return 8 * (ty.count);
         }
 
         let size = match &ty.ty {
@@ -244,7 +246,7 @@ impl<Func: FuncRepr> AnyModule<Func> {
             // TODO: non-llvm is just treating these as u64 which is probably wrong but might not be observable until i let you say _Bool as a type.
             ValueType::Bool => 8,
         };
-        size * (ty.count as usize)
+        size * (ty.count)
     }
 }
 
@@ -253,7 +255,7 @@ impl CType {
         CType {
             ty: ValueType::Bool,
             depth: 0,
-            count: 1
+            count: 1,
         }
     }
 
@@ -261,17 +263,21 @@ impl CType {
         CType {
             ty: ValueType::U64,
             depth: 0,
-            count: 1
+            count: 1,
         }
     }
 
     pub fn direct(ty: ValueType) -> CType {
-        CType { ty, depth: 0, count: 1 }
+        CType {
+            ty,
+            depth: 0,
+            count: 1,
+        }
     }
 
     #[must_use]
     pub fn deref_type(&self) -> CType {
-        assert!(self.count == 1, "no deref array. should auto decay");
+        assert_eq!(self.count, 1, "no deref array. should auto decay");
         let mut other = self.clone();
         assert!(
             self.depth > 0,
@@ -279,13 +285,13 @@ impl CType {
             self
         );
         other.depth -= 1;
-        
+
         other
     }
 
     #[must_use]
     pub fn ref_type(&self) -> CType {
-        assert!(self.count == 1, "no ref array. should auto decay");
+        assert_eq!(self.count, 1, "no ref array. should auto decay");
         let mut other = self.clone();
         other.depth += 1;
         other.count = 1;

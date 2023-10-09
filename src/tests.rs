@@ -612,10 +612,11 @@ typedef struct Thing {
 long main(){
     Thing z;
     z.b = 5;
-    return z.b;
+    z.a = 1;
+    return z.b + z.a;
 }
     ";
-    no_args_run_main(src, 5, "typedef");
+    no_args_run_main(src, 6, "typedef");
 }
 
 #[test]
@@ -814,13 +815,12 @@ long main(){
     no_args_run_main(src, 7, "for_loop_continue");
 }
 
-
 #[test]
-fn for_loop_body() {
+fn stack_array() {
     // language=c
     let src = "
 int main(){
-    int arr[2];
+    float arr[2];
 
 	arr[0] = 1;
 	arr[1] = 2;
@@ -828,9 +828,30 @@ int main(){
 	return (arr[0] + arr[1]) - 3;
 }
     ";
-    no_args_run_main(src, 0, "for_loop_body");
+    no_args_run_main(src, 0, "stack_array");
 }
 
+#[test]
+fn stack_array_structs() {
+    // language=c
+    let src = "
+struct Thing {
+    long a;
+    long* b;
+};
+int main(){
+    struct Thing arr[2];
+
+	arr[0].a = 10;
+	arr[1].b = &arr[0].a;
+    arr[1].a = *arr[1].b;
+    *arr[1].b = 5;
+
+	return (arr[0].a + arr[1].a) - 15;
+}
+    ";
+    no_args_run_main(src, 0, "stack_array_structs");
+}
 
 // TODO
 // short circuiting

@@ -288,7 +288,7 @@ impl<'ir> Aarch64Builder<'ir> {
                         self.constants += &format!("{}:\n.asciz \"{}\"\n", name, s);
                         output!(self, "adr {:?}, {}", result, name);
                     }
-                    LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _)=> unreachable!(),
+                    LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!(),
                 }
                 self.set_ssa(dest, result);
             }
@@ -426,7 +426,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 let base_address = self.get_ssa(object_addr);
                 let offset = self.calc_field_offset(object_addr, *field_index);
                 let field_addr = self.reg_for(dest);
-                self.build_const_u64(field_addr, offset as u64);
+                self.build_const_u64(field_addr, offset);
                 output!(
                     self,
                     "{:?} {:?}, {:?}, {:?}",

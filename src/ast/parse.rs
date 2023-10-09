@@ -161,7 +161,7 @@ impl<'src> Parser<'src> {
             TokenType::Semicolon => {
                 self.scanner.advance();
                 Stmt::Nothing
-            },
+            }
             TokenType::Else => self.error(
                 "Keyword 'else' must be preceded by 'if STMT' (maybe you forgot a closing '}')",
             ),
@@ -210,20 +210,29 @@ impl<'src> Parser<'src> {
                 TokenType::LeftSquareBracket => {
                     self.scanner.advance();
                     if kind.count != 1 {
-                        self.err("TODO: Nested arrays are not supported.", self.scanner.peek_n(0));
+                        self.err(
+                            "TODO: Nested arrays are not supported.",
+                            self.scanner.peek_n(0),
+                        );
                     }
                     let size = self.parse_expr();
                     self.expect(TokenType::RightSquareBracket);
                     kind.count = size.comptime_usize().unwrap_or_else(|| {
-                        self.err("Static array size must be an integer literal.", self.scanner.peek_n(0));
+                        self.err(
+                            "Static array size must be an integer literal.",
+                            self.scanner.peek_n(0),
+                        );
                     });
                 }
                 _ => {
-                    self.err("Unexpected token after variable declaration.", self.scanner.peek_n(0));
+                    self.err(
+                        "Unexpected token after variable declaration.",
+                        self.scanner.peek_n(0),
+                    );
                 }
             }
         };
-        
+
         Stmt::DeclareVar {
             name: name.into(),
             kind: kind.clone(),
