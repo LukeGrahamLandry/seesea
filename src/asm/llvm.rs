@@ -2,7 +2,7 @@
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::ffi::{c_char, c_uint, CString, CStr};
+use std::ffi::{c_char, c_uint, CStr, CString};
 use std::mem::MaybeUninit;
 use std::num::NonZeroU8;
 use std::rc::Rc;
@@ -25,7 +25,7 @@ pub struct RawLlvmFuncGen<'ir> {
     function_types: HashMap<Rc<str>, LLVMTypeRef>,
     func: Option<FuncContext<'ir>>,
     ir: Option<&'ir ir::Module>,
-    llvm_structs: HashMap<Rc<str>, LLVMTypeRef>,
+    llvm_structs: IndexMap<usize, LLVMTypeRef>,
 }
 
 struct FuncContext<'ir> {
@@ -81,8 +81,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                 field_types.len() as c_uint,
                 LLVMBool::from(false),
             );
-            self.llvm_structs
-                .insert(struct_def.name.clone(), llvm_struct);
+            self.llvm_structs.insert(struct_def.index, llvm_struct);
         }
         for function in &ir.forward_declarations {
             self.emit_function_definition(function);
@@ -204,7 +203,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                         LLVMBuildStore(self.builder, string, str_ptr);
                         str_ptr
                     }
-                    LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!()
+                    LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!(),
                 };
                 self.set(dest, val);
             }
@@ -293,11 +292,19 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                     self.set(dest, ptr);
                 } else {
                     let array_ty = LLVMArrayType(self.llvm_type(ty), *count as u32);
-                    let idk_what_this_does = LLVMConstInt(self.llvm_type(CType::direct(ValueType::U8)), 0, LLVMBool::from(false));  // TODO
-                    let array = LLVMBuildArrayAlloca(self.builder, array_ty, idk_what_this_does, empty.as_ptr());
+                    let idk_what_this_does = LLVMConstInt(
+                        self.llvm_type(CType::direct(ValueType::U8)),
+                        0,
+                        LLVMBool::from(false),
+                    ); // TODO
+                    let array = LLVMBuildArrayAlloca(
+                        self.builder,
+                        array_ty,
+                        idk_what_this_does,
+                        empty.as_ptr(),
+                    );
                     self.set(dest, array);
                 }
-                
             }
             Op::GetFieldAddr {
                 dest,

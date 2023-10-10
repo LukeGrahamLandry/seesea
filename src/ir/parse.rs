@@ -189,17 +189,18 @@ impl<'ast> AstParser<'ast> {
                     block,
                     Op::StackAlloc {
                         dest: first_elm_ptr,
-                        ty: element.clone(),
+                        ty: *element,
                         count: *count,
                     },
                     value.info(),
                 );
-                
+
                 // TODO: This is a pessimising compiler!
-                //       Everything assumes that when you access a variable, you're starting with a pointer to a stack slot with that type. 
-                //       The array's variable type is *T so it makes a **T for it. This is dumb and I'm too lazy to fix my poor choices. 
-                //       Array vars can't be assigned to (ie changing which ptr the name refers to) so could do this much better. 
-                let ptr_to_ptr = self.stack_alloc_var(block, variable, &element.ref_type(), 1, value.info());
+                //       Everything assumes that when you access a variable, you're starting with a pointer to a stack slot with that type.
+                //       The array's variable type is *T so it makes a **T for it. This is dumb and I'm too lazy to fix my poor choices.
+                //       Array vars can't be assigned to (ie changing which ptr the name refers to) so could do this much better.
+                let ptr_to_ptr =
+                    self.stack_alloc_var(block, variable, &element.ref_type(), 1, value.info());
                 self.func_mut().push(
                     block,
                     Op::StoreToPtr {
@@ -213,7 +214,8 @@ impl<'ast> AstParser<'ast> {
                 assert_eq!(variable.ty, value.ty);
                 assert!(!variable.ty.is_struct());
                 let value_register = self.emit_expr(value, block);
-                let ptr_register  = self.stack_alloc_var(block, variable, &value.ty, 1, value.info());
+                let ptr_register =
+                    self.stack_alloc_var(block, variable, &value.ty, 1, value.info());
                 self.func_mut().push(
                     block,
                     Op::StoreToPtr {
@@ -226,7 +228,14 @@ impl<'ast> AstParser<'ast> {
         }
     }
 
-    fn stack_alloc_var(&mut self, block: Label, variable: VariableRef, ty: &CType, count: usize, info: OpDebugInfo) -> Ssa {
+    fn stack_alloc_var(
+        &mut self,
+        block: Label,
+        variable: VariableRef,
+        ty: &CType,
+        count: usize,
+        info: OpDebugInfo,
+    ) -> Ssa {
         let ptr_register = self.func_mut().next_var();
         self.control.set_stack_alloc(variable.clone(), ptr_register);
         self.func_mut().required_stack_bytes += self.ir.size_of(ty) * count;
@@ -234,7 +243,7 @@ impl<'ast> AstParser<'ast> {
             block,
             Op::StackAlloc {
                 dest: ptr_register,
-                ty: ty.clone(),
+                ty: *ty,
                 count,
             },
             info,
@@ -254,8 +263,8 @@ impl<'ast> AstParser<'ast> {
         assert!(!variable.ty.is_struct());
         assert_eq!(self.type_of(value_register), variable.ty);
 
-        let dumb = variable.ty.clone();
-        let ptr_register  = self.stack_alloc_var(block, variable, &dumb, 1, line);
+        let dumb = variable.ty;
+        let ptr_register = self.stack_alloc_var(block, variable, &dumb, 1, line);
         self.func_mut().push(
             block,
             Op::StoreToPtr {
@@ -512,7 +521,7 @@ impl<'ast> AstParser<'ast> {
                     LiteralValue::StringBytes { .. } => CType {
                         ty: ValueType::U8,
                         depth: 1,
-                        count: 1
+                        count: 1,
                     },
                     LiteralValue::FloatNumber { .. } => CType::direct(ValueType::F64),
                     LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!(),
@@ -660,7 +669,7 @@ impl<'ast> AstParser<'ast> {
     // The ir validation will catch it if you forget.
     fn make_ssa(&mut self, ty: impl Borrow<CType>) -> Ssa {
         let ssa = self.func_mut().next_var();
-        self.control.register_types.insert(ssa, ty.borrow().clone());
+        self.control.register_types.insert(ssa, *ty.borrow());
         ssa
     }
 
@@ -686,7 +695,12 @@ impl<'ast> AstParser<'ast> {
                     .expect("Expected stack variable.");
 
                 let addr_ty = self.control.ssa_type(addr);
-                assert!(addr_ty.is_pointer_to(&this_variable.ty), "{:?} is not pointer to {:?}", addr_ty, this_variable.ty);
+                assert!(
+                    addr_ty.is_pointer_to(&this_variable.ty),
+                    "{:?} is not pointer to {:?}",
+                    addr_ty,
+                    this_variable.ty
+                );
                 Lvalue::DerefPtr(addr)
             }
             Operation::DerefPtr(value) => {

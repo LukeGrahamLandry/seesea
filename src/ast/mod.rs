@@ -12,6 +12,9 @@ mod parse;
 pub mod print;
 pub mod resolve;
 
+// TODO: I want to purge all the Rcs. I think they never actually alias.
+//       Next step is a SrcStr type that's either a span from the code or an owned string.
+
 pub struct AnyModule<Func: FuncRepr> {
     // Order matters (for not needing forward declarations)
     pub functions: Vec<Func>,
@@ -19,6 +22,7 @@ pub struct AnyModule<Func: FuncRepr> {
     pub name: Rc<str>,
     pub forward_declarations: Vec<FuncSignature>,
     pub type_defs: HashMap<Rc<str>, CType>,
+    pub tagged_names: HashMap<Rc<str>, NameTagType>,
 }
 
 pub type Module = AnyModule<Function>;
@@ -42,6 +46,7 @@ pub struct FuncSignature {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct StructSignature {
+    pub index: usize,
     pub name: Rc<str>,
     pub fields: Vec<(String, CType)>,
 }
@@ -157,7 +162,7 @@ pub enum LiteralValue {
     UninitArray(CType, usize),
 }
 
-#[derive(Debug, Clone, PartialEq, Hash, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
 pub enum ValueType {
     Bool,
     U64,
@@ -165,12 +170,19 @@ pub enum ValueType {
     U32,
     F64,
     F32,
-    // should probably be an Rc<StructSignature>
-    Struct(Rc<str>),
+    // TODO: some thought required on how to support forward declarations but don't bring back the name:Rc<str>, that sucked!
+    Struct(usize), // Index into Module.structs
     Void,
 }
 
-#[derive(Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Hash, Eq)]
+pub enum NameTagType {
+    Struct,
+    Union,
+    Enum,
+}
+
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
 pub struct CType {
     pub ty: ValueType,
     pub depth: u8, // 0 -> not a pointer. if you have ?256 levels of indirection that's a skill issue
@@ -187,6 +199,7 @@ impl<Func: FuncRepr> AnyModule<Func> {
             name,
             forward_declarations: vec![],
             type_defs: Default::default(),
+            tagged_names: Default::default(),
         }
     }
 
@@ -215,8 +228,10 @@ impl<Func: FuncRepr> AnyModule<Func> {
     }
 
     pub fn get_struct(&self, ty: impl Borrow<CType>) -> &StructSignature {
-        self.get_struct_by_name(ty.borrow().struct_name())
-            .expect("Struct not found.")
+        match ty.borrow().ty {
+            ValueType::Struct(id) => &self.structs[id],
+            _ => panic!("Struct not found."),
+        }
     }
 
     // TODO: assert(sizeof(size_t) == sizeof(uint64_t) == sizeof(unsigned long)))
@@ -228,15 +243,15 @@ impl<Func: FuncRepr> AnyModule<Func> {
             return 8 * (ty.count);
         }
 
-        let size = match &ty.ty {
+        let size = match ty.ty {
             ValueType::U64 => 8,
             ValueType::U8 => 1,
             ValueType::U32 => 4,
             ValueType::F64 => 8,
             ValueType::F32 => 4,
             ValueType::Void => 0,
-            ValueType::Struct(name) => {
-                let def = self.get_struct_by_name(name).unwrap();
+            ValueType::Struct(id) => {
+                let def = &self.structs[id];
                 let mut size = 0;
                 for (_, field) in &def.fields {
                     size += self.size_of(field);
@@ -337,14 +352,6 @@ impl CType {
 
     pub fn is_ptr(&self) -> bool {
         self.depth > 0
-    }
-
-    pub fn struct_name(&self) -> &str {
-        assert!(self.is_struct(), "Expected struct found {:?}", self);
-        match &self.ty {
-            ValueType::Struct(name) => name.as_ref(),
-            _ => unreachable!(),
-        }
     }
 }
 

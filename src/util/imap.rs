@@ -130,6 +130,16 @@ impl ToIndex for Label {
     }
 }
 
+impl ToIndex for usize {
+    fn new(index: usize) -> Self {
+        index
+    }
+
+    fn get_index(&self) -> usize {
+        *self
+    }
+}
+
 impl<Key: ToIndex, Value> Default for IndexMap<Key, Value> {
     fn default() -> Self {
         IndexMap {

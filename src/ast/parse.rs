@@ -61,10 +61,8 @@ impl<'src> Parser<'src> {
     // TODO: maybe instead of this. split on (base)+(name and modifiers) then can use that for var decl like `int *a, b`
     // This is separate because of casts and sizeof.
     /// Reads the part of a type before the name (base + pointer).
-    fn read_prefix_type(&mut self) -> Option<CType> {
-        if !self.looking_at_start_of_type() {
-            return None;
-        }
+    fn read_prefix_type(&mut self) -> CType {
+        assert!(self.looking_at_start_of_type());
         let first = self.scanner.peek_n(0);
 
         let mut ty = match first.kind {
@@ -78,14 +76,14 @@ impl<'src> Parser<'src> {
             ty = ty.ref_type();
         }
 
-        Some(ty)
+        ty
     }
 
-    fn read_name_and_type(&mut self) -> Option<(String, CType)> {
-        let mut ty = match self.read_prefix_type() {
-            None => return None,
-            Some(ty) => ty,
-        };
+    fn read_name_and_type(&mut self, err_msg: &str) -> (String, CType) {
+        if !self.looking_at_start_of_type() {
+            self.error(err_msg);
+        }
+        let mut ty = self.read_prefix_type();
 
         let name = self.read_ident("Expected name after type.");
 
@@ -107,25 +105,28 @@ impl<'src> Parser<'src> {
             });
         }
 
-        Some((name, ty))
+        (name, ty)
     }
 
     /// `struct Name` or `struct { ... }` or `struct Name { ... }`
     fn parse_struct_type(&mut self) -> CType {
+        assert_eq!(self.scanner.peek(), TokenType::Struct);
         let second = self.scanner.peek_n(1);
         let third = self.scanner.peek_n(2).kind;
 
         // Anon struct decl, give it a random internal name that can't be referred to.
         // TODO: this seems dumb. use indexes everywhere instead? then ValueType doesn't need an Rc.
-        let name = if second.kind == TokenType::LeftBrace {
+        let index = if second.kind == TokenType::LeftBrace {
             self.expect(TokenType::Struct);
             let fields = self.parse_struct_fields();
             let name = Parser::random_str();
+            let index = self.program.structs.len();
             self.program.structs.push(StructSignature {
-                name: name.clone(),
+                name,
                 fields,
+                index,
             });
-            name
+            index
         } else if second.kind == TokenType::Identifier && third == TokenType::LeftBrace {
             // Named struct decl. Make sure no collide.
             let name = second.lexeme;
@@ -137,18 +138,20 @@ impl<'src> Parser<'src> {
             // Reference prev struct
             self.expect(TokenType::Struct);
             let id = self.read_ident("unreachable");
-            if self.program.get_struct_by_name(&id).is_some() {
-                id.into()
+            if let Some(s) = self.program.get_struct_by_name(&id) {
+                s.index
             } else {
+                // TODO: allow indirect self referential structs. `struct S { struct S *p; int x; } s;`
                 self.error(&format!("Undefined struct {}", id))
             }
         } else {
             self.error("Expected `struct Name` or `struct { ... }` or `struct Name { ... }`");
         };
 
-        CType::direct(ValueType::Struct(name))
+        CType::direct(ValueType::Struct(index))
     }
 
+    // TODO: names need to be optional but structs still need a unique id
     fn random_str() -> Rc<str> {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -176,9 +179,7 @@ impl<'src> Parser<'src> {
 
     fn parse_type_def(&mut self) {
         self.expect(TokenType::TypeDef);
-        let (alias, ty) = self
-            .read_name_and_type()
-            .expect("Expected Type name; after typedef");
+        let (alias, ty) = self.read_name_and_type("Expected Type Name; after typedef");
         let prev = self.program.type_defs.get(alias.as_str());
         if let Some(prev) = prev {
             self.error(&format!(
@@ -191,16 +192,18 @@ impl<'src> Parser<'src> {
     }
 
     /// struct IDENT { TYPE IDENT }
-    fn parse_struct_def(&mut self) -> Rc<str> {
+    fn parse_struct_def(&mut self) -> usize {
         self.expect(TokenType::Struct);
         let name = self.read_ident("Expected name in struct definition.");
         let fields = self.parse_struct_fields();
         let name: Rc<str> = name.into();
+        let index = self.program.structs.len();
         self.program.structs.push(StructSignature {
-            name: name.clone(),
+            name,
             fields,
+            index,
         });
-        name
+        index
     }
 
     /// { TYPE IDENT }
@@ -209,9 +212,7 @@ impl<'src> Parser<'src> {
         let mut fields: Vec<(String, CType)> = vec![];
 
         while self.scanner.peek() != TokenType::RightBrace {
-            let (name, ty) = self
-                .read_name_and_type()
-                .expect("Expected Type Name; inside struct");
+            let (name, ty) = self.read_name_and_type("Expected Type Name; inside struct");
             self.expect(TokenType::Semicolon);
             assert!(
                 !fields.iter().any(|f| f.0 == name),
@@ -230,9 +231,7 @@ impl<'src> Parser<'src> {
     /// TYPE NAME() STMT
     fn parse_function(&mut self) {
         // TODO: function cant return an array like `int foo[](...args){}`
-        let (name, returns) = self
-            .read_name_and_type()
-            .expect("Expected Type Name(...) for function decl.");
+        let (name, returns) = self.read_name_and_type("Expected Type Name(...) for function decl.");
         self.expect(TokenType::LeftParen);
         let mut args = vec![];
         let mut names = vec![];
@@ -244,9 +243,9 @@ impl<'src> Parser<'src> {
                 break;
             }
             // TODO: headers/forward defs dont require a name.
-            let (name, ty) = self
-                .read_name_and_type()
-                .expect("Expected func arg Type Name. (even for forward def, TODO: fix)");
+            let (name, ty) = self.read_name_and_type(
+                "Expected func arg Type Name. (even for forward def, TODO: fix)",
+            );
             args.push(ty);
             names.push(name.into());
             if !self.scanner.matches(TokenType::Comma) {
@@ -340,13 +339,11 @@ impl<'src> Parser<'src> {
 
     /// TYPE NAME = EXPR?;
     fn parse_declare_variable(&mut self) -> Stmt {
-        let (name, ty) = self
-            .read_name_and_type()
-            .expect("Expected variable declaration");
+        let (name, ty) = self.read_name_and_type("Expected variable declaration");
         let value = match self.scanner.peek() {
             TokenType::Semicolon => {
                 self.scanner.advance();
-                RawExpr::Default(ty.clone()).debug(self.scanner.prev())
+                RawExpr::Default(ty).debug(self.scanner.prev())
             }
             TokenType::Equal => {
                 self.scanner.advance();
@@ -501,7 +498,7 @@ impl<'src> Parser<'src> {
                 let so = self.expect(TokenType::SizeOf);
                 let t = self.expect(TokenType::LeftParen);
                 if self.looking_at_start_of_type() {
-                    let ty = self.read_prefix_type().unwrap();
+                    let ty = self.read_prefix_type();
                     self.expect(TokenType::RightParen);
                     RawExpr::SizeOfType(ty).debug(token)
                 } else {
@@ -586,7 +583,7 @@ impl<'src> Parser<'src> {
             TokenType::LeftParen => {
                 // Either a sub-expression or a type cast.
                 if self.looking_at_start_of_type() {
-                    let target = self.read_prefix_type().unwrap();
+                    let target = self.read_prefix_type();
                     self.expect(TokenType::RightParen);
                     let expr = self.parse_expr();
                     RawExpr::LooseCast(Box::new(expr), target)
@@ -643,10 +640,13 @@ impl<'src> Parser<'src> {
 
     fn err(&mut self, msg: &str, token: Token) -> ! {
         panic!(
-            "Parse error on line {}: {}. {:?}",
+            "Parse error on line {}: {}. {:?}\n| {}\n> {}\n| {}\n",
             token.line + 1,
             msg,
-            token
+            token,
+            self.scanner.print_line(token.line),
+            self.scanner.print_line(token.line + 1),
+            self.scanner.print_line(token.line + 2)
         );
     }
 
@@ -729,7 +729,7 @@ mod tests {
             scanner: Scanner::new(src, "".into()),
             program: Module::new("".into()),
         };
-        let (n, t) = parser.read_name_and_type().unwrap();
+        let (n, t) = parser.read_name_and_type("test parse fail");
         let module = parser.program;
         assert_eq!(&n, name);
         eql(&module, &t, &ty);
@@ -739,7 +739,7 @@ mod tests {
         match expected {
             TypeSpec::Array(elem, len) => {
                 assert_eq!(*len, ty.count);
-                let mut entries = ty.clone();
+                let mut entries = *ty;
                 entries.count = 1;
                 eql(module, &entries, elem);
             }

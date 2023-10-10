@@ -275,6 +275,14 @@ impl<'src> Scanner<'src> {
     pub fn advance(&mut self) -> Token<'src> {
         self.take()
     }
+
+    pub fn print_line(&self, line: usize) -> &str {
+        self.src
+            .split_terminator('\n')
+            .take(line)
+            .last()
+            .unwrap_or("")
+    }
 }
 
 impl<'src> Debug for Scanner<'src> {

@@ -4,7 +4,7 @@
 //!     - replacing implicit default values of variable declarations with literals.
 //!     - adding padding to structs
 //!     - de-sugaring
-//!         - for and do-while loops => while loops.
+//!         - do-while loops => while loops.
 //!         - field accesses and array indexing => pointer arithmetic.
 //!         - sizeof => integer literals  
 
@@ -44,6 +44,7 @@ impl<'ast> Resolver<'ast> {
             forward_declarations: raw_ast.forward_declarations.clone(),
             // TODO: shouldn't need to bring this forward because its replaced at first parse
             type_defs: raw_ast.type_defs.clone(),
+            tagged_names: Default::default(),
         };
 
         Resolver {
@@ -80,7 +81,7 @@ impl<'ast> Resolver<'ast> {
             let variable = Variable {
                 name: name.clone(),
                 scope,
-                ty: kind.clone(),
+                ty: *kind,
             };
             let var_ref = Rc::new(variable);
             arg_vars.push(var_ref.clone());
@@ -201,9 +202,7 @@ impl<'ast> Resolver<'ast> {
             }
             AnyStmt::DeclareVar {
                 name, value, kind, ..
-            } => {
-                self.declare_var(name.clone(), name.as_ref(), value, kind)
-            },
+            } => self.declare_var(name.clone(), name.as_ref(), value, kind),
             AnyStmt::Return { value } => {
                 let returns = &self.func.signature.as_ref().unwrap().return_type;
                 let value = match value {
@@ -362,8 +361,12 @@ impl<'ast> Resolver<'ast> {
                 if ty.is_static_array() {
                     let mut element = ty.clone();
                     element.count = 1;
-                    (element.ref_type(), Operation::Literal(LiteralValue::UninitArray(element, ty.count)))
-                } else if ty.is_struct() {  // Order matters because []struct returns true for both 
+                    (
+                        element.ref_type(),
+                        Operation::Literal(LiteralValue::UninitArray(element, ty.count)),
+                    )
+                } else if ty.is_struct() {
+                    // Order matters because []struct returns true for both
                     (ty.clone(), Operation::Literal(LiteralValue::UninitStruct))
                 } else {
                     let zero = ResolvedExpr {
@@ -690,7 +693,7 @@ impl<Func: FuncRepr> AnyModule<Func> {
                 addr += field_size;
             }
             assert_eq!(
-                self.size_of(CType::direct(ValueType::Struct(s.name.clone()))) % max_field_size,
+                self.size_of(CType::direct(ValueType::Struct(s.index))) % max_field_size,
                 0
             );
             log!("{:?}", s);

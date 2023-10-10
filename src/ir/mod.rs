@@ -4,6 +4,7 @@ use crate::util::imap::IndexMap;
 use crate::KEEP_IR_DEBUG_NAMES;
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
+use std::mem::size_of;
 use std::rc::Rc;
 
 pub mod flow_stack;
@@ -318,4 +319,10 @@ impl FuncRepr for Function {
     fn get_signature(&self) -> &FuncSignature {
         &self.signature
     }
+}
+
+#[test]
+fn zero_cost_typed_indexes() {
+    assert_eq!(size_of::<usize>(), size_of::<Label>());
+    assert_eq!(size_of::<usize>(), size_of::<Ssa>());
 }
