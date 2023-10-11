@@ -296,7 +296,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                         self.llvm_type(CType::direct(ValueType::U8)),
                         0,
                         LLVMBool::from(false),
-                    ); // TODO
+                    ); // TODO: what does this do?
                     let array = LLVMBuildArrayAlloca(
                         self.builder,
                         array_ty,

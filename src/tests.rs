@@ -1,6 +1,20 @@
 use crate::test_logic::*;
 
 #[test]
+fn simplest_return() {
+    // language=c
+    no_args_run_main(
+        "
+long main(){
+    return 13;
+}
+    ",
+        13,
+        "simplest_return",
+    );
+}
+
+#[test]
 fn src_to_ast_to_ir() {
     // language=c
     no_args_run_main(

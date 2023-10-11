@@ -1,10 +1,11 @@
+use crate::asm::aarch64::build_asm;
+use crate::asm::cranelift::CraneLiftFuncGen;
 #[cfg(feature = "llvm")]
 use crate::asm::llvm::{null_terminate, RawLlvmFuncGen, TheContext};
 use crate::ir::Module;
 use crate::scanning::Scanner;
 use crate::vm::{Vm, VmValue};
 use crate::{ast, ir, log};
-use crate::asm::aarch64::build_asm;
 #[cfg(feature = "llvm")]
 use llvm_sys::core::{LLVMContextCreate, LLVMDisposeMessage, LLVMModuleCreateWithNameInContext};
 #[cfg(feature = "llvm")]
@@ -32,6 +33,15 @@ pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
     type Func = unsafe extern "C" fn() -> u64;
     #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function();
+            assert_eq!(answer, expected);
+        };
+    });
+
+    #[cfg(feature = "cranelift")]
+    compile_and_run_cranelift(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function();
@@ -233,6 +243,18 @@ pub fn vm_run_cases(ir: &Module, func_name: &str, cases: &[(&[u64], u64)]) {
     for (args, answer) in cases {
         assert_eq!(Vm::eval_int_args(ir, func_name, args).to_int(), *answer);
     }
+}
+
+#[cfg(feature = "cranelift")]
+pub fn compile_and_run_cranelift(ir: &Module, func_name: &str, action: impl FnOnce(u64)) {
+    assert!(
+        ir.get_internal_func(func_name).is_some(),
+        "Function not found."
+    );
+    let mut module = CraneLiftFuncGen::new(ir);
+    module.compile_all();
+    let func = module.get_finalized_function(func_name).unwrap();
+    action(func as usize as u64);
 }
 
 // This is unsafe! But since its just in tests and calling the function is unsafe anyway I don't really care.
