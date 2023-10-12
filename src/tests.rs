@@ -31,12 +31,64 @@ long main(){
 }
 
 #[test]
+fn call() {
+    // language=c
+    no_args_run_main(
+        "
+long a(long b) {
+    return b + 15;
+}
+long main(){
+    return a(1);
+}
+    ",
+        16,
+        "call",
+    );
+}
+
+#[test]
+fn forward_declare() {
+    // language=c
+    no_args_run_main(
+        "
+long a(long b);
+long main(){
+    return a(1);
+}
+long a(long b) {
+    return b + 15;
+}
+    ",
+        16,
+        "forward_declare",
+    );
+}
+
+#[test]
+fn call_malloc() {
+    // language=c
+    let src = "
+void* malloc(long size);
+void free(void* ptr);
+
+long main(){
+    long* ptr = malloc(sizeof(long));
+    free(ptr);
+    return 0;
+}
+    ";
+
+    no_args_run_main(src, 0, "call_malloc");
+}
+
+#[test]
 fn float_math() {
     // language=c
     let src = "
 double main(){
     double x = 1.0;
-    double y = 5.0;
+    double y = 4.0 + x;
     double z = x / y;  // 0.2
     double a = 3.0 * 0.5;  // 1.5
     return z + a;

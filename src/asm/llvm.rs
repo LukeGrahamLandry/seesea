@@ -83,7 +83,18 @@ impl<'ir> RawLlvmFuncGen<'ir> {
             );
             self.llvm_structs.insert(struct_def.index, llvm_struct);
         }
+
+        // Forward declare all internal functions so they can reference each other.
+        for function in ir.functions.iter() {
+            self.emit_function_definition(&function.signature);
+        }
+
+        // TODO: filter out forward_declarations before putting in ir.
+        // Forward declare external functions. Skip internals as done above.
         for function in &ir.forward_declarations {
+            if ir.get_internal_func(&function.name).is_some() {
+                continue;
+            }
             self.emit_function_definition(function);
         }
         for function in ir.functions.iter() {
@@ -134,7 +145,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
     unsafe fn emit_function(&mut self, ir: &'ir Function) {
         assert!(!ir.signature.has_var_args);
         self.func = Some(FuncContext::new(ir));
-        let func = self.emit_function_definition(&ir.signature);
+        let func = *self.functions.get(&ir.signature.name).unwrap();
 
         // All the blocks need to exist ahead of time so jumps can reference them.
         self.func_mut().blocks = IndexMap::with_capacity(ir.blocks.len());

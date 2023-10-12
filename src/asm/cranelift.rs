@@ -1,9 +1,9 @@
 use crate::ast::{BinaryOp, CType, FuncSignature, FuncSource, LiteralValue, ValueType};
-use crate::ir::{Label, Op, Ssa};
+use crate::ir::{CastType, Label, Op, Ssa};
 use crate::util::imap::IndexMap;
 use crate::{ir, log};
 use cranelift::codegen::ir::stackslot::StackSize;
-use cranelift::codegen::ir::{ArgumentExtension, ArgumentPurpose};
+use cranelift::codegen::ir::{ArgumentExtension, ArgumentPurpose, UserExternalName};
 use cranelift::codegen::Context;
 use cranelift::prelude::types::*;
 use cranelift::prelude::*;
@@ -55,21 +55,30 @@ impl<'ir> CraneLiftFuncGen<'ir> {
         }
     }
 
+    fn forward_declare(&mut self, sig: &FuncSignature, linkage: Linkage) {
+        let func = self
+            .module
+            .declare_function(&sig.name, linkage, &self.make_signature(&sig))
+            .unwrap();
+        self.functions.insert(sig.name.clone(), func);
+    }
+
     pub fn compile_all(&mut self) {
         // Need all functions up front so they can call each-other. Isomorphic with forward declaration.
-        // TODO: cope with external functions. probably just the same?
         for f in &self.ir.functions {
-            let func = self
-                .module
-                .declare_function(
-                    &f.signature.name,
-                    Linkage::Export,
-                    &self.make_signature(&f.signature),
-                )
-                .unwrap();
-            self.functions.insert(f.signature.name.clone(), func);
+            self.forward_declare(&f.signature, Linkage::Export);
         }
 
+        // Declare external functions (libc, etc)
+        for f in &self.ir.forward_declarations {
+            // Internal functions are dealt with above. They can still be in forward_declarations depending on the src.
+            if self.ir.get_internal_func(&f.name).is_some() {
+                continue;
+            }
+            self.forward_declare(f, Linkage::Import);
+        }
+
+        // Now actually emit the internal functions.
         log!("===== CraneLift IR =====");
         for f in &self.ir.functions {
             let func = *self.functions.get(&f.signature.name).unwrap();
@@ -116,14 +125,14 @@ impl<'ir> CraneLiftFuncGen<'ir> {
                 if let Some(block) = code {
                     state.builder.switch_to_block(state.blocks[Label(i)]);
                     for op in block {
-                        state.emit_ir_op(Label(i), op);
+                        state.emit_ir_op(op);
                     }
                 }
             }
 
             state.builder.seal_all_blocks();
+            state.builder.finalize();
             log!("{}", self.ctx.func.display());
-
             self.module.define_function(func, &mut self.ctx).unwrap();
             self.module.clear_context(&mut self.ctx);
         }
@@ -133,34 +142,7 @@ impl<'ir> CraneLiftFuncGen<'ir> {
     }
 
     fn make_signature(&self, f: &FuncSignature) -> Signature {
-        let mut sig = self.module.make_signature();
-        for arg in &f.param_types {
-            let purpose = if let ValueType::Struct(_) = &arg.ty {
-                if arg.is_ptr() {
-                    ArgumentPurpose::Normal
-                } else {
-                    ArgumentPurpose::StructArgument(self.ir.size_of(arg) as u32)
-                }
-            } else {
-                ArgumentPurpose::Normal
-            };
-
-            sig.params.push(AbiParam {
-                value_type: make_type(arg),
-                purpose,
-                extension: ArgumentExtension::None,
-            });
-        }
-
-        if !f.return_type.is_raw_void() {
-            assert!(
-                !f.return_type.is_struct(),
-                "todo: argumentpurpose::structreturn"
-            );
-            sig.returns.push(AbiParam::new(make_type(&f.return_type)));
-        }
-
-        sig
+        make_signature(&self.module, &self.ir, f)
     }
 
     pub fn get_finalized_function(&self, name: &str) -> Option<*const u8> {
@@ -176,7 +158,8 @@ impl<'ir> CraneLiftFuncGen<'ir> {
 }
 
 impl<'ir, 'gen> FunctionState<'ir, 'gen> {
-    fn emit_ir_op(&mut self, label: Label, op: &Op) {
+    // The state must already be looking at the right block.
+    fn emit_ir_op(&mut self, op: &Op) {
         match op {
             Op::ConstValue { dest, value, kind } => {
                 let val = match value {
@@ -263,9 +246,12 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                     .iter()
                     .map(|s| *self.local_registers.get(s).unwrap())
                     .collect();
-                assert_eq!(kind, &FuncSource::Internal);
+                // Different kinds are called the same way now but guard against adding a new one.
+                assert!(matches!(kind, FuncSource::Internal | FuncSource::External));
                 let target = *self.functions.get(func_name).unwrap();
+                // TODO: does do this up front so it doesn't spam when I call the same function multiple times?
                 let target = self.module.declare_func_in_func(target, self.builder.func);
+
                 let call = self.builder.ins().call(target, &args);
                 let val = self.builder.inst_results(call);
                 match return_value_dest {
@@ -277,7 +263,29 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                 }
             }
             Op::GetFieldAddr { .. } => todo!(),
-            Op::Cast { .. } => todo!(),
+            Op::Cast {
+                input,
+                output,
+                kind,
+            } => match kind {
+                CastType::Bits | CastType::IntToPtr | CastType::PtrToInt => {
+                    let ty = self.func.type_of(output);
+                    let x = self.get(input);
+                    let val = self
+                        .builder
+                        .ins()
+                        .bitcast(make_type(ty), MemFlags::new(), x);
+                    self.set(output, val);
+                }
+                CastType::UnsignedIntUp => todo!(),
+                CastType::IntDown => todo!(),
+                CastType::FloatUp => todo!(),
+                CastType::FloatDown => todo!(),
+                CastType::FloatToUInt => todo!(),
+                CastType::UIntToFloat => todo!(),
+                CastType::IntToBool => todo!(),
+                CastType::BoolToInt => todo!(),
+            },
         }
     }
 
@@ -312,6 +320,38 @@ fn make_type(ty: &CType) -> Type {
     }
 }
 
+fn make_signature(module: &impl Module, ir: &ir::Module, f: &FuncSignature) -> Signature {
+    let mut sig = module.make_signature();
+    for arg in &f.param_types {
+        let purpose = if let ValueType::Struct(_) = &arg.ty {
+            if arg.is_ptr() {
+                ArgumentPurpose::Normal
+            } else {
+                ArgumentPurpose::StructArgument(ir.size_of(arg) as u32)
+            }
+        } else {
+            ArgumentPurpose::Normal
+        };
+
+        sig.params.push(AbiParam {
+            value_type: make_type(arg),
+            purpose,
+            extension: ArgumentExtension::None,
+        });
+    }
+
+    if !f.return_type.is_raw_void() {
+        assert!(
+            !f.return_type.is_struct(),
+            "todo: argumentpurpose::structreturn"
+        );
+        sig.returns.push(AbiParam::new(make_type(&f.return_type)));
+    }
+
+    sig
+}
+
+// Sad copy paste noises.
 fn int_bin(builder: &mut FunctionBuilder, kind: BinaryOp, a: Value, b: Value) -> Value {
     match kind {
         BinaryOp::Add => builder.ins().iadd(a, b),
@@ -333,7 +373,6 @@ fn float_bin(builder: &mut FunctionBuilder, kind: BinaryOp, a: Value, b: Value) 
         BinaryOp::Add => builder.ins().fadd(a, b),
         BinaryOp::Subtract => builder.ins().fsub(a, b),
         BinaryOp::Multiply => builder.ins().fmul(a, b),
-        // TODO: signed!
         BinaryOp::Divide => builder.ins().fdiv(a, b),
         BinaryOp::Modulo => panic!("float mod isn't a thing bro"),
         BinaryOp::Equality => builder.ins().fcmp(FloatCC::Equal, a, b),
