@@ -1,4 +1,5 @@
 use crate::asm::aarch64::build_asm;
+#[cfg(feature = "cranelift")]
 use crate::asm::cranelift::CraneLiftFuncGen;
 #[cfg(feature = "llvm")]
 use crate::asm::llvm::{null_terminate, RawLlvmFuncGen, TheContext};

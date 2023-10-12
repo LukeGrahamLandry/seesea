@@ -3,8 +3,9 @@
 A (partial) C compiler with a few backends to choose from. 
 
 - [LLVM](https://llvm.org/): A modular and reusable compiler toolchain (also used by clang, rustc, swift, etc). 
-- (WIP) Custom VM: Directly execute my IR. Useful for narrowing down whether bugs are in parsing or use of backend apis. Performace is not a priority. 
-- (WIP) Aarch64 ASM: Emitting the assembly myself. Very very poor performace compared to llvm. 
+- [Cranelift](https://cranelift.dev/): A newer compiler backend toolchain prioritising compilation time over optimization (used by wasmtime and maybe rustc debug builds eventually). 
+- Custom VM: Directly execute my IR. Useful for narrowing down whether bugs are in parsing or use of backend apis. Performance is not a priority. 
+- (WIP) Aarch64 ASM: Emitting the assembly myself. Very very poor performance compared to llvm. 
 
 This is my first self-directed foray into writing compilers after reading [Crafting Interpreters](https://craftinginterpreters.com/). 
 It's not an optimising compiler, but it's certainly a compiling compiler, and that ought to be enough for anybody.
@@ -29,6 +30,7 @@ See examples in `tests.rs`.
 - Many features are implemented as syntax de-sugaring to other features which may have unexpected runtime performance characteristics.
 - No debug info is emitted. 
 - This does not include a preprocessor, so it depends on something else for macros, includes, etc. 
+- Cranelift backend does not support calling variadic functions (like printf).
 
 ### Aarch64 Backend Specific 
 

@@ -3,12 +3,12 @@ use crate::ir::{CastType, Label, Op, Ssa};
 use crate::util::imap::IndexMap;
 use crate::{ir, log};
 use cranelift::codegen::ir::stackslot::StackSize;
-use cranelift::codegen::ir::{ArgumentExtension, ArgumentPurpose, UserExternalName};
+use cranelift::codegen::ir::{ArgumentExtension, ArgumentPurpose};
 use cranelift::codegen::Context;
 use cranelift::prelude::types::*;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -176,7 +176,18 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                             _ => unreachable!(),
                         }
                     }
-                    LiteralValue::StringBytes(_) => todo!(),
+                    LiteralValue::StringBytes(s) => {
+                        let data = self
+                            .module
+                            .declare_data("", Linkage::Local, false, false)
+                            .unwrap();
+                        let mut content = DataDescription::new();
+                        content.define(s.as_bytes().to_vec().into_boxed_slice());
+                        self.module.define_data(data, &content).unwrap();
+                        let global = self.module.declare_data_in_func(data, self.builder.func);
+                        let val = self.builder.ins().global_value(I64, global);
+                        self.cast(CType::direct(ValueType::U8).ref_type(), CastType::Bits, val)
+                    }
                     LiteralValue::UninitStruct => todo!(),
                     LiteralValue::UninitArray(_, _) => todo!(),
                 };
@@ -214,8 +225,19 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                 let ptr = self.get(addr);
                 self.builder.ins().store(MemFlags::new(), val, ptr, 0);
             }
-            Op::Jump { .. } => todo!(),
-            Op::AlwaysJump(_) => todo!(),
+            Op::Jump {
+                condition,
+                if_true,
+                if_false,
+            } => {
+                let c = self.get(condition);
+                self.builder
+                    .ins()
+                    .brif(c, self.blocks[if_true], &[], self.blocks[if_false], &[]);
+            }
+            Op::AlwaysJump(target) => {
+                self.builder.ins().jump(self.blocks[target], &[]);
+            }
             Op::Phi { .. } => todo!(),
             Op::Return(ret_ssa) => match ret_ssa {
                 None => {
@@ -227,6 +249,7 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                 }
             },
             Op::StackAlloc { dest, ty, count } => {
+                // Unlike llvm, cranelift doesn't care about primitives vs structs vs arrays, we just as for some bytes.
                 let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot,
                     (self.ir.size_of(ty) * *count) as StackSize,
@@ -262,30 +285,52 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                     }
                 }
             }
-            Op::GetFieldAddr { .. } => todo!(),
+            Op::GetFieldAddr {
+                dest,
+                object_addr,
+                field_index,
+            } => {
+                // LLVM has a getelementptr instruction that acts on pointers, this does it manually with math.
+                // so there's some clunky ptr<->int casting.
+                let offset = ir::struct_field_offset(self.ir, self.func, object_addr, *field_index);
+                let base = self.cast(
+                    CType::direct(ValueType::U64),
+                    CastType::PtrToInt,
+                    self.get(object_addr),
+                );
+                let ptr = self.builder.ins().iadd_imm(base, offset as i64);
+                let ptr = self.cast(*self.func.type_of(dest), CastType::IntToPtr, ptr);
+                self.set(dest, ptr);
+            }
             Op::Cast {
                 input,
                 output,
                 kind,
-            } => match kind {
-                CastType::Bits | CastType::IntToPtr | CastType::PtrToInt => {
-                    let ty = self.func.type_of(output);
-                    let x = self.get(input);
-                    let val = self
-                        .builder
-                        .ins()
-                        .bitcast(make_type(ty), MemFlags::new(), x);
-                    self.set(output, val);
-                }
-                CastType::UnsignedIntUp => todo!(),
-                CastType::IntDown => todo!(),
-                CastType::FloatUp => todo!(),
-                CastType::FloatDown => todo!(),
-                CastType::FloatToUInt => todo!(),
-                CastType::UIntToFloat => todo!(),
-                CastType::IntToBool => todo!(),
-                CastType::BoolToInt => todo!(),
-            },
+            } => {
+                let ty = self.func.type_of(output);
+                let x = self.get(input);
+                let val = self.cast(*ty, *kind, x);
+                self.set(output, val);
+            }
+        }
+    }
+
+    fn cast(&mut self, out_ty: CType, kind: CastType, input: Value) -> Value {
+        match kind {
+            CastType::Bits | CastType::IntToPtr | CastType::PtrToInt => {
+                self.builder
+                    .ins()
+                    .bitcast(make_type(&out_ty), MemFlags::new(), input)
+            }
+            CastType::UnsignedIntUp | CastType::BoolToInt => {
+                self.builder.ins().uextend(make_type(&out_ty), input)
+            }
+            CastType::IntDown => self.builder.ins().ireduce(make_type(&out_ty), input),
+            CastType::FloatUp => self.builder.ins().fpromote(make_type(&out_ty), input),
+            CastType::FloatDown => self.builder.ins().fdemote(make_type(&out_ty), input),
+            CastType::FloatToUInt => self.builder.ins().fcvt_to_uint(make_type(&out_ty), input),
+            CastType::UIntToFloat => self.builder.ins().fcvt_from_uint(make_type(&out_ty), input),
+            CastType::IntToBool => self.builder.ins().icmp_imm(IntCC::NotEqual, input, 0),
         }
     }
 
@@ -321,6 +366,10 @@ fn make_type(ty: &CType) -> Type {
 }
 
 fn make_signature(module: &impl Module, ir: &ir::Module, f: &FuncSignature) -> Signature {
+    assert!(
+        !f.has_var_args,
+        "Cranelift does not support var-args https://github.com/bytecodealliance/wasmtime/issues/1030"
+    );
     let mut sig = module.make_signature();
     for arg in &f.param_types {
         let purpose = if let ValueType::Struct(_) = &arg.ty {

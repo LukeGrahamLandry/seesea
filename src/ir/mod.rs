@@ -2,9 +2,9 @@ use crate::ast::FuncSource;
 use crate::ast::{AnyModule, BinaryOp, CType, FuncRepr, FuncSignature, LiteralValue, OpDebugInfo};
 use crate::util::imap::IndexMap;
 use crate::KEEP_IR_DEBUG_NAMES;
+use std::borrow::Borrow;
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
-use std::mem::size_of;
 use std::rc::Rc;
 
 pub mod flow_stack;
@@ -281,9 +281,9 @@ impl Function {
         self.arg_registers.clone().into_iter()
     }
 
-    pub fn type_of(&self, ssa: &Ssa) -> &CType {
+    pub fn type_of(&self, ssa: impl Borrow<Ssa>) -> &CType {
         self.register_types
-            .get(ssa)
+            .get(ssa.borrow())
             .expect("Register must have type.")
     }
 }
@@ -321,8 +321,20 @@ impl FuncRepr for Function {
     }
 }
 
+pub fn struct_field_offset(
+    ir: &Module,
+    func: &Function,
+    object_addr: impl Borrow<Ssa>,
+    field_index: usize,
+) -> usize {
+    let ty = func.type_of(object_addr).deref_type();
+    let struct_def = ir.get_struct(ty);
+    ir.get_field_offset(struct_def, field_index)
+}
+
 #[test]
 fn zero_cost_typed_indexes() {
+    use std::mem::size_of;
     assert_eq!(size_of::<usize>(), size_of::<Label>());
     assert_eq!(size_of::<usize>(), size_of::<Ssa>());
 }

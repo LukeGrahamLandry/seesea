@@ -305,7 +305,8 @@ impl<'ast> Resolver<'ast> {
 
                 // Float comparisons don't output floats!
                 let output = match op {
-                    BinaryOp::LessOrEqual
+                    BinaryOp::Equality
+                    | BinaryOp::LessOrEqual
                     | BinaryOp::GreaterOrEqual
                     | BinaryOp::GreaterThan
                     | BinaryOp::LessThan => CType::bool(),

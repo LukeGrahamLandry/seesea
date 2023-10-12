@@ -98,6 +98,21 @@ double main(){
 }
 
 #[test]
+fn string_constant() {
+    // language=c
+    no_args_run_main(
+        "
+long main(){
+    char* data = \"Hello World!\";
+    return data[1];
+}
+    ",
+        'e' as u64,
+        "simplest_return",
+    );
+}
+
+#[test]
 fn src_to_ast_to_ir() {
     // language=c
     no_args_run_main(
@@ -565,6 +580,7 @@ long main(){
     no_args_run_main(src, 5, "struct_field_addr");
 }
 
+#[cfg(not(feature = "cranelift"))]
 #[test]
 fn printf_variadic_args() {
     // language=c
@@ -659,19 +675,19 @@ long main(){
     no_args_run_main(src, 4, "sizeof");
 }
 
-// TODO
-// #[test]
-// fn broken_implicit_cast() {
-//     // language=c
-//     let src = "
-// long main(){
-//     long x = (sizeof(long) == 8);
-//     return x;
-// }
-//     ";
-//
-//     no_args_run_main(src, 1, "broken_implicit_cast");
-// }
+// this was broken when i didn't have it resolving (==) as a bool
+#[test]
+fn implicit_cast_bool_to_long() {
+    // language=c
+    let src = "
+long main(){
+    long x = sizeof(long) == 8;
+    return x;
+}
+    ";
+
+    no_args_run_main(src, 1, "broken_implicit_cast");
+}
 
 #[test]
 fn allocation() {

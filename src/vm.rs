@@ -13,6 +13,7 @@ use crate::util::imap::IndexMap;
 use macros::{do_bin_cmp, do_bin_math};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
+use std::io::Write;
 use std::marker::PhantomData;
 use std::mem;
 use std::mem::size_of;
@@ -38,7 +39,7 @@ pub struct Vm<'ir> {
     tick: usize,
     tick_limit: Option<usize>,
     heap: DebugAlloc,
-    strings: Vec<String>,
+    auto_free: Vec<Ptr>,
 }
 
 struct StackFrame<'ir> {
@@ -63,7 +64,6 @@ pub enum VmValue {
     U64(u64),
     F64(f64),
     Uninit,
-    ConstString(usize),
     Pointer(Ptr),
 }
 
@@ -90,7 +90,7 @@ impl<'ir> Vm<'ir> {
             tick: 0,
             tick_limit: None,
             heap: DebugAlloc::default(),
-            strings: vec![],
+            auto_free: vec![],
         }
     }
 
@@ -210,6 +210,11 @@ impl<'ir> Vm<'ir> {
                 for addr in self.get_frame().allocations.clone() {
                     self.heap.free(addr, self.trace());
                 }
+                if self.call_stack.len() == 1 {
+                    for ptr in &self.auto_free {
+                        self.heap.free(*ptr, self.trace());
+                    }
+                }
                 self.call_stack.pop().unwrap();
                 return if self.call_stack.is_empty() {
                     log!("Vm Says: {:?}", result);
@@ -269,7 +274,7 @@ impl<'ir> Vm<'ir> {
                 let addr = self.get(addr);
                 let value = self.get(value_source);
                 let ty = self.type_of(value_source);
-                let source_bytes = value.to_bytes(ty, self.module);
+                let source_bytes = value.to_bytes(self, ty, self.module);
                 let dest_bytes = self.heap.as_mut(addr.to_ptr(), self.module.size_of(ty));
                 assert_eq!(dest_bytes.len(), source_bytes.len());
                 dest_bytes.copy_from_slice(&source_bytes);
@@ -280,13 +285,12 @@ impl<'ir> Vm<'ir> {
                 object_addr,
                 field_index,
             } => {
-                let mut offset = 0;
-                let ty = self.type_of(object_addr).deref_type();
-                let struct_def = self.module.get_struct(ty);
-                for i in 0..field_index {
-                    offset += self.module.size_of(&struct_def.fields[i].1);
-                }
-
+                let offset = ir::struct_field_offset(
+                    self.module,
+                    self.get_frame().function,
+                    object_addr,
+                    field_index,
+                );
                 let mut result = self.get(object_addr).to_ptr();
                 result.offset += offset as u32;
                 vmlog!("--- {:?} = {:?} offset {}", dest, object_addr, field_index);
@@ -297,8 +301,15 @@ impl<'ir> Vm<'ir> {
                     LiteralValue::IntNumber(value) => VmValue::U64(value),
                     LiteralValue::FloatNumber(value) => VmValue::F64(value),
                     LiteralValue::StringBytes(value) => {
-                        self.strings.push(value.to_string());
-                        VmValue::ConstString(self.strings.len() - 1)
+                        // TODO: this is really inefficient. String constants are reallocated each time they get evaluated and all dropped when the vm ends.
+                        let the_bytes = value.as_bytes();
+                        let ptr = self.heap.malloc(the_bytes.len(), self.trace());
+                        self.heap
+                            .as_mut(ptr, the_bytes.len())
+                            .write_all(value.as_bytes())
+                            .unwrap();
+                        self.auto_free.push(ptr);
+                        VmValue::Pointer(ptr)
                     }
                     LiteralValue::UninitStruct => unreachable!(),
                     LiteralValue::UninitArray(_, _) => unreachable!(),
@@ -342,7 +353,7 @@ impl<'ir> Vm<'ir> {
                     }
                     // TODO: type safe void pointers to structs
                     CastType::IntToPtr | CastType::PtrToInt | CastType::Bits => {
-                        let bytes = self.get(input).to_bytes(in_ty, self.module);
+                        let bytes = self.get(input).to_bytes(self, in_ty, self.module);
                         let result = VmValue::from_bytes(&bytes, out_ty, self.module);
                         self.set(output, result);
                     }
@@ -525,7 +536,7 @@ fn bool_to_int(b: bool) -> u64 {
 }
 
 impl VmValue {
-    fn to_bytes(&self, ty: &CType, ir: &Module) -> Box<[u8]> {
+    fn to_bytes(&self, vm: &Vm, ty: &CType, ir: &Module) -> Box<[u8]> {
         let result = match self {
             VmValue::U64(v) => {
                 assert!(!ty.is_ptr());
@@ -546,7 +557,6 @@ impl VmValue {
                 }
             }
             VmValue::Uninit => todo!(),
-            VmValue::ConstString(_) => todo!(),
             VmValue::Pointer(p) => {
                 assert!(ty.is_ptr());
                 let mut bytes = p.offset.to_le_bytes().to_vec();

@@ -234,6 +234,15 @@ impl<Func: FuncRepr> AnyModule<Func> {
         }
     }
 
+    pub fn get_field_offset(&self, s: &StructSignature, index: usize) -> usize {
+        assert!(index < s.fields.len());
+        let mut offset = 0;
+        for i in 0..index {
+            offset += self.size_of(s.fields[i].1);
+        }
+        offset
+    }
+
     // TODO: assert(sizeof(size_t) == sizeof(uint64_t) == sizeof(unsigned long)))
     pub fn size_of(&self, ty: impl Borrow<CType>) -> usize {
         let ty = ty.borrow();
