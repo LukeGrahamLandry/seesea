@@ -15,6 +15,37 @@ long main(){
 }
 
 #[test]
+fn variable() {
+    // language=c
+    no_args_run_main(
+        "
+long main(){
+    long x = 2;
+    x = 5; 
+    return x;
+}
+    ",
+        5,
+        "variable",
+    );
+}
+
+#[test]
+fn float_math() {
+    // language=c
+    let src = "
+double main(){
+    double x = 1.0;
+    double y = 5.0;
+    double z = x / y;  // 0.2
+    double a = 3.0 * 0.5;  // 1.5
+    return z + a;
+}
+    ";
+    no_arg_to_double_run_main(src, 1.7, "float_math");
+}
+
+#[test]
 fn src_to_ast_to_ir() {
     // language=c
     no_args_run_main(

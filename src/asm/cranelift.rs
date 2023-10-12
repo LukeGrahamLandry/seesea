@@ -1,7 +1,8 @@
-use crate::ast::{CType, FuncSignature, FuncSource, LiteralValue, ValueType};
+use crate::ast::{BinaryOp, CType, FuncSignature, FuncSource, LiteralValue, ValueType};
 use crate::ir::{Label, Op, Ssa};
 use crate::util::imap::IndexMap;
 use crate::{ir, log};
+use cranelift::codegen::ir::stackslot::StackSize;
 use cranelift::codegen::ir::{ArgumentExtension, ArgumentPurpose};
 use cranelift::codegen::Context;
 use cranelift::prelude::types::*;
@@ -10,7 +11,6 @@ use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module};
 use std::borrow::Borrow;
 use std::collections::HashMap;
-use std::ptr;
 use std::rc::Rc;
 
 pub struct CraneLiftFuncGen<'ir> {
@@ -23,6 +23,7 @@ pub struct CraneLiftFuncGen<'ir> {
 
 struct FunctionState<'ir, 'gen> {
     ir: &'ir ir::Module,
+    func: &'ir ir::Function,
     builder: FunctionBuilder<'gen>,
     module: &'gen mut JITModule,
     blocks: IndexMap<Label, Block>,
@@ -81,6 +82,7 @@ impl<'ir> CraneLiftFuncGen<'ir> {
             let builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
             let mut state = FunctionState {
                 ir: self.ir,
+                func: f,
                 builder,
                 module: &mut self.module,
                 blocks: Default::default(),
@@ -88,12 +90,28 @@ impl<'ir> CraneLiftFuncGen<'ir> {
                 functions: &self.functions,
             };
 
+            // All blocks must be created early so they can be used as jump targets.
             for (i, code) in f.blocks.iter().enumerate() {
                 if code.is_some() {
                     state.blocks.insert(Label(i), state.builder.create_block());
                 }
             }
 
+            // Map function argument ssas to block param values.
+            // TODO: is this really the only way to access function arguments?
+            assert!(!f.signature.has_var_args);
+            let entry_block = state.blocks[Label(0)];
+            state.builder.switch_to_block(entry_block);
+            state
+                .builder
+                .append_block_params_for_function_params(entry_block);
+            let arg_count = f.arg_registers.len();
+            for i in 0..arg_count {
+                let val = state.builder.block_params(entry_block)[i];
+                state.set(f.arg_registers[i], val);
+            }
+
+            // Now generate code for all the blocks.
             for (i, code) in f.blocks.iter().enumerate() {
                 if let Some(block) = code {
                     state.builder.switch_to_block(state.blocks[Label(i)]);
@@ -168,8 +186,12 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                         self.builder.ins().iconst(make_type(kind), *v as i64)
                     }
                     LiteralValue::FloatNumber(v) => {
-                        assert_eq!(kind.ty, ValueType::F64);
-                        self.builder.ins().iconst(make_type(kind), *v as i64)
+                        assert!(!kind.is_ptr());
+                        match kind.ty {
+                            ValueType::F64 => self.builder.ins().f64const(*v),
+                            ValueType::F32 => self.builder.ins().f32const(*v as f32),
+                            _ => unreachable!(),
+                        }
                     }
                     LiteralValue::StringBytes(_) => todo!(),
                     LiteralValue::UninitStruct => todo!(),
@@ -177,9 +199,38 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                 };
                 self.set(dest, val);
             }
-            Op::Binary { .. } => todo!(),
-            Op::LoadFromPtr { .. } => todo!(),
-            Op::StoreToPtr { .. } => todo!(),
+            Op::Binary { dest, a, b, kind } => {
+                let ty = *self.func.type_of(a);
+                assert_eq!(ty, *self.func.type_of(b));
+
+                let a = self.get(a);
+                let b = self.get(b);
+
+                let val = if ty.is_raw_int() {
+                    int_bin(&mut self.builder, *kind, a, b)
+                } else if ty.is_raw_float() {
+                    float_bin(&mut self.builder, *kind, a, b)
+                } else {
+                    unreachable!()
+                };
+
+                self.set(dest, val);
+            }
+            Op::LoadFromPtr { value_dest, addr } => {
+                let ty = self.func.type_of(value_dest);
+                let ptr = self.get(addr);
+                // TODO: think about what MemFlags pinky promises I can make
+                let val = self
+                    .builder
+                    .ins()
+                    .load(make_type(ty), MemFlags::new(), ptr, 0);
+                self.set(value_dest, val);
+            }
+            Op::StoreToPtr { addr, value_source } => {
+                let val = self.get(value_source);
+                let ptr = self.get(addr);
+                self.builder.ins().store(MemFlags::new(), val, ptr, 0);
+            }
             Op::Jump { .. } => todo!(),
             Op::AlwaysJump(_) => todo!(),
             Op::Phi { .. } => todo!(),
@@ -192,7 +243,16 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
                     self.builder.ins().return_(vals);
                 }
             },
-            Op::StackAlloc { .. } => todo!(),
+            Op::StackAlloc { dest, ty, count } => {
+                let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    (self.ir.size_of(ty) * *count) as StackSize,
+                ));
+                // TODO: its dumb that I'm telling it I actually need it on the stack.
+                //       but if I was tracking ssa stuff correctly i want to do it when parsing my ir, not rely on the backend.
+                let addr = self.builder.ins().stack_addr(R64, slot, 0);
+                self.set(dest, addr);
+            }
             Op::Call {
                 kind,
                 func_name,
@@ -229,7 +289,10 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
     }
 
     fn get(&self, ssa: impl Borrow<Ssa>) -> Value {
-        *self.local_registers.get(ssa.borrow()).unwrap()
+        *self
+            .local_registers
+            .get(ssa.borrow())
+            .unwrap_or_else(|| panic!("get before set {:?}", ssa.borrow()))
     }
 }
 
@@ -246,5 +309,37 @@ fn make_type(ty: &CType) -> Type {
         ValueType::F32 => F32,
         ValueType::Struct(_) => R64, // ??
         ValueType::Void => INVALID,
+    }
+}
+
+fn int_bin(builder: &mut FunctionBuilder, kind: BinaryOp, a: Value, b: Value) -> Value {
+    match kind {
+        BinaryOp::Add => builder.ins().iadd(a, b),
+        BinaryOp::Subtract => builder.ins().isub(a, b),
+        BinaryOp::Multiply => builder.ins().imul(a, b),
+        // TODO: signed!
+        BinaryOp::Divide => builder.ins().udiv(a, b),
+        BinaryOp::Modulo => builder.ins().urem(a, b),
+        BinaryOp::Equality => builder.ins().icmp(IntCC::Equal, a, b),
+        BinaryOp::GreaterThan => builder.ins().icmp(IntCC::UnsignedGreaterThan, a, b),
+        BinaryOp::LessThan => builder.ins().icmp(IntCC::UnsignedLessThan, a, b),
+        BinaryOp::GreaterOrEqual => builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, a, b),
+        BinaryOp::LessOrEqual => builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, a, b),
+    }
+}
+
+fn float_bin(builder: &mut FunctionBuilder, kind: BinaryOp, a: Value, b: Value) -> Value {
+    match kind {
+        BinaryOp::Add => builder.ins().fadd(a, b),
+        BinaryOp::Subtract => builder.ins().fsub(a, b),
+        BinaryOp::Multiply => builder.ins().fmul(a, b),
+        // TODO: signed!
+        BinaryOp::Divide => builder.ins().fdiv(a, b),
+        BinaryOp::Modulo => panic!("float mod isn't a thing bro"),
+        BinaryOp::Equality => builder.ins().fcmp(FloatCC::Equal, a, b),
+        BinaryOp::GreaterThan => builder.ins().fcmp(FloatCC::GreaterThan, a, b),
+        BinaryOp::LessThan => builder.ins().fcmp(FloatCC::LessThan, a, b),
+        BinaryOp::GreaterOrEqual => builder.ins().fcmp(FloatCC::GreaterThanOrEqual, a, b),
+        BinaryOp::LessOrEqual => builder.ins().fcmp(FloatCC::LessThanOrEqual, a, b),
     }
 }

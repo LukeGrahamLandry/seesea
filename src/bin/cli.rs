@@ -1,10 +1,10 @@
-//! A simple CLI for running the compiler on a single c file. Can run with various backends or output llvm ir. 
+//! A simple CLI for running the compiler on a single c file. Can run with various backends or output llvm ir.
 
-use std::env;
-use std::fs;
 use seesea::ir;
 use seesea::test_logic::compile_module;
 use seesea::vm::Vm;
+use std::env;
+use std::fs;
 
 // TODO: allow input from stdin as well.
 fn main() {
@@ -18,19 +18,25 @@ fn main() {
                 let status = Vm::eval(&module, "main", &[]).to_int();
                 std::process::exit(status as i32);
             }
-            "ir_vm" => {  // TODO: option for printing ast? 
+            "ir_vm" => {
+                // TODO: option for printing ast?
                 let module = compile_from_input(args.next());
                 for struc in &module.structs {
-                    println!("{struc:?}\n");  // TODO: better formatting (impl Debug)
+                    println!("{struc:?}\n"); // TODO: better formatting (impl Debug)
                 }
                 for func in &module.functions {
                     println!("{func:?}");
                 }
                 expect_empty(args);
             }
+            #[cfg(llvm)]
             "run_llvm" | "ir_llvm" => {
                 let _module = compile_from_input(args.next());
                 todo!("Finish cli.");
+            }
+            #[cfg(not(llvm))]
+            "run_llvm" | "ir_llvm" => {
+                panic!("seesea was compiled without the llvm backend enabled.")
             }
             _ => {
                 println!("Unrecognised option '{action}'. {USAGE}");
@@ -53,7 +59,7 @@ fn compile_from_input(arg: Option<String>) -> ir::Module {
     compile_module(&src, &input_filepath)
 }
 
-// TODO: when running, pass to args the program instead. 
+// TODO: when running, pass to args the program instead.
 fn expect_empty(mut args: env::Args) {
     if let Some(arg) = args.next() {
         println!("{USAGE}");

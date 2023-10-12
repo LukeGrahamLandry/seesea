@@ -29,7 +29,6 @@ pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
     // VM
     assert_eq!(Vm::eval_int_args(&ir, "main", &[]).to_int(), expected);
 
-    // LLVM
     type Func = unsafe extern "C" fn() -> u64;
     #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
@@ -59,10 +58,18 @@ pub fn int_to_int_run_main(src: &str, input: u64, expected: u64, name: &str) {
     // VM
     assert_eq!(Vm::eval_int_args(&ir, "main", &[input]).to_int(), expected);
 
-    // LLVM
     type Func = unsafe extern "C" fn(u64) -> u64;
     #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function(input);
+            assert_eq!(answer, expected);
+        };
+    });
+
+    #[cfg(feature = "cranelift")]
+    compile_and_run_cranelift(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input);
@@ -88,10 +95,18 @@ pub fn two_ints_to_int_run_main(src: &str, input_a: u64, input_b: u64, expected:
         expected
     );
 
-    // LLVM
     type Func = unsafe extern "C" fn(u64, u64) -> u64;
     #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function(input_a, input_b);
+            assert_eq!(answer, expected);
+        };
+    });
+
+    #[cfg(feature = "cranelift")]
+    compile_and_run_cranelift(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input_a, input_b);
@@ -124,10 +139,18 @@ pub fn three_ints_to_int_run_main(
         expected
     );
 
-    // LLVM
     type Func = unsafe extern "C" fn(u64, u64, u64) -> u64;
     #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function(input_a, input_b, input_c);
+            assert_eq!(answer, expected);
+        };
+    });
+
+    #[cfg(feature = "cranelift")]
+    compile_and_run_cranelift(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input_a, input_b, input_c);
@@ -151,10 +174,18 @@ pub fn no_arg_to_double_run_main(src: &str, expected: f64, name: &str) {
     let answer = Vm::eval_int_args(&ir, "main", &[]).to_float();
     assert!((answer - expected).abs() < 0.000001);
 
-    // LLVM
     type Func = unsafe extern "C" fn() -> f64;
     #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function();
+            assert!((answer - expected).abs() < 0.000001);
+        };
+    });
+
+    #[cfg(feature = "cranelift")]
+    compile_and_run_cranelift(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function();
@@ -173,10 +204,18 @@ pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) 
     let answer = Vm::eval(&ir, "main", &[VmValue::F64(input)]).to_int();
     assert_eq!(answer, expected);
 
-    // LLVM
     type Func = unsafe extern "C" fn(f64) -> u64;
     #[cfg(feature = "llvm")]
     compile_and_run(&ir, "main", |function| {
+        unsafe {
+            let function: Func = mem::transmute(function);
+            let answer = function(input);
+            assert_eq!(answer, expected);
+        };
+    });
+
+    #[cfg(feature = "cranelift")]
+    compile_and_run_cranelift(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input);

@@ -291,7 +291,7 @@ impl<'ast> AstParser<'ast> {
         let return_value_dest = if signature.return_type.is_raw_void() {
             None
         } else {
-            Some(self.make_ssa(&signature.return_type))
+            Some(self.make_ssa(signature.return_type))
         };
 
         self.func_mut().push(
