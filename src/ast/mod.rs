@@ -2,6 +2,7 @@ use crate::ir::CastType;
 use crate::scanning::Token;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::mem::size_of;
@@ -16,7 +17,6 @@ pub mod resolve;
 //       Next step is a SrcStr type that's either a span from the code or an owned string.
 
 pub struct AnyModule<Func: FuncRepr> {
-    // Order matters (for not needing forward declarations)
     pub functions: Vec<Func>,
     pub structs: Vec<StructSignature>,
     pub name: Rc<str>,
@@ -157,7 +157,7 @@ pub enum UnaryOp {
 pub enum LiteralValue {
     IntNumber(u64),
     FloatNumber(f64),
-    StringBytes(Rc<str>),
+    StringBytes(Rc<CStr>),
     UninitStruct,
     UninitArray(CType, usize),
 }
@@ -170,7 +170,7 @@ pub enum ValueType {
     U32,
     F64,
     F32,
-    // TODO: some thought required on how to support forward declarations but don't bring back the name:Rc<str>, that sucked!
+    // TODO: some thought required on how to support nested declarations but don't bring back the name:Rc<str>, that sucked!
     Struct(usize), // Index into Module.structs
     Void,
 }

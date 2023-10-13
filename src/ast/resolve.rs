@@ -360,7 +360,7 @@ impl<'ast> Resolver<'ast> {
             }
             RawExpr::Default(ty) => {
                 if ty.is_static_array() {
-                    let mut element = ty.clone();
+                    let mut element = *ty;
                     element.count = 1;
                     (
                         element.ref_type(),

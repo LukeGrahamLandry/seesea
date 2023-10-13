@@ -44,9 +44,8 @@ See examples in `tests.rs`.
 switch, arrays in struct fields, nested arrays, goto, enums, pass structs by value, 
 signed values, correct char size, bitwise ops, 
 and/or short-circuiting, struct/array init literals, write variadic functions, 
-global/static variables, function pointers, const. 
+global/static variables, function pointers, const, unions. 
 
-- cranelift backend (don't bother with ssa)
 - brainfuck backend (no libc, just `puts` & `gets`)
 - CLI
 - better test system 

@@ -1,6 +1,6 @@
 use crate::asm::aarch64::build_asm;
 #[cfg(feature = "cranelift")]
-use crate::asm::cranelift::CraneLiftFuncGen;
+use crate::asm::cranelift::Jitted;
 #[cfg(feature = "llvm")]
 use crate::asm::llvm::{null_terminate, RawLlvmFuncGen, TheContext};
 use crate::ir::Module;
@@ -291,10 +291,12 @@ pub fn compile_and_run_cranelift(ir: &Module, func_name: &str, action: impl FnOn
         ir.get_internal_func(func_name).is_some(),
         "Function not found."
     );
-    let mut module = CraneLiftFuncGen::new(ir);
-    module.compile_all();
-    let func = module.get_finalized_function(func_name).unwrap();
-    action(func as usize as u64);
+    let module = Jitted::from(ir);
+    unsafe {
+        let func = module.get_function(func_name).unwrap();
+        action(func as usize as u64);
+        module.deinit();
+    }
 }
 
 // This is unsafe! But since its just in tests and calling the function is unsafe anyway I don't really care.

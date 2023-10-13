@@ -1,4 +1,8 @@
+use crate::asm::cranelift::compile_object;
+use crate::asm::llvm;
 use crate::test_logic::*;
+use std::fs;
+use std::process::Command;
 
 #[test]
 fn simplest_return() {
@@ -12,6 +16,77 @@ long main(){
         13,
         "simplest_return",
     );
+}
+
+#[test]
+fn obj() {
+    let src = "
+void* malloc(long size);
+void free(void* ptr);
+
+long* t(long start){
+    long* x = malloc(sizeof(long));
+    *x = start;
+    return x;
+}
+
+long main()
+{
+    long* ptr = t(5);
+    long y = *ptr;
+    free(ptr);
+    return y;
+}
+    ";
+    let module = compile_module(src, "obj_test");
+    let object = compile_object(&module);
+    let object = object.write().unwrap();
+    fs::write("target/obj.out", object).unwrap();
+
+    Command::new("gcc")
+        .args(["target/obj.out", "-v", "-dynamic", "-o", "target/obj"])
+        .status()
+        .unwrap();
+    Command::new("objdump")
+        .args(["--disassemble", "target/obj"])
+        .status()
+        .unwrap();
+}
+
+#[test]
+fn objllvm() {
+    let src = "
+void* malloc(long size);
+void free(void* ptr);
+int puts(char* s);
+
+long* tthisisalongname(long start){
+    long* x = malloc(sizeof(long));
+    *x = start;
+    return x;
+}
+
+long main()
+{
+    puts(\"hello world!!!\");
+    long* ptr = tthisisalongname(5);
+    long y = *ptr;
+    free(ptr);
+    return y;
+}
+    ";
+    no_args_run_main(src, 5, "obj_test");
+    let module = compile_module(src, "obj_test");
+    llvm::compile_object(&module, "target/obj.out");
+
+    Command::new("gcc")
+        .args(["target/obj.out", "-v", "-dynamic", "-o", "target/obj"])
+        .status()
+        .unwrap();
+    Command::new("objdump")
+        .args(["--disassemble", "target/obj"])
+        .status()
+        .unwrap();
 }
 
 #[test]

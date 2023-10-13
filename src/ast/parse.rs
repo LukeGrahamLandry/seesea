@@ -5,6 +5,7 @@ use crate::ast::{
     StructSignature, ValueType,
 };
 use crate::scanning::{Scanner, Token, TokenType};
+use std::ffi::CString;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -593,9 +594,12 @@ impl<'src> Parser<'src> {
                     expr.expr
                 }
             }
-            TokenType::StringLiteral => RawExpr::Literal(LiteralValue::StringBytes(
-                token.lexeme[1..(token.lexeme.len() - 1)].to_string().into(),
-            )),
+            TokenType::StringLiteral => {
+                let content = &token.lexeme[1..(token.lexeme.len() - 1)];
+                RawExpr::Literal(LiteralValue::StringBytes(
+                    CString::new(content).unwrap().into(),
+                ))
+            }
             _ => self.err("Expected primary expr (number or var access)", token),
         }
         .debug(token)

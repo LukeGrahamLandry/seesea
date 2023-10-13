@@ -285,7 +285,8 @@ impl<'ir> Aarch64Builder<'ir> {
                             "str_{}_b{}s{}",
                             self.func.signature.name, self.current.0, dest.0
                         );
-                        self.constants += &format!("{}:\n.asciz \"{}\"\n", name, s);
+                        self.constants +=
+                            &format!("{}:\n.asciz \"{}\"\n", name, s.to_string_lossy());
                         output!(self, "adr {:?}, {}", result, name);
                     }
                     LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!(),

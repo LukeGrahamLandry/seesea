@@ -1,51 +1,111 @@
+//! IR -> Cranelift IR
+
 use crate::ast::{BinaryOp, CType, FuncSignature, FuncSource, LiteralValue, ValueType};
 use crate::ir::{CastType, Label, Op, Ssa};
 use crate::util::imap::IndexMap;
 use crate::{ir, log};
 use cranelift::codegen::ir::stackslot::StackSize;
 use cranelift::codegen::ir::{ArgumentExtension, ArgumentPurpose};
+use cranelift::codegen::isa::OwnedTargetIsa;
 use cranelift::codegen::Context;
 use cranelift::prelude::types::*;
 use cranelift::prelude::*;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
+use cranelift_object::object::write::Object;
+use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-pub struct CraneLiftFuncGen<'ir> {
+struct CraneLiftFuncGen<'ir, M: Module> {
     ir: &'ir ir::Module,
-    module: JITModule,
+    module: &'ir mut M,
     ctx: Context,
     builder_ctx: FunctionBuilderContext,
     functions: HashMap<Rc<str>, FuncId>,
 }
 
-struct FunctionState<'ir, 'gen> {
+struct FunctionState<'ir, 'gen, M: Module> {
     ir: &'ir ir::Module,
     func: &'ir ir::Function,
     builder: FunctionBuilder<'gen>,
-    module: &'gen mut JITModule,
+    module: &'gen mut M,
     blocks: IndexMap<Label, Block>,
     local_registers: IndexMap<Ssa, Value>,
     functions: &'gen HashMap<Rc<str>, FuncId>,
 }
 
-impl<'ir> CraneLiftFuncGen<'ir> {
-    pub fn new(ir: &'ir ir::Module) -> Self {
-        let flag_builder = settings::builder();
-        let isa_builder = cranelift_native::builder().unwrap();
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .unwrap();
-        let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        let module = JITModule::new(builder);
+pub struct Jitted {
+    module: JITModule,
+    functions: HashMap<Rc<str>, FuncId>,
+}
+
+impl<'ir> From<&'ir ir::Module> for Jitted {
+    fn from(ir: &'ir ir::Module) -> Self {
+        let builder =
+            JITBuilder::with_isa(current_isa(), cranelift_module::default_libcall_names());
+        let mut module = JITModule::new(builder);
         assert_eq!(
             module.target_config().pointer_bits(),
             64,
             "i assume this 64 bit in many places before this"
         );
 
+        let mut gen = CraneLiftFuncGen::new(ir, &mut module);
+        gen.compile_all();
+        let functions = gen.functions;
+        module.finalize_definitions().unwrap();
+        Jitted { module, functions }
+    }
+}
+
+impl Jitted {
+    /// # Safety
+    /// You must cast the pointer to the right signature. The pointer is invalidated after calling `deinit`.
+    pub unsafe fn get_function(&self, name: &str) -> Option<*const u8> {
+        match self.functions.get(name) {
+            None => None,
+            Some(func) => {
+                let ptr = self.module.get_finalized_function(*func);
+                assert!(!ptr.is_null());
+                Some(ptr)
+            }
+        }
+    }
+
+    // TODO: can't implement drop because I need ownership? what am i doing wrong?
+    /// # Safety
+    /// Calling this invalidate all pointers from `get_finalized_function`.
+    pub unsafe fn deinit(self) {
+        self.module.free_memory();
+    }
+}
+
+pub fn compile_object(ir: &ir::Module) -> Object {
+    let builder = ObjectBuilder::new(
+        current_isa(),
+        ir.name.as_bytes(),
+        cranelift_module::default_libcall_names(),
+    )
+    .unwrap();
+    let mut module = ObjectModule::new(builder);
+
+    let mut gen = CraneLiftFuncGen::new(ir, &mut module);
+    gen.compile_all();
+    module.finish().object
+}
+
+fn current_isa() -> OwnedTargetIsa {
+    let flag_builder = settings::builder();
+    let isa_builder = cranelift_native::builder().unwrap();
+    isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .unwrap()
+}
+
+impl<'ir, M: Module> CraneLiftFuncGen<'ir, M> {
+    fn new(ir: &'ir ir::Module, module: &'ir mut M) -> Self {
         CraneLiftFuncGen {
             ir,
             ctx: module.make_context(),
@@ -58,12 +118,13 @@ impl<'ir> CraneLiftFuncGen<'ir> {
     fn forward_declare(&mut self, sig: &FuncSignature, linkage: Linkage) {
         let func = self
             .module
-            .declare_function(&sig.name, linkage, &self.make_signature(&sig))
+            .declare_function(&sig.name, linkage, &self.make_signature(sig))
             .unwrap();
         self.functions.insert(sig.name.clone(), func);
     }
 
-    pub fn compile_all(&mut self) {
+    fn compile_all(&mut self) {
+        assert!(self.functions.is_empty());
         // Need all functions up front so they can call each-other. Isomorphic with forward declaration.
         for f in &self.ir.functions {
             self.forward_declare(&f.signature, Linkage::Export);
@@ -106,20 +167,7 @@ impl<'ir> CraneLiftFuncGen<'ir> {
                 }
             }
 
-            // Map function argument ssas to block param values.
-            // TODO: is this really the only way to access function arguments?
-            assert!(!f.signature.has_var_args);
-            let entry_block = state.blocks[Label(0)];
-            state.builder.switch_to_block(entry_block);
-            state
-                .builder
-                .append_block_params_for_function_params(entry_block);
-            let arg_count = f.arg_registers.len();
-            for i in 0..arg_count {
-                let val = state.builder.block_params(entry_block)[i];
-                state.set(f.arg_registers[i], val);
-            }
-
+            state.append_argument_ssas();
             // Now generate code for all the blocks.
             for (i, code) in f.blocks.iter().enumerate() {
                 if let Some(block) = code {
@@ -137,62 +185,32 @@ impl<'ir> CraneLiftFuncGen<'ir> {
             self.module.clear_context(&mut self.ctx);
         }
 
-        self.module.finalize_definitions().unwrap();
         log!("======");
     }
 
     fn make_signature(&self, f: &FuncSignature) -> Signature {
-        make_signature(&self.module, &self.ir, f)
-    }
-
-    pub fn get_finalized_function(&self, name: &str) -> Option<*const u8> {
-        match self.functions.get(name) {
-            None => None,
-            Some(func) => {
-                let ptr = self.module.get_finalized_function(*func);
-                assert!(!ptr.is_null());
-                Some(ptr)
-            }
-        }
+        make_signature(&self.module, self.ir, f)
     }
 }
 
-impl<'ir, 'gen> FunctionState<'ir, 'gen> {
+impl<'ir, 'gen, M: Module> FunctionState<'ir, 'gen, M> {
+    fn append_argument_ssas(&mut self) {
+        assert!(!self.func.signature.has_var_args);
+        let entry_block = self.blocks[Label(0)];
+        self.builder.switch_to_block(entry_block);
+        self.builder
+            .append_block_params_for_function_params(entry_block);
+        let arg_count = self.func.arg_registers.len();
+        for i in 0..arg_count {
+            let val = self.builder.block_params(entry_block)[i];
+            self.set(self.func.arg_registers[i], val);
+        }
+    }
+
     // The state must already be looking at the right block.
     fn emit_ir_op(&mut self, op: &Op) {
         match op {
-            Op::ConstValue { dest, value, kind } => {
-                let val = match value {
-                    LiteralValue::IntNumber(v) => {
-                        assert_eq!(kind.ty, ValueType::U64);
-                        // TODO: why do you no are have unsigned
-                        self.builder.ins().iconst(make_type(kind), *v as i64)
-                    }
-                    LiteralValue::FloatNumber(v) => {
-                        assert!(!kind.is_ptr());
-                        match kind.ty {
-                            ValueType::F64 => self.builder.ins().f64const(*v),
-                            ValueType::F32 => self.builder.ins().f32const(*v as f32),
-                            _ => unreachable!(),
-                        }
-                    }
-                    LiteralValue::StringBytes(s) => {
-                        let data = self
-                            .module
-                            .declare_data("", Linkage::Local, false, false)
-                            .unwrap();
-                        let mut content = DataDescription::new();
-                        content.define(s.as_bytes().to_vec().into_boxed_slice());
-                        self.module.define_data(data, &content).unwrap();
-                        let global = self.module.declare_data_in_func(data, self.builder.func);
-                        let val = self.builder.ins().global_value(I64, global);
-                        self.cast(CType::direct(ValueType::U8).ref_type(), CastType::Bits, val)
-                    }
-                    LiteralValue::UninitStruct => todo!(),
-                    LiteralValue::UninitArray(_, _) => todo!(),
-                };
-                self.set(dest, val);
-            }
+            Op::ConstValue { dest, value, kind } => self.emit_const_value(dest, value, kind),
             Op::Binary { dest, a, b, kind } => {
                 let ty = *self.func.type_of(a);
                 assert_eq!(ty, *self.func.type_of(b));
@@ -238,7 +256,7 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
             Op::AlwaysJump(target) => {
                 self.builder.ins().jump(self.blocks[target], &[]);
             }
-            Op::Phi { .. } => todo!(),
+            Op::Phi { .. } => todo!("i dont use these for now..."),
             Op::Return(ret_ssa) => match ret_ssa {
                 None => {
                     self.builder.ins().return_(&[]);
@@ -346,6 +364,38 @@ impl<'ir, 'gen> FunctionState<'ir, 'gen> {
             .local_registers
             .get(ssa.borrow())
             .unwrap_or_else(|| panic!("get before set {:?}", ssa.borrow()))
+    }
+
+    fn emit_const_value(&mut self, dest: &Ssa, value: &LiteralValue, kind: &CType) {
+        let val = match value {
+            LiteralValue::IntNumber(v) => {
+                assert_eq!(kind.ty, ValueType::U64);
+                // TODO: why do you no are have unsigned
+                self.builder.ins().iconst(make_type(kind), *v as i64)
+            }
+            LiteralValue::FloatNumber(v) => {
+                assert!(!kind.is_ptr());
+                match kind.ty {
+                    ValueType::F64 => self.builder.ins().f64const(*v),
+                    ValueType::F32 => self.builder.ins().f32const(*v as f32),
+                    _ => unreachable!(),
+                }
+            }
+            LiteralValue::StringBytes(s) => {
+                let data = self
+                    .module
+                    .declare_data("", Linkage::Local, false, false)
+                    .unwrap();
+                let mut content = DataDescription::new();
+                content.define(s.to_bytes_with_nul().to_vec().into_boxed_slice());
+                self.module.define_data(data, &content).unwrap();
+                let global = self.module.declare_data_in_func(data, self.builder.func);
+                let val = self.builder.ins().global_value(I64, global);
+                self.cast(CType::direct(ValueType::U8).ref_type(), CastType::Bits, val)
+            }
+            LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!(),
+        };
+        self.set(dest, val);
     }
 }
 

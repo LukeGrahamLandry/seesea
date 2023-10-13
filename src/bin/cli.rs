@@ -29,12 +29,12 @@ fn main() {
                 }
                 expect_empty(args);
             }
-            #[cfg(llvm)]
+            #[cfg(feature = "llvm")]
             "run_llvm" | "ir_llvm" => {
                 let _module = compile_from_input(args.next());
                 todo!("Finish cli.");
             }
-            #[cfg(not(llvm))]
+            #[cfg(not(feature = "llvm"))]
             "run_llvm" | "ir_llvm" => {
                 panic!("seesea was compiled without the llvm backend enabled.")
             }

@@ -9,7 +9,17 @@ use std::rc::Rc;
 
 use llvm_sys::analysis::{LLVMVerifierFailureAction, LLVMVerifyModule};
 use llvm_sys::core::*;
+use llvm_sys::execution_engine::{LLVMCreateJITCompilerForModule, LLVMLinkInMCJIT};
 use llvm_sys::prelude::*;
+use llvm_sys::target::{LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTarget};
+use llvm_sys::target_machine::LLVMCodeGenFileType::LLVMObjectFile;
+use llvm_sys::target_machine::LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault;
+use llvm_sys::target_machine::LLVMCodeModel::LLVMCodeModelDefault;
+use llvm_sys::target_machine::LLVMRelocMode::LLVMRelocDefault;
+use llvm_sys::target_machine::{
+    LLVMCreateTargetDataLayout, LLVMCreateTargetMachine, LLVMGetDefaultTargetTriple,
+    LLVMGetHostCPUFeatures, LLVMGetTargetFromTriple, LLVMTargetMachineEmitToFile,
+};
 use llvm_sys::{LLVMIntPredicate, LLVMRealPredicate, LLVMTypeKind, LLVMValueKind};
 
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, ValueType};
@@ -46,6 +56,68 @@ pub struct TheContext {
     pub module: LLVMModuleRef,
 }
 
+pub fn compile_object(ir: &ir::Module, o_filename: &str) {
+    unsafe {
+        let context = LLVMContextCreate();
+        let name = null_terminate(&ir.name);
+        let module = LLVMModuleCreateWithNameInContext(name.as_ptr(), context);
+        let mut the_context = TheContext { context, module };
+
+        let mut err = MaybeUninit::uninit();
+
+        // Fixes: Unable to find target for this triple (no targets are registered)
+        assert_eq!(LLVM_InitializeNativeTarget(), 0);
+        // Fixes:  LLVM ERROR: Target does not support MC emission!
+        assert_eq!(LLVM_InitializeNativeAsmPrinter(), 0);
+
+        RawLlvmFuncGen::new(&mut the_context).compile_all(ir);
+
+        let mut target = MaybeUninit::uninit();
+        LLVMGetTargetFromTriple(
+            LLVMGetDefaultTargetTriple(),
+            target.as_mut_ptr(),
+            err.as_mut_ptr(),
+        );
+
+        let cpu = null_terminate("generic");
+        let machine = LLVMCreateTargetMachine(
+            *target.as_mut_ptr(),
+            LLVMGetDefaultTargetTriple(),
+            cpu.as_ptr(),
+            LLVMGetHostCPUFeatures(),
+            LLVMCodeGenLevelDefault,
+            LLVMRelocDefault,
+            LLVMCodeModelDefault,
+        );
+        LLVMSetTarget(module, LLVMGetDefaultTargetTriple());
+        let datalayout = LLVMCreateTargetDataLayout(machine);
+
+        let filename = null_terminate(o_filename);
+        let failed = LLVMTargetMachineEmitToFile(
+            machine,
+            module,
+            filename.as_ptr().cast_mut(),
+            LLVMObjectFile,
+            err.as_mut_ptr(),
+        );
+
+        if failed != 0 {
+            let err = err.assume_init();
+            let msg = CStr::from_ptr(err).to_str().unwrap().to_string();
+            LLVMDisposeMessage(err);
+            panic!("{}", msg);
+        }
+
+        // TODO: @Leak but in tests so who cares.
+        //       Something fucks up the state of the context such that dropping it causes unpredictable memory related crashes.
+        //       Removing these makes it better but still doesn't fix it.
+        // LLVMDisposeExecutionEngine(execution_engine);
+        // Doing this causes a SIGSEGV. The execution engine owns the module.
+        // LLVMDisposeModule(module);
+        // LLVMContextDispose(context);
+    }
+}
+
 impl<'ir> RawLlvmFuncGen<'ir> {
     /// # Safety
     /// You must not release the context or the module until after dropping the RawLlvmFuncGen.
@@ -66,6 +138,7 @@ impl<'ir> RawLlvmFuncGen<'ir> {
     /// # Safety
     /// You must not release the context or the module until after dropping the RawLlvmFuncGen.
     pub unsafe fn compile_all(&mut self, ir: &'ir ir::Module) {
+        assert!(self.functions.is_empty());
         self.ir = Some(ir);
         for struct_def in &ir.structs {
             let mut field_types = vec![];
@@ -202,12 +275,12 @@ impl<'ir> RawLlvmFuncGen<'ir> {
                     LiteralValue::StringBytes(value) => {
                         let string = LLVMConstString(
                             value.as_ptr() as *const c_char,
-                            value.len() as c_uint,
-                            LLVMBool::from(false),
+                            value.to_bytes_with_nul().len() as c_uint,
+                            LLVMBool::from(true),
                         );
                         let byte_array_type = LLVMArrayType(
                             LLVMInt8TypeInContext(self.ctx),
-                            (value.len() + 1) as c_uint,
+                            value.to_bytes_with_nul().len() as c_uint,
                         );
                         let str_ptr =
                             LLVMBuildAlloca(self.builder, byte_array_type, empty.as_ptr());

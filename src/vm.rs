@@ -302,11 +302,11 @@ impl<'ir> Vm<'ir> {
                     LiteralValue::FloatNumber(value) => VmValue::F64(value),
                     LiteralValue::StringBytes(value) => {
                         // TODO: this is really inefficient. String constants are reallocated each time they get evaluated and all dropped when the vm ends.
-                        let the_bytes = value.as_bytes();
+                        let the_bytes = value.to_bytes_with_nul();
                         let ptr = self.heap.malloc(the_bytes.len(), self.trace());
                         self.heap
                             .as_mut(ptr, the_bytes.len())
-                            .write_all(value.as_bytes())
+                            .write_all(the_bytes)
                             .unwrap();
                         self.auto_free.push(ptr);
                         VmValue::Pointer(ptr)
@@ -453,6 +453,10 @@ impl<'ir> Vm<'ir> {
             }
             "printf" => {
                 log!("Called printf {:?}", args);
+                VmValue::U64(0)
+            }
+            "puts" => {
+                log!("Called puts {:?}", args);
                 VmValue::U64(0)
             }
             "malloc" => {
