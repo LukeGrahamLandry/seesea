@@ -5,7 +5,7 @@ use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
 use crate::util::imap::IndexMap;
 use std::collections::VecDeque;
-use std::fmt::{Debug, Formatter, Write};
+use std::fmt::{format, Debug, Formatter, Write};
 
 struct Aarch64Builder<'ir> {
     ir: &'ir Module,
@@ -50,7 +50,8 @@ macro_rules! output {
 }
 
 // Should we start functions by filling any corruptible with meaningless sentinel values to help debugging?
-const DEBUG_CORRUPT_REGISTERS: bool = true;
+const DEBUG_CORRUPT_REGISTERS: bool = false;
+const EMIT_DEBUG_IR_COMMENTS: bool = true;
 
 // Hardware magic numbers.
 const CORRUPTIBLE_INTS: usize = 16;
@@ -179,8 +180,11 @@ impl<'ir> Aarch64Builder<'ir> {
             self.total_stack_size += 16;
         }
 
-        let extra = self.total_stack_size - ((self.total_stack_size / SP_ALIGNMENT) * SP_ALIGNMENT);
-        self.total_stack_size += extra;
+        let extra = self.total_stack_size % SP_ALIGNMENT;
+        if extra > 0 {
+            self.total_stack_size += SP_ALIGNMENT - extra;
+        }
+
         assert_eq!(
             self.total_stack_size % SP_ALIGNMENT,
             0,
@@ -236,7 +240,6 @@ impl<'ir> Aarch64Builder<'ir> {
                 output!(self, "{}:", self.current.index());
                 for (i, op) in code.iter().enumerate() {
                     self.op_index += 1;
-                    log!("[{}] {}", self.op_index, self.func.print(op));
                     if i == (code.len() - 1) {
                         assert!(op.is_jump(), "last op of basic block must be jump.");
                         self.move_cursor(self.current, CursorPos::JmpEnd);
@@ -265,6 +268,10 @@ impl<'ir> Aarch64Builder<'ir> {
     }
 
     fn emit_op(&mut self, op: &Op) {
+        if EMIT_DEBUG_IR_COMMENTS {
+            output!(self, "// {}", self.func.print(op));
+        }
+
         match op {
             Op::ConstValue { dest, value, .. } => {
                 let result = self.reg_for(dest);
@@ -286,8 +293,9 @@ impl<'ir> Aarch64Builder<'ir> {
                             self.func.signature.name, self.current.0, dest.0
                         );
                         self.constants +=
-                            &format!("{}:\n.asciz \"{}\"\n", name, s.to_string_lossy());
-                        output!(self, "adr {:?}, {}", result, name);
+                            &format!("{}: .asciz \"{}\"\n", name, s.to_string_lossy());
+                        output!(self, "adrp {:?}, {}@PAGE", result, name);
+                        output!(self, "add {:?}, {:?}, {}@PAGEOFF", result, result, name);
                     }
                     LiteralValue::UninitStruct | LiteralValue::UninitArray(_, _) => unreachable!(),
                 }
@@ -336,7 +344,12 @@ impl<'ir> Aarch64Builder<'ir> {
                     BinaryOp::LessOrEqual => {
                         self.binary_compare(a_value, b_value, result_temp, AsmOp::BHI);
                     }
-                    _ => todo!(),
+                    BinaryOp::Equality => {
+                        self.binary_compare(a_value, b_value, result_temp, AsmOp::BNE);
+                    }
+                    BinaryOp::Modulo => {
+                        todo!()
+                    }
                 };
 
                 self.drop_reg(a_value);
@@ -390,8 +403,7 @@ impl<'ir> Aarch64Builder<'ir> {
                 output!(self, "{:?}", AsmOp::RET);
             }
             Op::StackAlloc { dest, ty, count } => {
-                assert_eq!(*count, 1);
-                let bytes = self.ir.size_of(ty);
+                let bytes = self.ir.size_of(ty) * *count;
                 self.stack_remaining -= bytes as isize;
                 let dest_ptr = self.reg_for(dest);
                 self.simple_with_const(AsmOp::ADD, dest_ptr, SP, self.stack_remaining as usize);
@@ -400,14 +412,22 @@ impl<'ir> Aarch64Builder<'ir> {
             Op::LoadFromPtr { value_dest, addr } => {
                 let address = self.get_ssa(addr);
                 let dest_temp = self.reg_for(value_dest);
-                self.load(dest_temp, address, 0);
+                if self.func.type_of(value_dest).is_raw_char() {
+                    self.load_byte(dest_temp, address, 0);
+                } else {
+                    self.load(dest_temp, address, 0);
+                }
                 self.set_ssa(value_dest, dest_temp);
                 self.drop_reg(address);
             }
             Op::StoreToPtr { addr, value_source } => {
                 let address = self.get_ssa(addr);
                 let value = self.get_ssa(value_source);
-                self.store(value, address, 0);
+                if self.func.type_of(value_source).is_raw_char() {
+                    self.store_byte(value, address, 0);
+                } else {
+                    self.store(value, address, 0);
+                }
                 self.drop_reg(address);
                 self.drop_reg(value);
             }
@@ -453,18 +473,19 @@ impl<'ir> Aarch64Builder<'ir> {
                     CastType::FloatToUInt => Some(AsmOp::FCVTAU),
                     CastType::UIntToFloat => Some(AsmOp::UCVTF),
                     CastType::FloatUp | CastType::FloatDown => Some(AsmOp::FCVT),
-                    CastType::UnsignedIntUp => {
+                    CastType::UnsignedIntUp | CastType::BoolToInt => {
+                        // TODO: this relies on chars having their upper bytes zeroed. make sure that's always done somewhere else.
                         // ex. u32 -> u64. it wants the instruction to use the same size view for both operands.
                         // mov-ing with 32 bit registers zeroes the top bits.
                         // TODO: this could be a no-op i think
                         output_reg.1 = input_reg.1;
                         Some(AsmOp::MOV)
                     }
-                    CastType::BoolToInt
-                    | CastType::IntToBool
+                    CastType::IntToBool
                     | CastType::IntToPtr
                     | CastType::PtrToInt
                     | CastType::Bits => {
+                        assert_eq!(self.ir.size_of(in_ty), self.ir.size_of(out_ty));
                         if register_kind(in_ty).0 == register_kind(out_ty).0 {
                             // TODO: make sure this reuses the same register for the new ssa since we know its a NO-OP
                             Some(AsmOp::MOV)
@@ -475,6 +496,8 @@ impl<'ir> Aarch64Builder<'ir> {
                     }
                     CastType::IntDown => {
                         // AND off the top bits
+                        // ie. down cast (long x) to char is (x AND 255)
+                        // TODO: this does redundant work. like loading a byte constant zeros it twice.
                         output_reg.1 = input_reg.1;
                         let bits = self.ir.size_of(out_ty) * 8;
                         let imm: u64 = (1 << bits) - 1;
@@ -619,10 +642,14 @@ impl<'ir> Aarch64Builder<'ir> {
     fn get_ssa(&mut self, ssa: &Ssa) -> Reg {
         self.assert_live(ssa);
         let ty = self.func.register_types.get(ssa).unwrap();
-        if let Some(stack_offset) = self.ssa_offsets.get(&ssa).cloned() {
+        if let Some(stack_offset) = self.ssa_offsets.get(ssa).cloned() {
             // The value lives on the stack, so load it.
             let reg = self.next_reg(ty);
-            self.load(reg, SP, stack_offset);
+            if ty.is_raw_char() {
+                self.store_byte(reg, SP, stack_offset);
+            } else {
+                self.load(reg, SP, stack_offset);
+            }
             return reg;
         }
 
@@ -647,9 +674,14 @@ impl<'ir> Aarch64Builder<'ir> {
     // The caller may not use this register again (they must get a new one from the queue because we might have chosen to reuse this one).
     fn set_ssa(&mut self, ssa: &Ssa, value: Reg) {
         self.assert_live(ssa);
-        if let Some(stack_offset) = self.ssa_offsets.get(&ssa) {
+        let ty = *self.func.type_of(ssa);
+        if let Some(stack_offset) = self.ssa_offsets.get(ssa) {
             // The value lives on the stack, so save it.
-            self.store(value, SP, *stack_offset);
+            if ty.is_raw_char() {
+                self.store_byte(value, SP, *stack_offset);
+            } else {
+                self.store(value, SP, *stack_offset);
+            }
             self.drop_reg(value);
             return;
         }
@@ -818,6 +850,16 @@ impl<'ir> Aarch64Builder<'ir> {
         output!(self, "STR {:?}, [{:?}, #{}]", value, addr, offset);
     }
 
+    // TODO: need to combine these as something that needs you to pass type since its annoying to do every timee
+    /// Load one byte and zero extend
+    fn load_byte(&mut self, destination: Reg, addr: Reg, offset: usize) {
+        output!(self, "LDRB {:?}, [{:?}, #{}]", destination, addr, offset);
+    }
+
+    fn store_byte(&mut self, value: Reg, addr: Reg, offset: usize) {
+        output!(self, "STRB {:?}, [{:?}, #{}]", value, addr, offset);
+    }
+
     fn get_label(&self, block: Label) -> String {
         if self.current_index < (block.index() + 1) {
             format!("{}f", block.index())
@@ -827,7 +869,7 @@ impl<'ir> Aarch64Builder<'ir> {
     }
 
     pub fn get_text(self) -> String {
-        let mut result = self.constants;
+        let mut result = format!(".data\n{}\n.text\n", self.constants);
         self.text
             .into_iter()
             .filter(|s| s.is_some())
@@ -922,11 +964,14 @@ pub enum AsmOp {
     FDIV,
 
     // Branch based on flags previously set by cmp/fcmp.
-    BGT,
-    BLS,
-    BHS,
-    BLO,
-    BHI,
+    // https://developer.arm.com/documentation/100076/0100/A32-T32-Instruction-Set-Reference/Condition-Codes/Condition-code-suffixes-and-related-flags?lang=en
+    BGT, // signed greater than
+    BLS, // unsigned less than or equal
+    BHS, // unsigned greater than or equal
+    BLO, // unsigned less than
+    BHI, // unsigned greater than
+    BEQ, // equal
+    BNE, // not equal
 
     /// Compare two int registers and set the magic flags.
     CMP,

@@ -136,6 +136,7 @@ impl<'ir, M: Module> CraneLiftFuncGen<'ir, M> {
             if self.ir.get_internal_func(&f.name).is_some() {
                 continue;
             }
+
             self.forward_declare(f, Linkage::Import);
         }
 
@@ -287,7 +288,9 @@ impl<'ir, 'gen, M: Module> FunctionState<'ir, 'gen, M> {
                     .iter()
                     .map(|s| *self.local_registers.get(s).unwrap())
                     .collect();
+
                 // Different kinds are called the same way now but guard against adding a new one.
+                // TODO: I think its wrong and external functions need to be handled differently but idk.
                 assert!(matches!(kind, FuncSource::Internal | FuncSource::External));
                 let target = *self.functions.get(func_name).unwrap();
                 // TODO: does do this up front so it doesn't spam when I call the same function multiple times?

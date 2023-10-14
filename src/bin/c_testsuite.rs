@@ -1,7 +1,7 @@
 //! A runner for https://github.com/c-testsuite/c-testsuite
 
 #[cfg(feature = "llvm")]
-use seesea::test_logic::compile_and_run;
+use seesea::test_logic::compile_and_run_llvm_jit;
 use seesea::test_logic::compile_module;
 use std::panic::catch_unwind;
 use std::sync::mpsc;
@@ -61,7 +61,7 @@ fn main() {
                     let ir = compile_module(&src, &path);
                     type Func = unsafe extern "C" fn() -> i32;
                     let mut result = 1;
-                    compile_and_run(&ir, "main", |function| {
+                    compile_and_run_llvm_jit(&ir, "main", |function| {
                         unsafe {
                             let function: Func = mem::transmute(function);
                             result = function();

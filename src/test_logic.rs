@@ -1,6 +1,7 @@
 use crate::asm::aarch64::build_asm;
 #[cfg(feature = "cranelift")]
 use crate::asm::cranelift::Jitted;
+use crate::asm::llvm;
 #[cfg(feature = "llvm")]
 use crate::asm::llvm::{null_terminate, RawLlvmFuncGen, TheContext};
 use crate::ir::Module;
@@ -23,6 +24,13 @@ use std::mem::{size_of, MaybeUninit};
 use std::process::Command;
 use std::sync::Mutex;
 
+/// For no_args_run_main, use llvm to emit an object file, link that, then run it in as a new process and check the exit code.
+/// Enabling this makes it take a couple seconds to run the tests which annoys me.
+const RUN_SLOW_EXE_TESTS: bool = true;
+/// For all signatures, use my aarch64 backend to generate a rust file with global inline assembly and a little wrapper to call the function as assert the result.
+/// It's kinda slow (because I do them sequentially). asm backend still broken for array list (cant handle spilling?).
+const RUN_SLOW_ASM_TESTS: bool = true;
+
 // TODO: macro that you just give the function signature to
 pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
     let ir = compile_module(src, name);
@@ -32,7 +40,7 @@ pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
 
     type Func = unsafe extern "C" fn() -> u64;
     #[cfg(feature = "llvm")]
-    compile_and_run(&ir, "main", |function| {
+    compile_and_run_llvm_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function();
@@ -41,13 +49,31 @@ pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
     });
 
     #[cfg(feature = "cranelift")]
-    compile_and_run_cranelift(&ir, "main", |function| {
+    compile_and_run_cranelift_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function();
             assert_eq!(answer, expected);
         };
     });
+
+    #[cfg(feature = "llvm")]
+    if RUN_SLOW_EXE_TESTS {
+        let o_filename = format!("target/llvm_obj_tests/{}.o", name);
+        let exe_filename = format!("target/llvm_obj_tests/{}", name);
+        llvm::compile_object(&ir, &o_filename);
+
+        Command::new("gcc")
+            .args([&o_filename, "-dynamic", "-o", &exe_filename])
+            .status()
+            .unwrap();
+        let status = Command::new(&exe_filename)
+            .status()
+            .unwrap()
+            .code()
+            .unwrap() as u64;
+        assert_eq!(status, expected);
+    }
 
     // ASM
     run_asm_main(&ir, "() -> u64", "", &format!("{}", expected));
@@ -61,7 +87,7 @@ pub fn int_to_int_run_main(src: &str, input: u64, expected: u64, name: &str) {
 
     type Func = unsafe extern "C" fn(u64) -> u64;
     #[cfg(feature = "llvm")]
-    compile_and_run(&ir, "main", |function| {
+    compile_and_run_llvm_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input);
@@ -70,7 +96,7 @@ pub fn int_to_int_run_main(src: &str, input: u64, expected: u64, name: &str) {
     });
 
     #[cfg(feature = "cranelift")]
-    compile_and_run_cranelift(&ir, "main", |function| {
+    compile_and_run_cranelift_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input);
@@ -98,7 +124,7 @@ pub fn two_ints_to_int_run_main(src: &str, input_a: u64, input_b: u64, expected:
 
     type Func = unsafe extern "C" fn(u64, u64) -> u64;
     #[cfg(feature = "llvm")]
-    compile_and_run(&ir, "main", |function| {
+    compile_and_run_llvm_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input_a, input_b);
@@ -107,7 +133,7 @@ pub fn two_ints_to_int_run_main(src: &str, input_a: u64, input_b: u64, expected:
     });
 
     #[cfg(feature = "cranelift")]
-    compile_and_run_cranelift(&ir, "main", |function| {
+    compile_and_run_cranelift_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input_a, input_b);
@@ -142,7 +168,7 @@ pub fn three_ints_to_int_run_main(
 
     type Func = unsafe extern "C" fn(u64, u64, u64) -> u64;
     #[cfg(feature = "llvm")]
-    compile_and_run(&ir, "main", |function| {
+    compile_and_run_llvm_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input_a, input_b, input_c);
@@ -151,7 +177,7 @@ pub fn three_ints_to_int_run_main(
     });
 
     #[cfg(feature = "cranelift")]
-    compile_and_run_cranelift(&ir, "main", |function| {
+    compile_and_run_cranelift_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input_a, input_b, input_c);
@@ -177,7 +203,7 @@ pub fn no_arg_to_double_run_main(src: &str, expected: f64, name: &str) {
 
     type Func = unsafe extern "C" fn() -> f64;
     #[cfg(feature = "llvm")]
-    compile_and_run(&ir, "main", |function| {
+    compile_and_run_llvm_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function();
@@ -186,7 +212,7 @@ pub fn no_arg_to_double_run_main(src: &str, expected: f64, name: &str) {
     });
 
     #[cfg(feature = "cranelift")]
-    compile_and_run_cranelift(&ir, "main", |function| {
+    compile_and_run_cranelift_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function();
@@ -207,7 +233,7 @@ pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) 
 
     type Func = unsafe extern "C" fn(f64) -> u64;
     #[cfg(feature = "llvm")]
-    compile_and_run(&ir, "main", |function| {
+    compile_and_run_llvm_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input);
@@ -216,7 +242,7 @@ pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) 
     });
 
     #[cfg(feature = "cranelift")]
-    compile_and_run_cranelift(&ir, "main", |function| {
+    compile_and_run_cranelift_jit(&ir, "main", |function| {
         unsafe {
             let function: Func = mem::transmute(function);
             let answer = function(input);
@@ -235,10 +261,8 @@ pub fn double_to_int_run_main(src: &str, input: f64, expected: u64, name: &str) 
 
 static FILE_GUARD: Mutex<()> = Mutex::new(());
 
-const NO_ASM: bool = true;
-
 fn run_asm_main(ir: &Module, sig: &str, input: &str, output: &str) {
-    if NO_ASM {
+    if !RUN_SLOW_ASM_TESTS {
         return;
     }
     let asm = build_asm(ir);
@@ -285,8 +309,9 @@ pub fn vm_run_cases(ir: &Module, func_name: &str, cases: &[(&[u64], u64)]) {
     }
 }
 
+// This is unsafe!
 #[cfg(feature = "cranelift")]
-pub fn compile_and_run_cranelift(ir: &Module, func_name: &str, action: impl FnOnce(u64)) {
+pub fn compile_and_run_cranelift_jit(ir: &Module, func_name: &str, action: impl FnOnce(u64)) {
     assert!(
         ir.get_internal_func(func_name).is_some(),
         "Function not found."
@@ -305,7 +330,7 @@ pub fn compile_and_run_cranelift(ir: &Module, func_name: &str, action: impl FnOn
 // F needs to be an unsafe extern "C" fn (?) -> ?
 // TODO: ideally i could somehow get the asm into executable memory here and call action again with that function pointer
 #[cfg(feature = "llvm")]
-pub fn compile_and_run(ir: &Module, func_name: &str, action: impl FnOnce(u64)) {
+pub fn compile_and_run_llvm_jit(ir: &Module, func_name: &str, action: impl FnOnce(u64)) {
     assert!(
         ir.get_internal_func(func_name).is_some(),
         "Function not found."
@@ -372,7 +397,7 @@ pub fn compile_module(src: &str, name: &str) -> Module {
     ir::Module::from(ast)
 }
 
-const CODE_TEMPLATE: &str = r#"
+const CODE_TEMPLATE: &str = r##"
 
 extern "C" {
     fn $FUNC_NAME$SIG;
@@ -385,6 +410,7 @@ fn run_asm() {
     assert_eq!(result, $OUTPUT);
 }
 
-std::arch::global_asm!("
-$ASM");
-"#;
+std::arch::global_asm!(r#"
+$ASM
+"#);
+"##;

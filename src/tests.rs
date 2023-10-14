@@ -19,77 +19,6 @@ long main(){
 }
 
 #[test]
-fn obj() {
-    let src = "
-void* malloc(long size);
-void free(void* ptr);
-
-long* t(long start){
-    long* x = malloc(sizeof(long));
-    *x = start;
-    return x;
-}
-
-long main()
-{
-    long* ptr = t(5);
-    long y = *ptr;
-    free(ptr);
-    return y;
-}
-    ";
-    let module = compile_module(src, "obj_test");
-    let object = compile_object(&module);
-    let object = object.write().unwrap();
-    fs::write("target/obj.out", object).unwrap();
-
-    Command::new("gcc")
-        .args(["target/obj.out", "-v", "-dynamic", "-o", "target/obj"])
-        .status()
-        .unwrap();
-    Command::new("objdump")
-        .args(["--disassemble", "target/obj"])
-        .status()
-        .unwrap();
-}
-
-#[test]
-fn objllvm() {
-    let src = "
-void* malloc(long size);
-void free(void* ptr);
-int puts(char* s);
-
-long* tthisisalongname(long start){
-    long* x = malloc(sizeof(long));
-    *x = start;
-    return x;
-}
-
-long main()
-{
-    puts(\"hello world!!!\");
-    long* ptr = tthisisalongname(5);
-    long y = *ptr;
-    free(ptr);
-    return y;
-}
-    ";
-    no_args_run_main(src, 5, "obj_test");
-    let module = compile_module(src, "obj_test");
-    llvm::compile_object(&module, "target/obj.out");
-
-    Command::new("gcc")
-        .args(["target/obj.out", "-v", "-dynamic", "-o", "target/obj"])
-        .status()
-        .unwrap();
-    Command::new("objdump")
-        .args(["--disassemble", "target/obj"])
-        .status()
-        .unwrap();
-}
-
-#[test]
 fn variable() {
     // language=c
     no_args_run_main(
@@ -179,11 +108,34 @@ fn string_constant() {
         "
 long main(){
     char* data = \"Hello World!\";
-    return data[1];
+    long x = data[1];
+    return x;
 }
     ",
         'e' as u64,
-        "simplest_return",
+        "string_constant",
+    );
+}
+
+// This tests use of load_byte and store_byte in asm backend.
+// The many unused chars
+#[test]
+fn load_store_char() {
+    // language=c
+    no_args_run_main(
+        "
+long main(){
+    char _temp1 = 1;  // make sure there's junk on the stack
+    char _temp2 = 2;
+    char _temp3 = 3;
+    char b = 101;
+    long a = 18446744073709551615;
+    a = b;
+    return a;
+}
+    ",
+        101,
+        "load_store_char",
     );
 }
 
@@ -872,12 +824,12 @@ double main(){
 fn big_constant() {
     // language=c
     let src = "
-long main(){
+long main(long x){
     return 18446744073709551615;
 }
     ";
 
-    no_args_run_main(src, 18446744073709551615, "big_constant");
+    int_to_int_run_main(src, 0, 18446744073709551615, "big_constant");
 }
 
 #[test]
