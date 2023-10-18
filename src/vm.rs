@@ -655,6 +655,7 @@ struct DebugAlloc {
     allocations: IndexMap<u32, Allocation>,
 }
 
+#[derive(Debug)]
 struct Allocation {
     data: Box<[u8]>,
     id: u32,

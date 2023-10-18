@@ -82,6 +82,7 @@ impl Jitted {
     }
 }
 
+// TODO: this doesn't work! bus error when calling libc functions.
 pub fn compile_object(ir: &ir::Module) -> Object {
     let builder = ObjectBuilder::new(
         current_isa(),

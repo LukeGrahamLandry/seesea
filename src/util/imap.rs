@@ -5,6 +5,7 @@
 
 use crate::ir::{Label, Ssa};
 use std::borrow::Borrow;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 
@@ -75,6 +76,14 @@ impl<Key: ToIndex, Value> IndexMap<Key, Value> {
         }
     }
 
+    pub fn remove(&mut self, k: &Key) -> Option<Value> {
+        if self.values.len() <= k.get_index() {
+            None
+        } else {
+            self.values[k.get_index()].take()
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.count
     }
@@ -89,10 +98,9 @@ impl<Key: ToIndex, Value> IndexMap<Key, Value> {
     pub fn iter(&self) -> impl Iterator<Item = (Key, &Value)> {
         self.values
             .iter()
-            .filter(|v| v.is_some())
-            .map(|v| v.as_ref().unwrap())
             .enumerate()
-            .map(|(i, v)| (Key::new(i), v))
+            .filter(|(_, v)| v.is_some())
+            .map(|(i, v)| (Key::new(i), v.as_ref().unwrap()))
     }
 }
 

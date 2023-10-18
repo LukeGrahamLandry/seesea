@@ -27,7 +27,7 @@ use std::sync::Mutex;
 /// For no_args_run_main, use llvm to emit an object file, link that, then run it in as a new process and check the exit code.
 /// Enabling this makes it take a couple seconds to run the tests which annoys me.
 const RUN_SLOW_EXE_TESTS: bool = true;
-/// For all signatures, use my aarch64 backend to generate a rust file with global inline assembly and a little wrapper to call the function as assert the result.
+/// For all signatures, use my asm backend to generate a rust file with global inline assembly and a little wrapper to call the function as assert the result.
 /// It's kinda slow (because I do them sequentially). asm backend still broken for array list (cant handle spilling?).
 const RUN_SLOW_ASM_TESTS: bool = true;
 

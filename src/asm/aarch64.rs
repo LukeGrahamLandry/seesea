@@ -19,7 +19,7 @@ struct Aarch64Builder<'ir> {
     current: Label,
     text: Vec<Option<[String; 3]>>,
     current_index: usize,
-    ssa_registers: Vec<Option<Reg>>,
+    ssa_registers: IndexMap<usize, Reg>, // TODO: key should be Ssa. this used to be a Vec and I'm lazy rn.
     cursor: CursorPos,
     // for asserts
     on_last: bool, // TODO: instead of ssa_registers + ssa_offsets have an enum SsaLocation { Register(x), Stack(x), Uninit }
@@ -72,18 +72,19 @@ pub fn build_asm(ir: &Module) -> String {
 //       then swap it out to create string or direct bytes
 impl<'ir> Aarch64Builder<'ir> {
     fn new(ir: &'ir Module, function: &'ir Function) -> Aarch64Builder<'ir> {
+        let ssa_count = function.register_types.len();
         Aarch64Builder {
             ir,
             func: function,
             stack_remaining: 0,
             total_stack_size: 0,
-            ssa_offsets: Default::default(),
+            ssa_offsets: IndexMap::with_capacity(ssa_count),
             active_registers: vec![],
             unused_registers: Default::default(),
             current: Default::default(),
             text: vec![],
             current_index: 0,
-            ssa_registers: vec![None; function.register_types.len()],
+            ssa_registers: IndexMap::with_capacity(ssa_count),
             cursor: Default::default(),
             on_last: false,
             liveness: compute_liveness(function),
@@ -133,11 +134,11 @@ impl<'ir> Aarch64Builder<'ir> {
                 unreachable!();
             }
             let r = self.next_reg(ty);
-            if let Some(_) = self.ssa_offsets.get(arg_ssa) {
+            if self.ssa_offsets.get(arg_ssa).is_some() {
                 // The argument was passed in a register but we want to store it on the stack because it gets held across a function call.
                 self.set_ssa(arg_ssa, r);
             } else {
-                self.ssa_registers[arg_ssa.index()] = Some(r);
+                self.ssa_registers.insert(arg_ssa.index(), r);
             }
             log!("[{}] arg {:?} in {:?}", self.op_index, arg_ssa, r);
         }
@@ -233,6 +234,7 @@ impl<'ir> Aarch64Builder<'ir> {
 
     fn emit_func_code(&mut self) {
         let blocks = self.func.blocks.iter().enumerate();
+        let mut total = 0;
         for (i, code) in blocks {
             if let Some(code) = code {
                 self.current = Label(i);
@@ -245,6 +247,10 @@ impl<'ir> Aarch64Builder<'ir> {
                         self.move_cursor(self.current, CursorPos::JmpEnd);
                         self.on_last = true;
                     }
+                    if EMIT_DEBUG_IR_COMMENTS {
+                        total += 1;
+                        output!(self, "// {}. {}", total, self.func.print(op));
+                    }
                     self.emit_op(op);
                     self.clean_registers();
                 }
@@ -255,10 +261,8 @@ impl<'ir> Aarch64Builder<'ir> {
         // Sanity check.
         self.op_index += 1;
         self.clean_registers();
-        for (i, reg) in self.ssa_registers.iter().enumerate() {
-            if let Some(r) = reg {
-                panic!("Ssa({}) = {:?} was allocated at end of function.", i, r);
-            }
+        for (i, reg) in self.ssa_registers.iter() {
+            panic!("Ssa({}) = {:?} was allocated at end of function.", i, reg);
         }
         assert!(
             self.active_registers.is_empty(),
@@ -268,10 +272,6 @@ impl<'ir> Aarch64Builder<'ir> {
     }
 
     fn emit_op(&mut self, op: &Op) {
-        if EMIT_DEBUG_IR_COMMENTS {
-            output!(self, "// {}", self.func.print(op));
-        }
-
         match op {
             Op::ConstValue { dest, value, .. } => {
                 let result = self.reg_for(dest);
@@ -348,7 +348,7 @@ impl<'ir> Aarch64Builder<'ir> {
                         self.binary_compare(a_value, b_value, result_temp, AsmOp::BNE);
                     }
                     BinaryOp::Modulo => {
-                        todo!()
+                        todo!("https://stackoverflow.com/questions/35351470/obtaining-remainder-using-single-aarch64-instruction")
                     }
                 };
 
@@ -619,17 +619,19 @@ impl<'ir> Aarch64Builder<'ir> {
 
     // TODO: only call this as needed
     fn clean_registers(&mut self) {
-        for i in 0..self.ssa_registers.len() {
-            let reg = self.ssa_registers[i];
-            if let Some(reg) = reg {
+        // TODO: cant use iter() cause rust is stressed out. need a mut iter that shows you the options.
+        // Note this isn't using self.ssa_registers.len() because that might not be filled out all the way yet.
+        for i in 0..self.func.register_types.len() {
+            let reg = self.ssa_registers.get(&i);
+            if let Some(&reg) = reg {
                 assert!(!self.unused_registers.contains(&reg));
                 assert!(self.active_registers.contains(&reg));
                 if !self.liveness.range[Ssa(i)].contains(&self.op_index) {
-                    // log!("[{}] free Ssa({}) in {:?}", self.op_index, i, reg);
+                    log!("[{}] free Ssa({}) in {:?}", self.op_index, i, reg);
                     // The ssa is dead so we can return the register.
                     self.active_registers.retain(|r| *r != reg);
                     self.unused_registers.push_back(reg);
-                    self.ssa_registers[i] = None;
+                    self.ssa_registers.remove(&i);
                     self.corrupt(reg);
                 }
             }
@@ -653,7 +655,7 @@ impl<'ir> Aarch64Builder<'ir> {
             return reg;
         }
 
-        if let Some(active_reg) = self.ssa_registers[ssa.index()] {
+        if let Some(&active_reg) = self.ssa_registers.get(&ssa.index()) {
             // The value is already in a live register, so return it.
             assert_eq!(register_kind(ty), (active_reg.0, active_reg.1));
             return active_reg;
@@ -686,7 +688,7 @@ impl<'ir> Aarch64Builder<'ir> {
             return;
         }
 
-        let active_reg = if let Some(active_reg) = self.ssa_registers[ssa.index()] {
+        let active_reg = if let Some(&active_reg) = self.ssa_registers.get(&ssa.index()) {
             if value == active_reg {
                 // NO-OP, the value is already in the right place.
                 return;
@@ -729,7 +731,7 @@ impl<'ir> Aarch64Builder<'ir> {
             return self.next_reg(ty);
         }
 
-        if let Some(active_reg) = self.ssa_registers[ssa.index()] {
+        if let Some(&active_reg) = self.ssa_registers.get(&ssa.index()) {
             // We've already allocated a register for this SSA, so let's give you that
             // so we don't have to move the value in set_ssa.
             // Note: Since it's single assignment, this means either this is an argument or a phi node.
@@ -739,7 +741,7 @@ impl<'ir> Aarch64Builder<'ir> {
 
         // This is the first write of the ssa and we should have room to store it in a register the whole time.
         let reg = self.next_reg(ty);
-        self.ssa_registers[ssa.index()] = Some(reg);
+        self.ssa_registers.insert(ssa.index(), reg);
         // log!("[{}] take {:?} in {:?}", self.op_index, ssa, reg);
         reg
     }
@@ -764,13 +766,7 @@ impl<'ir> Aarch64Builder<'ir> {
 
     // TODO: maybe make Register not copy so i can enforce passing it to the allocator. drop impl that panics if not returned to queue properly.
     fn drop_reg(&mut self, register: Reg) {
-        if self
-            .ssa_registers
-            .iter()
-            .filter(|s| s.is_some())
-            .map(|s| s.unwrap())
-            .any(|s| s == register)
-        {
+        if self.ssa_registers.values().any(|&s| s == register) {
             // This register is allocated for an ssa so we'll just leave it there so we can read it later.
             // TODO: liveness check here instead of garbage collecting every tick but need to use op_index+1.
             return;
