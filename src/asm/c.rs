@@ -4,13 +4,13 @@ use crate::test_logic::compile_module;
 use fmt::Write;
 use std::borrow::Borrow;
 use std::fmt;
-use std::fmt::format;
 
 struct EmitC<'ir> {
     ir: &'ir Module,
     result: String,
     func: Option<&'ir Function>,
     stack_slot: usize,
+    func_index: usize, // Avoids aliasing block labels (for goto).
 }
 
 impl<'ir> From<&'ir Module> for String {
@@ -20,17 +20,11 @@ impl<'ir> From<&'ir Module> for String {
             result: "".to_string(),
             func: None,
             stack_slot: 0,
+            func_index: 0,
         };
         emit.emit_all();
         emit.result
     }
-}
-
-#[test]
-fn c() {
-    let m = compile_module(include_str!("../../tests/array_list.c"), "array_list");
-    let s: String = (&m).into();
-    println!("{}", s);
 }
 
 const INDENT: &str = "    ";
@@ -44,10 +38,21 @@ impl<'ir> EmitC<'ir> {
             self.func = Some(f);
             self.emit_func_sig(&f.signature);
             self.print("{\n");
+            // Clang doesn't seem to like declaring variables after a goto label? So declare everything up front.
+            for (ssa, ty) in f.register_types.iter() {
+                // don't declare function args.
+                if f.arg_registers.contains(&ssa) {
+                    continue;
+                }
+                self.print(INDENT);
+                self.write_type_and_name(*ty, &format!("__s{}", ssa.index()));
+                self.print(";\n");
+            }
+            self.emit_stack_slots(f);
+            self.stack_slot = 0;
             for (i, code) in f.blocks.iter().enumerate() {
                 if let Some(code) = code {
-                    self.print(INDENT);
-                    writeln!(self.result, "__b{}:\n", i).unwrap(); // Jump label.
+                    writeln!(self.result, "__b{}_{}:\n", self.func_index, i).unwrap(); // Jump label.
                     for op in code {
                         self.emit_op(op);
                     }
@@ -56,6 +61,30 @@ impl<'ir> EmitC<'ir> {
             self.print("}\n\n");
             self.func = None;
             self.stack_slot = 0;
+            self.func_index += 1;
+        }
+    }
+
+    // TODO: this is awkward
+    // it doesn't want variables declared before labels so scan the code for all the
+    // stack space needed and declare those variables up front.
+    // after calling this, emit_all sets self.stack_slot=0 so when really emitting code,
+    // it sees the StackAlloc requests in the same order and the number matches up with the right type.
+    // I'm calculating func.required_stack_bytes for asm anyway so could just use that but then the generated code doesn't wouldn't include the types.
+    fn emit_stack_slots(&mut self, func: &Function) {
+        for (i, code) in func.blocks.iter().enumerate() {
+            if let Some(code) = code {
+                for op in code {
+                    if let Op::StackAlloc { dest, ty, count } = op {
+                        self.print(INDENT);
+                        let mut ty = *ty;
+                        ty.count = *count;
+                        self.write_type_and_name(ty, &format!("__t{}", self.stack_slot));
+                        self.print(";\n");
+                        self.stack_slot += 1;
+                    }
+                }
+            }
         }
     }
 
@@ -64,7 +93,7 @@ impl<'ir> EmitC<'ir> {
         self.print(INDENT);
         match op {
             Op::ConstValue { dest, value, .. } => {
-                self.declare(dest);
+                self.assign(dest);
                 match value {
                     LiteralValue::IntNumber(val) => write!(self.result, "{}", val).unwrap(),
                     LiteralValue::FloatNumber(val) => write!(self.result, "{}", val).unwrap(),
@@ -78,7 +107,7 @@ impl<'ir> EmitC<'ir> {
                 self.print(";\n");
             }
             Op::Binary { dest, a, b, kind } => {
-                self.declare(dest);
+                self.assign(dest);
                 self.write_ssa(a);
                 self.print(" ");
                 self.print(op_str(*kind));
@@ -87,7 +116,7 @@ impl<'ir> EmitC<'ir> {
                 self.print(";\n");
             }
             Op::LoadFromPtr { value_dest, addr } => {
-                self.declare(value_dest);
+                self.assign(value_dest);
                 self.print("*");
                 self.write_ssa(addr);
                 self.print(";\n");
@@ -106,15 +135,23 @@ impl<'ir> EmitC<'ir> {
             } => {
                 writeln!(
                     self.result,
-                    "if (__s{}) goto __b{}; else goto __b{};\n",
+                    "if (__s{}) goto __b{}_{}; else goto __b{}_{};\n",
                     condition.index(),
+                    self.func_index,
                     if_true.index(),
+                    self.func_index,
                     if_false.index()
                 )
                 .unwrap();
             }
             Op::AlwaysJump(target) => {
-                writeln!(self.result, "goto __b{};", target.index()).unwrap();
+                writeln!(
+                    self.result,
+                    "goto __b{}_{};",
+                    self.func_index,
+                    target.index()
+                )
+                .unwrap();
             }
             Op::Phi { .. } => todo!(),
             Op::Return(ssa) => match ssa {
@@ -126,14 +163,9 @@ impl<'ir> EmitC<'ir> {
             Op::StackAlloc { dest, ty, count } => {
                 // TODO: really need to make array types suck less
                 // TODO: this is absolutely deranged inefficient code gen
-                let mut ty = *ty;
-                ty.count = *count;
-                self.write_type_and_name(ty, &format!("__t{}", self.stack_slot));
-                self.stack_slot += 1;
-                self.print(";\n");
-                self.print(INDENT);
-                self.declare(dest);
+                self.assign(dest);
                 writeln!(self.result, "&__t{};\n", self.stack_slot).unwrap();
+                self.stack_slot += 1;
             }
             Op::Call {
                 func_name,
@@ -142,7 +174,7 @@ impl<'ir> EmitC<'ir> {
                 ..
             } => {
                 if let Some(ret) = return_value_dest {
-                    self.declare(ret);
+                    self.assign(ret);
                 }
                 self.print(func_name);
                 self.print("(");
@@ -161,7 +193,7 @@ impl<'ir> EmitC<'ir> {
                 object_addr,
                 field_index,
             } => {
-                self.declare(dest);
+                self.assign(dest);
                 self.print("&");
                 self.write_ssa(object_addr);
                 self.print("->");
@@ -173,7 +205,7 @@ impl<'ir> EmitC<'ir> {
             }
             Op::Cast { input, output, .. } => {
                 // TODO: don't emit casts that are implicit in c
-                self.declare(output);
+                self.assign(output);
                 self.print("(");
                 let ty = self.func.unwrap().register_types[output.borrow()];
                 self.write_type_prefix(ty);
@@ -223,9 +255,16 @@ impl<'ir> EmitC<'ir> {
         assert_eq!(s.return_type.count, 1, "sig with type_and_name no arrays");
         self.write_type_and_name(s.return_type, &s.name);
         self.result.push('(');
-        let args = s.param_types.iter().zip(s.param_names.iter());
-        for (ty, name) in args {
-            self.write_type_and_name(*ty, name);
+        // Assumes function args are the first ssa slots (since function body doesn't refer to them by name). External functions could use their real names here.
+        let args = s.param_types.iter().zip(s.param_names.iter()).enumerate(); // TODO: not using name anymore, don't zip.
+        for (i, (ty, _)) in args {
+            // TODO: remove slow assertion
+            // TODO: but wait! array list fails here and test fails with aarch backend, i bed i made this assumption there to and didn't check.
+            if let Some(f) = self.ir.get_internal_func(&s.name) {
+                assert!(f.arg_registers.contains(&Ssa(i)))
+            }
+
+            self.write_type_and_name(*ty, &format!("__s{}", i));
             self.print(", ");
         }
         // no trailing comma. TODO: kinda ugly
@@ -236,11 +275,12 @@ impl<'ir> EmitC<'ir> {
         self.result.push(')');
     }
 
-    fn declare(&mut self, ssa: impl Borrow<Ssa>) {
-        let ty = self.func.unwrap().register_types[ssa.borrow()];
+    fn assign(&mut self, ssa: impl Borrow<Ssa>) {
+        // let ty = self.func.unwrap().register_types[ssa.borrow()];
         // TODO: sad alloc noises. use write_ssa.
-        self.write_type_and_name(ty, &format!("__s{}", ssa.borrow().index()));
-        self.print(" = ");
+        // self.write_type_and_name(ty, &format!("__s{}", ssa.borrow().index()));
+        // self.print(" = ");
+        write!(self.result, "__s{} = ", ssa.borrow().index()).unwrap();
     }
 
     fn write_ssa(&mut self, ssa: impl Borrow<Ssa>) {

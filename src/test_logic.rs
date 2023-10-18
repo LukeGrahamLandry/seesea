@@ -19,10 +19,10 @@ use llvm_sys::target::{LLVM_InitializeNativeAsmPrinter, LLVM_InitializeNativeTar
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::Write;
-use std::mem;
 use std::mem::{size_of, MaybeUninit};
 use std::process::Command;
 use std::sync::Mutex;
+use std::{fs, mem};
 
 /// For no_args_run_main, use llvm to emit an object file, link that, then run it in as a new process and check the exit code.
 /// Enabling this makes it take a couple seconds to run the tests which annoys me.
@@ -57,22 +57,40 @@ pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
         };
     });
 
-    #[cfg(feature = "llvm")]
     if RUN_SLOW_EXE_TESTS {
-        let o_filename = format!("target/llvm_obj_tests/{}.o", name);
-        let exe_filename = format!("target/llvm_obj_tests/{}", name);
-        llvm::compile_object(&ir, &o_filename);
+        #[cfg(feature = "llvm")]
+        {
+            let o_filename = format!("target/llvm_obj_tests/{}.o", name);
+            let exe_filename = format!("target/llvm_obj_tests/{}", name);
+            llvm::compile_object(&ir, &o_filename);
 
-        Command::new("gcc")
-            .args([&o_filename, "-dynamic", "-o", &exe_filename])
-            .status()
-            .unwrap();
-        let status = Command::new(&exe_filename)
-            .status()
-            .unwrap()
-            .code()
-            .unwrap() as u64;
-        assert_eq!(status, expected);
+            Command::new("gcc")
+                .args([&o_filename, "-dynamic", "-o", &exe_filename])
+                .status()
+                .unwrap();
+            let status = Command::new(&exe_filename)
+                .status()
+                .unwrap()
+                .code()
+                .unwrap() as u64;
+            assert_eq!(status, expected);
+        }
+        {
+            let c_filename = format!("target/c_backend_tests/{}.c", name);
+            let exe_filename = format!("target/c_backend_tests/{}", name);
+            let c_code: String = (&ir).into();
+            fs::write(&c_filename, c_code).unwrap();
+            Command::new("gcc")
+                .args([&c_filename, "-dynamic", "-o", &exe_filename])
+                .status()
+                .unwrap();
+            let status = Command::new(&exe_filename)
+                .status()
+                .unwrap()
+                .code()
+                .unwrap() as u64;
+            assert_eq!(status, expected);
+        }
     }
 
     // ASM

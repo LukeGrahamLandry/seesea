@@ -4,6 +4,7 @@ use std::io::Write;
 
 fn main() {
     fs::create_dir_all("target/llvm_obj_tests").unwrap();
+    fs::create_dir_all("target/c_backend_tests").unwrap();
     // Create an empty folder for generated asm tests.
     // TODO: Remove this when I progress past using Rust's inline asm as the assembler/linker
     fs::create_dir_all(format!("{GEN_CRATE_PATH}/src")).unwrap();
