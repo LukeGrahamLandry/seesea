@@ -1,6 +1,5 @@
 use crate::ast::{BinaryOp, CType, FuncSignature, LiteralValue, StructSignature, ValueType};
 use crate::ir::{Function, Module, Op, Ssa};
-use crate::test_logic::compile_module;
 use fmt::Write;
 use std::borrow::Borrow;
 use std::fmt;
@@ -50,12 +49,10 @@ impl<'ir> EmitC<'ir> {
             }
             self.emit_stack_slots(f);
             self.stack_slot = 0;
-            for (i, code) in f.blocks.iter().enumerate() {
-                if let Some(code) = code {
-                    writeln!(self.result, "__b{}_{}:\n", self.func_index, i).unwrap(); // Jump label.
-                    for op in code {
-                        self.emit_op(op);
-                    }
+            for (l, code) in f.full_blocks() {
+                writeln!(self.result, "__b{}_{}:\n", self.func_index, l.index()).unwrap(); // Jump label.
+                for op in code {
+                    self.emit_op(op);
                 }
             }
             self.print("}\n\n");
@@ -205,6 +202,7 @@ impl<'ir> EmitC<'ir> {
             }
             Op::Cast { input, output, .. } => {
                 // TODO: don't emit casts that are implicit in c
+                // Note: int:ptr casts are required because I store pointer math in bytes. means those really blow up which is a bit sad.
                 self.assign(output);
                 self.print("(");
                 let ty = self.func.unwrap().register_types[output.borrow()];
@@ -233,10 +231,7 @@ impl<'ir> EmitC<'ir> {
         }
 
         self.print("\n// External function signatures.\n");
-        for f in &self.ir.forward_declarations {
-            if self.ir.get_internal_func(&f.name).is_some() {
-                continue;
-            }
+        for f in self.ir.iter_external_funcs() {
             self.emit_func_sig(f);
             self.print(";\n")
         }
@@ -255,18 +250,23 @@ impl<'ir> EmitC<'ir> {
         assert_eq!(s.return_type.count, 1, "sig with type_and_name no arrays");
         self.write_type_and_name(s.return_type, &s.name);
         self.result.push('(');
-        // Assumes function args are the first ssa slots (since function body doesn't refer to them by name). External functions could use their real names here.
-        let args = s.param_types.iter().zip(s.param_names.iter()).enumerate(); // TODO: not using name anymore, don't zip.
-        for (i, (ty, _)) in args {
-            // TODO: remove slow assertion
-            // TODO: but wait! array list fails here and test fails with aarch backend, i bed i made this assumption there to and didn't check.
-            if let Some(f) = self.ir.get_internal_func(&s.name) {
-                assert!(f.arg_registers.contains(&Ssa(i)))
+        // TODO: External functions forward declarations could use their real names here.
+        let types = s.param_types.iter();
+        match self.func {
+            None => {
+                for (ty, name) in types.zip(s.param_names.iter()) {
+                    self.write_type_and_name(*ty, name);
+                    self.print(", ");
+                }
             }
-
-            self.write_type_and_name(*ty, &format!("__s{}", i));
-            self.print(", ");
+            Some(current) => {
+                for (ty, ssa) in types.zip(current.arg_registers.iter()) {
+                    self.write_type_and_name(*ty, &format!("__s{}", ssa.index()));
+                    self.print(", ");
+                }
+            }
         }
+
         // no trailing comma. TODO: kinda ugly
         if !s.param_types.is_empty() {
             self.result.truncate(self.result.len() - 2);
@@ -276,13 +276,10 @@ impl<'ir> EmitC<'ir> {
     }
 
     fn assign(&mut self, ssa: impl Borrow<Ssa>) {
-        // let ty = self.func.unwrap().register_types[ssa.borrow()];
-        // TODO: sad alloc noises. use write_ssa.
-        // self.write_type_and_name(ty, &format!("__s{}", ssa.borrow().index()));
-        // self.print(" = ");
         write!(self.result, "__s{} = ", ssa.borrow().index()).unwrap();
     }
 
+    // TODO: make this the only place that knows how to conver to a string.
     fn write_ssa(&mut self, ssa: impl Borrow<Ssa>) {
         write!(self.result, "__s{}", ssa.borrow().index()).unwrap()
     }

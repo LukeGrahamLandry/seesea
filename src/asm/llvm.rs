@@ -157,19 +157,14 @@ impl<'ir> RawLlvmFuncGen<'ir> {
             self.llvm_structs.insert(struct_def.index, llvm_struct);
         }
 
-        // Forward declare all internal functions so they can reference each other.
+        // Forward declare all functions so they can reference each other.
         for function in ir.functions.iter() {
             self.emit_function_definition(&function.signature);
         }
-
-        // TODO: filter out forward_declarations before putting in ir.
-        // Forward declare external functions. Skip internals as done above.
-        for function in &ir.forward_declarations {
-            if ir.get_internal_func(&function.name).is_some() {
-                continue;
-            }
+        for function in ir.iter_external_funcs() {
             self.emit_function_definition(function);
         }
+
         for function in ir.functions.iter() {
             log!("Compiling {:?}", function.signature);
             self.emit_function(function);
@@ -221,13 +216,10 @@ impl<'ir> RawLlvmFuncGen<'ir> {
         let func = *self.functions.get(&ir.signature.name).unwrap();
 
         // All the blocks need to exist ahead of time so jumps can reference them.
-        self.func_mut().blocks = IndexMap::with_capacity(ir.blocks.len());
-        for (i, code) in ir.blocks.iter().enumerate() {
-            if code.is_some() {
-                let name = null_terminate(&format!(".b{}", i));
-                let block = LLVMAppendBasicBlock(func, name.as_ptr());
-                self.func_mut().blocks.insert(Label(i), block);
-            }
+        for (l, _) in ir.full_blocks() {
+            let name = null_terminate(&format!(".b{}", l.index()));
+            let block = LLVMAppendBasicBlock(func, name.as_ptr());
+            self.func_mut().blocks.insert(l, block);
         }
 
         // Map the llvm function arguments to our ssa register system.
@@ -236,12 +228,8 @@ impl<'ir> RawLlvmFuncGen<'ir> {
         }
 
         // Compile the body of the function.
-        for (i, block) in ir.blocks.iter().enumerate() {
-            let block = match block {
-                None => continue,
-                Some(b) => b,
-            };
-            let code = self.func_get().blocks[Label(i)];
+        for (l, block) in ir.full_blocks() {
+            let code = self.func_get().blocks[l];
             LLVMPositionBuilderAtEnd(self.builder, code);
             for op in block {
                 self.emit_ir_op(op);
@@ -644,7 +632,7 @@ impl<'module> FuncContext<'module> {
     fn new(ir: &'module Function) -> FuncContext<'module> {
         FuncContext {
             local_registers: Default::default(),
-            blocks: IndexMap::default(),
+            blocks: IndexMap::with_capacity(ir.blocks.len()),
             func_ir: ir,
             phi_nodes: vec![],
         }

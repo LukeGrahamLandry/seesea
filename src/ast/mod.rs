@@ -209,6 +209,13 @@ impl<Func: FuncRepr> AnyModule<Func> {
             .find(|&func| func.get_signature().name.as_ref() == name)
     }
 
+    // TODO: filter out forward_declarations before putting in ir?
+    pub fn iter_external_funcs(&self) -> impl Iterator<Item = &FuncSignature> {
+        self.forward_declarations
+            .iter() // TODO: O(n^2)
+            .filter(|s| self.get_internal_func(&s.name).is_none())
+    }
+
     pub fn get_func_signature(&self, name: &str) -> Option<&FuncSignature> {
         self.functions
             .iter()
@@ -240,6 +247,9 @@ impl<Func: FuncRepr> AnyModule<Func> {
         for i in 0..index {
             offset += self.size_of(s.fields[i].1);
         }
+        let field_ty = s.fields[index].1;
+        let field_size = self.size_of(field_ty);
+        assert_eq!(offset % field_size, 0); // check that my packing made a valid alignment
         offset
     }
 

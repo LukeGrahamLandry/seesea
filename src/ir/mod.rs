@@ -91,12 +91,13 @@ pub enum Op {
 
 #[derive(Clone)]
 pub struct Function {
+    // TODO: use IndexMap?
     pub blocks: Vec<Option<Vec<Op>>>, // in the final codegen these will flatten out and labels will become offsets
     pub blocks_debug_lines: Vec<Option<Vec<OpDebugInfo>>>, // in the final codegen these will flatten out and labels will become offsets
     var_counter: usize,
     pub signature: FuncSignature,
     pub arg_registers: Vec<Ssa>,
-    pub debug_register_names: Vec<Option<String>>,
+    pub debug_register_names: Vec<Option<String>>, // TODO: use IndexMap?
     pub register_types: IndexMap<Ssa, CType>,
     pub required_stack_bytes: usize,
 }
@@ -271,6 +272,15 @@ impl Function {
         for ty in self.register_types.values() {
             assert!(!ty.is_struct());
         }
+    }
+
+    // Only meaningful after calling finish()
+    pub fn full_blocks(&self) -> impl Iterator<Item = (Label, &[Op])> {
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.is_some())
+            .map(|(i, b)| (Label(i), b.as_ref().unwrap().as_slice()))
     }
 
     pub fn entry_point(&self) -> Label {

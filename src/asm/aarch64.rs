@@ -5,7 +5,7 @@ use crate::ir::{CastType, Function, Label, Module, Op, Ssa};
 use crate::log;
 use crate::util::imap::IndexMap;
 use std::collections::VecDeque;
-use std::fmt::{format, Debug, Formatter, Write};
+use std::fmt::{Debug, Formatter, Write};
 
 struct Aarch64Builder<'ir> {
     ir: &'ir Module,
@@ -17,7 +17,7 @@ struct Aarch64Builder<'ir> {
     active_registers: Vec<Reg>,
     unused_registers: VecDeque<Reg>,
     current: Label,
-    text: Vec<Option<[String; 3]>>,
+    text: Vec<Option<[String; 3]>>, // TODO IndexMap<Label ?
     current_index: usize,
     ssa_registers: IndexMap<usize, Reg>, // TODO: key should be Ssa. this used to be a Vec and I'm lazy rn.
     cursor: CursorPos,
@@ -50,8 +50,9 @@ macro_rules! output {
 }
 
 // Should we start functions by filling any corruptible with meaningless sentinel values to help debugging?
-const DEBUG_CORRUPT_REGISTERS: bool = false;
+const DEBUG_CORRUPT_REGISTERS: bool = false; // TODO: this breaks loops that work by coincidence. need to fix liveness.
 const EMIT_DEBUG_IR_COMMENTS: bool = true;
+const ZERO_THE_STACK: bool = false; // TODO: option to debug corrupt
 
 // Hardware magic numbers.
 const CORRUPTIBLE_INTS: usize = 16;
@@ -59,6 +60,11 @@ const CORRUPTIBLE_FLOATS: usize = 8;
 const SP_ALIGNMENT: usize = 16;
 const CC_REG_ARGS: usize = 8; // how many arguments of each type are passed in registers when calling a function.
 
+// TODO: liveness is the problem.
+// it drops things at last usage even if you loop back up.
+// need to only drop things at the end of blocks?
+
+// TODO: add `.global _main` if not using rust inline asm as entry point.
 pub fn build_asm(ir: &Module) -> String {
     let mut text = String::new();
     for function in &ir.functions {
@@ -202,6 +208,19 @@ impl<'ir> Aarch64Builder<'ir> {
             SP,
             self.total_stack_size
         );
+
+        if ZERO_THE_STACK {
+            for i in 0..(self.stack_remaining / 8) {
+                output!(
+                    self,
+                    "{:?} {:?}, [{:?}, #{}]",
+                    AsmOp::STR,
+                    ZERO,
+                    SP,
+                    i as usize * 8
+                );
+            }
+        }
 
         // If we ever call a function, we need to save the previous return address on the stack so we have it when we want to return ourselves.
         if self.liveness.has_any_calls {
@@ -408,11 +427,14 @@ impl<'ir> Aarch64Builder<'ir> {
                 let dest_ptr = self.reg_for(dest);
                 self.simple_with_const(AsmOp::ADD, dest_ptr, SP, self.stack_remaining as usize);
                 self.set_ssa(dest, dest_ptr);
+                // TODO: alignment?
+                // assert_eq!(self.stack_remaining as usize % self.ir.size_of(ty), 0);
             }
             Op::LoadFromPtr { value_dest, addr } => {
                 let address = self.get_ssa(addr);
                 let dest_temp = self.reg_for(value_dest);
-                if self.func.type_of(value_dest).is_raw_char() {
+                let ty = self.func.type_of(value_dest);
+                if ty.is_raw_char() {
                     self.load_byte(dest_temp, address, 0);
                 } else {
                     self.load(dest_temp, address, 0);
@@ -486,6 +508,7 @@ impl<'ir> Aarch64Builder<'ir> {
                     | CastType::PtrToInt
                     | CastType::Bits => {
                         assert_eq!(self.ir.size_of(in_ty), self.ir.size_of(out_ty));
+                        assert_eq!(input_reg.1, output_reg.1);
                         if register_kind(in_ty).0 == register_kind(out_ty).0 {
                             // TODO: make sure this reuses the same register for the new ssa since we know its a NO-OP
                             Some(AsmOp::MOV)
@@ -787,10 +810,10 @@ impl<'ir> Aarch64Builder<'ir> {
     // TODO: this is clunky because sometimes it ends up after you jump away. But its for debugging not correctness so its better than nothing.
     fn corrupt(&mut self, mut reg: Reg) {
         if DEBUG_CORRUPT_REGISTERS && reg.2 != 0 {
-            // TODO hack              ^
+            // TODO hack              ^ (because X0 is used for return value)
             match reg.0 {
                 RegKind::Int => {
-                    output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, reg, 12345);
+                    output!(self, "{:?} {:?}, #{}", AsmOp::MOVZ, reg, 0xABCD);
                 }
                 RegKind::Float => {
                     reg.1 = Bits::B64;
@@ -812,6 +835,7 @@ impl<'ir> Aarch64Builder<'ir> {
         output!(self, "{:?} {:?}, {:?}, {:?}", op, destination, arg1, arg2);
     }
 
+    // It's fine that the block names alias across functions because I'm using local labels. That's why I need to specify direction.
     fn jump_to(&mut self, block: Label) {
         // If we're jumping to the next block, just fall through since we know this is the last instruction in the block.
         // (current_index == current.index + 1) because there's an extra header block to setup the stack.
@@ -846,7 +870,8 @@ impl<'ir> Aarch64Builder<'ir> {
         output!(self, "STR {:?}, [{:?}, #{}]", value, addr, offset);
     }
 
-    // TODO: need to combine these as something that needs you to pass type since its annoying to do every timee
+    // TODO: need to combine these as something that needs you to pass type since its annoying to do every time
+    // TODO: need one for shorts
     /// Load one byte and zero extend
     fn load_byte(&mut self, destination: Reg, addr: Reg, offset: usize) {
         output!(self, "LDRB {:?}, [{:?}, #{}]", destination, addr, offset);
@@ -866,13 +891,9 @@ impl<'ir> Aarch64Builder<'ir> {
 
     pub fn get_text(self) -> String {
         let mut result = format!(".data\n{}\n.text\n", self.constants);
-        self.text
-            .into_iter()
-            .filter(|s| s.is_some())
-            .map(|s| s.unwrap())
-            .for_each(|s| {
-                result.push_str(&*s.concat());
-            });
+        self.text.into_iter().flatten().for_each(|s| {
+            result.push_str(&s.concat());
+        });
         result
     }
 
@@ -931,11 +952,7 @@ impl<'ir> Aarch64Builder<'ir> {
     fn calc_field_offset(&self, object_ptr_addr: &Ssa, field_index: usize) -> u64 {
         let ty = self.func.type_of(object_ptr_addr).deref_type();
         let s = self.ir.get_struct(ty);
-        let mut offset = 0;
-        let fields = s.fields.iter().take(field_index);
-        for (_, ty) in fields {
-            offset += self.ir.size_of(ty);
-        }
+        let offset = self.ir.get_field_offset(s, field_index);
         offset as u64
     }
 }
@@ -992,6 +1009,9 @@ pub enum AsmOp {
     LDP,
     /// Store a pair of registers to sequential stack slots.
     STP,
+
+    STR,
+    LDR,
 
     /// Unsigned int to float
     UCVTF,

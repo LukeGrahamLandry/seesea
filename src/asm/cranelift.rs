@@ -1,7 +1,7 @@
 //! IR -> Cranelift IR
 
 use crate::ast::{BinaryOp, CType, FuncSignature, FuncSource, LiteralValue, ValueType};
-use crate::ir::{CastType, Label, Op, Ssa};
+use crate::ir::{CastType, Function, Label, Op, Ssa};
 use crate::util::imap::IndexMap;
 use crate::{ir, log};
 use cranelift::codegen::ir::stackslot::StackSize;
@@ -126,68 +126,60 @@ impl<'ir, M: Module> CraneLiftFuncGen<'ir, M> {
 
     fn compile_all(&mut self) {
         assert!(self.functions.is_empty());
-        // Need all functions up front so they can call each-other. Isomorphic with forward declaration.
+        // Need all functions up front so they can call each-other.
         for f in &self.ir.functions {
             self.forward_declare(&f.signature, Linkage::Export);
         }
-
         // Declare external functions (libc, etc)
-        for f in &self.ir.forward_declarations {
-            // Internal functions are dealt with above. They can still be in forward_declarations depending on the src.
-            if self.ir.get_internal_func(&f.name).is_some() {
-                continue;
-            }
-
+        for f in self.ir.iter_external_funcs() {
             self.forward_declare(f, Linkage::Import);
         }
 
         // Now actually emit the internal functions.
         log!("===== CraneLift IR =====");
         for f in &self.ir.functions {
-            let func = *self.functions.get(&f.signature.name).unwrap();
+            self.emit_func(f)
+        }
+        log!("======");
+    }
 
-            // TODO: how do i make myself look at the func i declared before
-            //       maybe its fine. now it just needs to know its the same sig, later i bind it to the id so references work out.
-            let sig = self.make_signature(&f.signature);
-            self.ctx.func.signature = sig;
+    fn emit_func(&mut self, f: &Function) {
+        // TODO: how do i make myself look at the func i declared before
+        //       maybe its fine. now it just needs to know its the same sig, later i bind it to the id so references work out.
+        let sig = self.make_signature(&f.signature);
+        self.ctx.func.signature = sig;
 
-            let builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
-            let mut state = FunctionState {
-                ir: self.ir,
-                func: f,
-                builder,
-                module: &mut self.module,
-                blocks: Default::default(),
-                local_registers: Default::default(),
-                functions: &self.functions,
-            };
+        let builder = FunctionBuilder::new(&mut self.ctx.func, &mut self.builder_ctx);
+        let mut state = FunctionState {
+            ir: self.ir,
+            func: f,
+            builder,
+            module: &mut self.module,
+            blocks: Default::default(),
+            local_registers: Default::default(),
+            functions: &self.functions,
+        };
 
-            // All blocks must be created early so they can be used as jump targets.
-            for (i, code) in f.blocks.iter().enumerate() {
-                if code.is_some() {
-                    state.blocks.insert(Label(i), state.builder.create_block());
-                }
-            }
-
-            state.append_argument_ssas();
-            // Now generate code for all the blocks.
-            for (i, code) in f.blocks.iter().enumerate() {
-                if let Some(block) = code {
-                    state.builder.switch_to_block(state.blocks[Label(i)]);
-                    for op in block {
-                        state.emit_ir_op(op);
-                    }
-                }
-            }
-
-            state.builder.seal_all_blocks();
-            state.builder.finalize();
-            log!("{}", self.ctx.func.display());
-            self.module.define_function(func, &mut self.ctx).unwrap();
-            self.module.clear_context(&mut self.ctx);
+        // All blocks must be created early so they can be used as jump targets.
+        for (l, _) in f.full_blocks() {
+            state.blocks.insert(l, state.builder.create_block());
         }
 
-        log!("======");
+        state.append_argument_ssas();
+
+        for (l, code) in f.full_blocks() {
+            state.builder.switch_to_block(state.blocks[l]);
+            for op in code {
+                state.emit_ir_op(op);
+            }
+        }
+
+        state.builder.seal_all_blocks();
+        state.builder.finalize();
+        log!("{}", self.ctx.func.display());
+        let func = *self.functions.get(&f.signature.name).unwrap();
+        self.module.define_function(func, &mut self.ctx).unwrap();
+        self.module.clear_context(&mut self.ctx);
     }
 
     fn make_signature(&self, f: &FuncSignature) -> Signature {
@@ -198,7 +190,7 @@ impl<'ir, M: Module> CraneLiftFuncGen<'ir, M> {
 impl<'ir, 'gen, M: Module> FunctionState<'ir, 'gen, M> {
     fn append_argument_ssas(&mut self) {
         assert!(!self.func.signature.has_var_args);
-        let entry_block = self.blocks[Label(0)];
+        let entry_block = self.blocks[self.func.entry_point()];
         self.builder.switch_to_block(entry_block);
         self.builder
             .append_block_params_for_function_params(entry_block);

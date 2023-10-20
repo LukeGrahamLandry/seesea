@@ -58,11 +58,12 @@ impl<Key: ToIndex, Value> IndexMap<Key, Value> {
         if self.values.len() <= k.get_index() {
             None
         } else {
-            match &self.values[k.get_index()] {
-                None => None,
-                Some(v) => Some(v),
-            }
+            self.values[k.get_index()].as_ref()
         }
+    }
+
+    pub fn contains(&mut self, k: &Key) -> bool {
+        self.get(k).is_some()
     }
 
     pub fn get_mut(&mut self, k: &Key) -> Option<&mut Value> {
@@ -80,7 +81,11 @@ impl<Key: ToIndex, Value> IndexMap<Key, Value> {
         if self.values.len() <= k.get_index() {
             None
         } else {
-            self.values[k.get_index()].take()
+            let prev = self.values[k.get_index()].take();
+            if prev.is_some() {
+                self.count -= 1;
+            }
+            prev
         }
     }
 

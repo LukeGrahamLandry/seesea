@@ -26,10 +26,12 @@ use std::{fs, mem};
 
 /// For no_args_run_main, use llvm to emit an object file, link that, then run it in as a new process and check the exit code.
 /// Enabling this makes it take a couple seconds to run the tests which annoys me.
-const RUN_SLOW_EXE_TESTS: bool = true;
+const RUN_SLOW_LLVM_EXE_TESTS: bool = true;
 /// For all signatures, use my asm backend to generate a rust file with global inline assembly and a little wrapper to call the function as assert the result.
 /// It's kinda slow (because I do them sequentially). asm backend still broken for array list (cant handle spilling?).
 const RUN_SLOW_ASM_TESTS: bool = true;
+/// For no_args_run_main, generate new c code and build that with a real compiler.
+const RUN_SLOW_C_GEN_TESTS: bool = true;
 
 // TODO: macro that you just give the function signature to
 pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
@@ -57,40 +59,39 @@ pub fn no_args_run_main(src: &str, expected: u64, name: &str) {
         };
     });
 
-    if RUN_SLOW_EXE_TESTS {
-        #[cfg(feature = "llvm")]
-        {
-            let o_filename = format!("target/llvm_obj_tests/{}.o", name);
-            let exe_filename = format!("target/llvm_obj_tests/{}", name);
-            llvm::compile_object(&ir, &o_filename);
+    #[cfg(feature = "llvm")]
+    if RUN_SLOW_LLVM_EXE_TESTS {
+        let o_filename = format!("target/llvm_obj_tests/{}.o", name);
+        let exe_filename = format!("target/llvm_obj_tests/{}", name);
+        llvm::compile_object(&ir, &o_filename);
 
-            Command::new("gcc")
-                .args([&o_filename, "-dynamic", "-o", &exe_filename])
-                .status()
-                .unwrap();
-            let status = Command::new(&exe_filename)
-                .status()
-                .unwrap()
-                .code()
-                .unwrap() as u64;
-            assert_eq!(status, expected);
-        }
-        {
-            let c_filename = format!("target/c_backend_tests/{}.c", name);
-            let exe_filename = format!("target/c_backend_tests/{}", name);
-            let c_code: String = (&ir).into();
-            fs::write(&c_filename, c_code).unwrap();
-            Command::new("gcc")
-                .args([&c_filename, "-dynamic", "-o", &exe_filename])
-                .status()
-                .unwrap();
-            let status = Command::new(&exe_filename)
-                .status()
-                .unwrap()
-                .code()
-                .unwrap() as u64;
-            assert_eq!(status, expected);
-        }
+        Command::new("gcc")
+            .args([&o_filename, "-dynamic", "-o", &exe_filename])
+            .status()
+            .unwrap();
+        let status = Command::new(&exe_filename)
+            .status()
+            .unwrap()
+            .code()
+            .unwrap() as u64;
+        assert_eq!(status, expected);
+    }
+
+    if RUN_SLOW_C_GEN_TESTS {
+        let c_filename = format!("target/c_backend_tests/{}.c", name);
+        let exe_filename = format!("target/c_backend_tests/{}", name);
+        let c_code: String = (&ir).into();
+        fs::write(&c_filename, c_code).unwrap();
+        Command::new("gcc")
+            .args([&c_filename, "-dynamic", "-o", &exe_filename])
+            .status()
+            .unwrap();
+        let status = Command::new(&exe_filename)
+            .status()
+            .unwrap()
+            .code()
+            .unwrap() as u64;
+        assert_eq!(status, expected);
     }
 
     // ASM

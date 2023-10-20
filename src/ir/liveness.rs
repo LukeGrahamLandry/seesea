@@ -24,6 +24,7 @@ pub struct SsaLiveness<'ir> {
     op_index: usize,
     ir: &'ir Function,
     current_block: usize,
+    read_blocks: IndexMap<Ssa, IndexMap<usize, bool>>, // [ssa][label+1] = did we read here?
 }
 
 // TODO: the idea is to use usages to prioritise who gets a register but this is lexical count. It needs to consider tightness of loops, etc.
@@ -66,6 +67,14 @@ pub fn compute_liveness(ir: &Function) -> SsaLiveness {
         liveness.held_across_call.len()
     );
 
+    for (ssa, data) in liveness.read_blocks.iter() {
+        let mut s = format!("{:2?} ", ssa);
+        for (block, used) in data.iter() {
+            s.push_str(if *used { "X" } else { "_" });
+        }
+        log!("{}", s);
+    }
+
     liveness
 }
 
@@ -86,6 +95,7 @@ impl<'ir> SsaLiveness<'ir> {
             max_ints_alive: 0,
             held_across_call: IndexMap::init(false, count),
             has_any_calls: false,
+            read_blocks: Default::default(),
         };
 
         for ssa in &ir.arg_registers {
@@ -111,6 +121,10 @@ impl<'ir> SsaLiveness<'ir> {
             let last_read = self.last_read[i];
             let uses = self.usage_count[i];
 
+            // TODO: this isn't enough
+            // if the last_read block branches somewhere above any read, need to only drop it after it gets out of that loop.
+            // where above might not be lexical (can't just compare ).
+            // not just above first write because pointers are mutable?
             let mut start = first_write;
             if first_write > first_read {
                 // TODO: this is not optimal
@@ -317,6 +331,11 @@ impl<'ir> SsaLiveness<'ir> {
             self.first_read.insert(*ssa, self.op_index);
         }
         self.usage_count[ssa] += 1;
+        if !self.read_blocks.contains(ssa) {
+            self.read_blocks
+                .insert(*ssa, IndexMap::init(false, self.ir.blocks.len() + 1));
+        }
+        self.read_blocks[ssa][self.current_block] = true;
     }
 
     fn write(&mut self, ssa: &Ssa) {
