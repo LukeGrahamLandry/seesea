@@ -181,6 +181,9 @@ impl<Expr: TreePrint> Debug for AnyModule<AnyFunction<Expr>> {
         for func in &self.functions {
             writeln!(f, "{:?}", func)?;
         }
+        for func in self.iter_external_funcs() {
+            writeln!(f, "{:?}", func)?;
+        }
         writeln!(f, "=======")
     }
 }

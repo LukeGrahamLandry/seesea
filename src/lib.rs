@@ -3,7 +3,7 @@ pub mod ast;
 pub mod ir;
 pub mod scanning;
 pub mod vm;
-
+#[cfg(test)]
 pub mod test_logic;
 #[cfg(test)]
 pub mod tests;

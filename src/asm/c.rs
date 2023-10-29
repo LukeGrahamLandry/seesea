@@ -293,6 +293,7 @@ impl<'ir> EmitC<'ir> {
             ValueType::F64 => "double",
             ValueType::F32 => "float",
             ValueType::Void => "void",
+            ValueType::U16 => "short",
             ValueType::Struct(id) => &self.ir.structs[id].name,
         };
         self.print(s);

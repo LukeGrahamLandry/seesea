@@ -1,6 +1,7 @@
 use crate::asm::aarch64::build_asm;
 #[cfg(feature = "cranelift")]
 use crate::asm::cranelift::Jitted;
+#[cfg(feature = "llvm")]
 use crate::asm::llvm;
 #[cfg(feature = "llvm")]
 use crate::asm::llvm::{null_terminate, RawLlvmFuncGen, TheContext};

@@ -637,7 +637,8 @@ fn priority(target: &CType) -> usize {
             ValueType::U32 => 3,
             ValueType::F64 => 5,
             ValueType::F32 => 6,
-            ValueType::Struct(_) | ValueType::Void => {
+            ValueType::U16 => todo!(),
+                ValueType::Struct(_) | ValueType::Void  => {
                 panic!("Binary expr implicit cast cannot include Struct or Void")
             }
             ValueType::Bool => 0,

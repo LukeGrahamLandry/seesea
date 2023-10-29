@@ -168,6 +168,7 @@ pub enum ValueType {
     U64,
     U8,
     U32,
+    U16,
     F64,
     F32,
     // TODO: some thought required on how to support nested declarations but don't bring back the name:Rc<str>, that sucked!
@@ -269,6 +270,7 @@ impl<Func: FuncRepr> AnyModule<Func> {
             ValueType::F64 => 8,
             ValueType::F32 => 4,
             ValueType::Void => 0,
+            ValueType::U16 => 2,
             ValueType::Struct(id) => {
                 let def = &self.structs[id];
                 let mut size = 0;

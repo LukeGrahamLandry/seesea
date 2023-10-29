@@ -602,6 +602,7 @@ impl VmValue {
             ValueType::U32 => VmValue::U64(u32::from_le_bytes(bytes.try_into().unwrap()) as u64),
             ValueType::F64 => VmValue::F64(f64::from_le_bytes(bytes.try_into().unwrap())),
             ValueType::F32 => VmValue::F64(f32::from_le_bytes(bytes.try_into().unwrap()) as f64),
+            ValueType::U16 => todo!(),
             ValueType::Struct(_) => todo!(),
             ValueType::Void => unreachable!(),
         }

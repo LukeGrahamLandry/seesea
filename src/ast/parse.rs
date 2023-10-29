@@ -23,6 +23,17 @@ impl<'src> From<Scanner<'src>> for Module {
     }
 }
 
+impl Module {
+    pub fn append(self, src: &str) -> Self {
+        let mut parser = Parser {
+            scanner: Scanner::new(src, self.name.to_string()),
+            program: self,
+        };
+        parser.run();
+        parser.program
+    }
+}
+
 struct Parser<'src> {
     scanner: Scanner<'src>,
     program: Module,
@@ -161,7 +172,7 @@ impl<'src> Parser<'src> {
     }
 
     const BUILTIN_TYPES: &'static [&'static str] =
-        &["char", "long", "int", "float", "double", "void"];
+        &["char", "long", "int", "float", "double", "void", "short"];
 
     // Only certain tokens can be the start of a type.
     // Need to recognise these without consuming tokens to know if we're declaring a variable.
@@ -618,6 +629,7 @@ impl<'src> Parser<'src> {
                 "double" => ValueType::F64,
                 "float" => ValueType::F32,
                 "void" => ValueType::Void,
+                "short" => ValueType::U16,
                 _ => self.error(&format!("Unknown type name '{}'", name)),
             };
 

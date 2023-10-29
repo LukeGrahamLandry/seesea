@@ -1076,7 +1076,8 @@ fn register_kind(ty: &CType) -> (RegKind, Bits) {
             ValueType::U8 => (RegKind::Int, Bits::B32), // TODO
             ValueType::F64 => (RegKind::Float, Bits::B64),
             ValueType::F32 => (RegKind::Float, Bits::B32),
-            ValueType::Struct(_) | ValueType::Void => unreachable!(),
+            ValueType::U16 => todo!(),
+            ValueType::Struct(_) | ValueType::Void=> unreachable!(),
         }
     }
 }
